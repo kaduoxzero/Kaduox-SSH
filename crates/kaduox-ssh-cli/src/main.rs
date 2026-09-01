@@ -191,10 +191,7 @@ fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authen
     })
 }
 
-async fn setup_forwards(
-    ssh: &SshClient,
-    cli: &Cli,
-) -> Result<Vec<kaduox_ssh_core::ForwardHandle>> {
+async fn setup_forwards(ssh: &SshClient, cli: &Cli) -> Result<Vec<kaduox_ssh_core::ForwardHandle>> {
     let mut handles = Vec::new();
     for raw in &cli.local_forward {
         handles.push(ssh.local_forward(parse_local_forward(raw)?).await?);
