@@ -161,9 +161,7 @@ async fn handle_socks5(
         .await
     {
         Ok(channel) => {
-            local
-                .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
-                .await?;
+            local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
             let mut remote = channel.into_stream();
             copy_bidirectional(&mut local, &mut remote).await?;
             Ok(())
