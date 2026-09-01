@@ -188,9 +188,7 @@ impl SshClient {
         while let Some(message) = channel.wait().await {
             match message {
                 ChannelMsg::Data { data } => output.stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, ext: 1 } => {
-                    output.stderr.extend_from_slice(&data)
-                }
+                ChannelMsg::ExtendedData { data, ext: 1 } => output.stderr.extend_from_slice(&data),
                 ChannelMsg::ExtendedData { data, .. } => output.stderr.extend_from_slice(&data),
                 ChannelMsg::ExitStatus { exit_status } => {
                     output.exit_status = Some(exit_status);
