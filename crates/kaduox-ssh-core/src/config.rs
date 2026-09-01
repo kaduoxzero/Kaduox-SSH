@@ -125,8 +125,8 @@ fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
     };
 
     let (alias, port_override) = parse_host_port(host_port)?;
-    let parsed = russh_config::parse_home(&alias)
-        .unwrap_or_else(|_| russh_config::Config::default(&alias));
+    let parsed =
+        russh_config::parse_home(&alias).unwrap_or_else(|_| russh_config::Config::default(&alias));
 
     Ok(JumpHost {
         alias,
