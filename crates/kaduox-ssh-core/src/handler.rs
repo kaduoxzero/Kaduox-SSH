@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use russh::Channel;
 use russh::client::{self, ChannelOpenHandle, Msg};
 use russh::keys::PublicKeyOrCertificate;
-use russh::Channel;
 use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
