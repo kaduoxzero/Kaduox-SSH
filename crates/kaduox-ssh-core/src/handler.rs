@@ -20,7 +20,7 @@ pub(crate) struct ForwardTarget {
 
 #[derive(Clone, Default)]
 pub(crate) struct HandlerState {
-    remote_forwards: Arc<RwLock<HashMap<(String, u32), ForwardTarget>>>,
+    pub(crate) remote_forwards: Arc<RwLock<HashMap<(String, u32), ForwardTarget>>>,
     pub agent_forwarding: bool,
 }
 
