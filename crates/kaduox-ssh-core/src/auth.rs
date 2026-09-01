@@ -46,7 +46,10 @@ pub(crate) async fn authenticate(
             identity_files,
             passphrase,
         } => {
-            if authenticate_with_agent(session, username).await.unwrap_or(false) {
+            if authenticate_with_agent(session, username)
+                .await
+                .unwrap_or(false)
+            {
                 return Ok(true);
             }
             for path in identity_files {
@@ -72,10 +75,7 @@ async fn authenticate_private_key(
         .with_context(|| format!("failed to load private key {}", path.display()))?;
     let hash = session.best_supported_rsa_hash().await?.flatten();
     Ok(session
-        .authenticate_publickey(
-            username,
-            PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-        )
+        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
         .await?
         .success())
 }
