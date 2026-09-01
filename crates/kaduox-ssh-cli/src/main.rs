@@ -10,7 +10,11 @@ use tokio::io::AsyncWriteExt;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(name = "kssh", version, about = "High-performance SSH client built in Rust")]
+#[command(
+    name = "kssh",
+    version,
+    about = "High-performance SSH client built in Rust"
+)]
 struct Cli {
     /// Remote host name or address.
     host: String,
@@ -90,7 +94,9 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
         .init();
 
     let cli = Cli::parse();
