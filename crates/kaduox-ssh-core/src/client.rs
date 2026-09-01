@@ -86,13 +86,11 @@ impl SshClient {
         } else {
             let handler = handler_for(&config, state.clone());
             (
-                client::connect(
-                    ssh_config,
-                    (config.host.as_str(), config.port),
-                    handler,
-                )
-                .await
-                .with_context(|| format!("failed to connect to {}:{}", config.host, config.port))?,
+                client::connect(ssh_config, (config.host.as_str(), config.port), handler)
+                    .await
+                    .with_context(|| {
+                        format!("failed to connect to {}:{}", config.host, config.port)
+                    })?,
                 Vec::new(),
             )
         };
@@ -258,9 +256,7 @@ impl SshClient {
             .disconnect(Disconnect::ByApplication, "", "en")
             .await?;
         for jump in self.jump_sessions.iter().rev() {
-            let _ = jump
-                .disconnect(Disconnect::ByApplication, "", "en")
-                .await;
+            let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
         }
         Ok(())
     }
@@ -321,12 +317,7 @@ async fn connect_via_jumps(
     for jump in &config.jump_hosts {
         let mut next = if let Some(previous) = current.take() {
             let channel = previous
-                .channel_open_direct_tcpip(
-                    jump.host.clone(),
-                    u32::from(jump.port),
-                    "127.0.0.1",
-                    0,
-                )
+                .channel_open_direct_tcpip(jump.host.clone(), u32::from(jump.port), "127.0.0.1", 0)
                 .await
                 .with_context(|| format!("failed to open tunnel to jump host {}", jump.alias))?;
             keepalive.push(Arc::new(previous));
@@ -359,12 +350,7 @@ async fn connect_via_jumps(
 
     let last = current.context("ProxyJump chain is empty")?;
     let channel = last
-        .channel_open_direct_tcpip(
-            config.host.clone(),
-            u32::from(config.port),
-            "127.0.0.1",
-            0,
-        )
+        .channel_open_direct_tcpip(config.host.clone(), u32::from(config.port), "127.0.0.1", 0)
         .await
         .context("failed to open final ProxyJump tunnel")?;
     keepalive.push(Arc::new(last));
@@ -484,10 +470,7 @@ impl AsyncWrite for ProxyCommandStream {
         Pin::new(&mut self.stdin).poll_write(cx, buf)
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.stdin).poll_flush(cx)
     }
 
