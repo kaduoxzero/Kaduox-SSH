@@ -2,13 +2,31 @@ name: CI
 
 on:
   push:
+    branches:
+      - develop
+      - main
+      - "release/**"
   pull_request:
+    branches:
+      - develop
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   platform:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Platform (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -31,6 +49,7 @@ jobs:
         run: cargo test --workspace --locked
 
   msrv:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: MSRV (Rust 1.85.0)
     runs-on: ubuntu-latest
     steps:
