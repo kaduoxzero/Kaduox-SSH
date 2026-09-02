@@ -106,12 +106,14 @@ impl ConnectionManager {
         }
 
         self.prune_idle().await;
-        let permit = Arc::clone(&self.capacity).try_acquire_owned().map_err(|_| {
-            anyhow::anyhow!(
-                "connection manager capacity reached (max {})",
-                self.config.max_connections
-            )
-        })?;
+        let permit = Arc::clone(&self.capacity)
+            .try_acquire_owned()
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "connection manager capacity reached (max {})",
+                    self.config.max_connections
+                )
+            })?;
 
         // Do not hold the manager lock across DNS, TCP, SSH handshake or auth.
         let candidate = Arc::new(SshClient::connect(config, authentication).await?);
