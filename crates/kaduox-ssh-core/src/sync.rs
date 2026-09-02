@@ -1,11 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, bail};
 use russh_sftp::client::SftpSession;
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::client::SshClient;
@@ -120,26 +119,23 @@ impl SshClient {
             }
         }
 
-        let semaphore = Arc::new(Semaphore::new(options.transfer.file_concurrency));
         let mut tasks = JoinSet::new();
         for action in &plan.actions {
             if action.kind != SyncActionKind::UploadFile {
                 continue;
             }
-            let permit = semaphore.clone().acquire_owned().await?;
+            if tasks.len() >= options.transfer.file_concurrency {
+                collect_next_sync_upload(&mut tasks, &mut summary).await?;
+            }
             let sftp = Arc::clone(&sftp);
             let transfer = options.transfer.clone();
             let local_path = local_root.join(path_from_relative(&action.path));
             let remote_path = join_remote(remote_root, &action.path);
-            tasks.spawn(async move {
-                let _permit = permit;
-                upload_file(&sftp, &local_path, &remote_path, &transfer).await
-            });
+            tasks.spawn(async move { upload_file(&sftp, &local_path, &remote_path, &transfer).await });
         }
 
-        while let Some(result) = tasks.join_next().await {
-            summary.bytes += result??;
-            summary.files += 1;
+        while !tasks.is_empty() {
+            collect_next_sync_upload(&mut tasks, &mut summary).await?;
         }
         drop(sftp);
         Ok(summary)
@@ -164,6 +160,19 @@ impl SshClient {
             .await?;
         Ok((plan, Some(summary)))
     }
+}
+
+async fn collect_next_sync_upload(
+    tasks: &mut JoinSet<Result<u64>>,
+    summary: &mut TransferSummary,
+) -> Result<()> {
+    let bytes = tasks
+        .join_next()
+        .await
+        .context("sync upload task set unexpectedly empty")??;
+    summary.bytes += bytes;
+    summary.files += 1;
+    Ok(())
 }
 
 async fn scan_local(root: &Path) -> Result<BTreeMap<String, SnapshotEntry>> {
@@ -259,19 +268,21 @@ fn build_push_plan(
     remote: &BTreeMap<String, SnapshotEntry>,
     options: &SyncOptions,
 ) -> Result<SyncPlan> {
-    let mut delete_files = BTreeSet::new();
-    let mut delete_directories = BTreeSet::new();
-    let mut create_directories = BTreeSet::new();
-    let mut uploads = BTreeMap::<String, u64>::new();
+    let mut delete_files = Vec::new();
+    let mut delete_directories = Vec::new();
+    let mut create_directories = Vec::new();
+    let mut uploads = Vec::new();
 
     for (path, local_entry) in local {
         match remote.get(path) {
             None => match local_entry.kind {
-                EntryKind::Directory => {
-                    create_directories.insert(path.clone());
-                }
+                EntryKind::Directory => create_directories.push(sync_action(
+                    SyncActionKind::CreateRemoteDirectory,
+                    path,
+                    0,
+                )),
                 EntryKind::File => {
-                    uploads.insert(path.clone(), local_entry.len);
+                    uploads.push(sync_action(SyncActionKind::UploadFile, path, local_entry.len))
                 }
                 EntryKind::Other => {}
             },
@@ -279,7 +290,7 @@ fn build_push_plan(
                 if local_entry.kind == EntryKind::File
                     && !files_match(local_entry, remote_entry, options.size_only)
                 {
-                    uploads.insert(path.clone(), local_entry.len);
+                    uploads.push(sync_action(SyncActionKind::UploadFile, path, local_entry.len));
                 }
             }
             Some(remote_entry) => {
@@ -289,20 +300,26 @@ fn build_push_plan(
                     );
                 }
                 match remote_entry.kind {
-                    EntryKind::Directory => {
-                        delete_directories.insert(path.clone());
-                    }
+                    EntryKind::Directory => delete_directories.push(sync_action(
+                        SyncActionKind::DeleteRemoteDirectory,
+                        path,
+                        0,
+                    )),
                     EntryKind::File | EntryKind::Other => {
-                        delete_files.insert(path.clone());
+                        delete_files.push(sync_action(SyncActionKind::DeleteRemoteFile, path, 0))
                     }
                 }
                 match local_entry.kind {
-                    EntryKind::Directory => {
-                        create_directories.insert(path.clone());
-                    }
-                    EntryKind::File => {
-                        uploads.insert(path.clone(), local_entry.len);
-                    }
+                    EntryKind::Directory => create_directories.push(sync_action(
+                        SyncActionKind::CreateRemoteDirectory,
+                        path,
+                        0,
+                    )),
+                    EntryKind::File => uploads.push(sync_action(
+                        SyncActionKind::UploadFile,
+                        path,
+                        local_entry.len,
+                    )),
                     EntryKind::Other => {}
                 }
             }
@@ -315,78 +332,60 @@ fn build_push_plan(
                 continue;
             }
             match remote_entry.kind {
-                EntryKind::Directory => {
-                    delete_directories.insert(path.clone());
-                }
+                EntryKind::Directory => delete_directories.push(sync_action(
+                    SyncActionKind::DeleteRemoteDirectory,
+                    path,
+                    0,
+                )),
                 EntryKind::File | EntryKind::Other => {
-                    delete_files.insert(path.clone());
+                    delete_files.push(sync_action(SyncActionKind::DeleteRemoteFile, path, 0))
                 }
             }
         }
     }
 
-    let mut actions = Vec::new();
-    for path in delete_files {
-        actions.push(SyncAction {
-            kind: SyncActionKind::DeleteRemoteFile,
-            path,
-            bytes: 0,
-        });
-    }
-
-    let mut delete_directories = delete_directories.into_iter().collect::<Vec<_>>();
+    delete_files.sort_by(|left, right| left.path.cmp(&right.path));
     delete_directories.sort_by(|left, right| {
-        path_depth(right)
-            .cmp(&path_depth(left))
-            .then_with(|| right.cmp(left))
+        path_depth(&right.path)
+            .cmp(&path_depth(&left.path))
+            .then_with(|| right.path.cmp(&left.path))
     });
-    for path in delete_directories {
-        actions.push(SyncAction {
-            kind: SyncActionKind::DeleteRemoteDirectory,
-            path,
-            bytes: 0,
-        });
-    }
-
-    let mut create_directories = create_directories.into_iter().collect::<Vec<_>>();
     create_directories.sort_by(|left, right| {
-        path_depth(left)
-            .cmp(&path_depth(right))
-            .then_with(|| left.cmp(right))
+        path_depth(&left.path)
+            .cmp(&path_depth(&right.path))
+            .then_with(|| left.path.cmp(&right.path))
     });
-    for path in create_directories {
-        actions.push(SyncAction {
-            kind: SyncActionKind::CreateRemoteDirectory,
-            path,
-            bytes: 0,
-        });
-    }
+    uploads.sort_by(|left, right| left.path.cmp(&right.path));
 
-    for (path, bytes) in uploads {
-        actions.push(SyncAction {
-            kind: SyncActionKind::UploadFile,
-            path,
-            bytes,
-        });
-    }
+    let entries_to_delete = (delete_files.len() + delete_directories.len()) as u64;
+    let directories_to_create = create_directories.len() as u64;
+    let files_to_upload = uploads.len() as u64;
+    let bytes_to_upload = uploads.iter().map(|action| action.bytes).sum();
+    let total_actions = delete_files.len()
+        + delete_directories.len()
+        + create_directories.len()
+        + uploads.len();
+    let mut actions = Vec::with_capacity(total_actions);
+    actions.extend(delete_files);
+    actions.extend(delete_directories);
+    actions.extend(create_directories);
+    actions.extend(uploads);
 
-    let mut plan = SyncPlan {
+    Ok(SyncPlan {
         actions,
-        ..Default::default()
-    };
-    for action in &plan.actions {
-        match action.kind {
-            SyncActionKind::UploadFile => {
-                plan.files_to_upload += 1;
-                plan.bytes_to_upload += action.bytes;
-            }
-            SyncActionKind::CreateRemoteDirectory => plan.directories_to_create += 1,
-            SyncActionKind::DeleteRemoteFile | SyncActionKind::DeleteRemoteDirectory => {
-                plan.entries_to_delete += 1;
-            }
-        }
+        bytes_to_upload,
+        files_to_upload,
+        entries_to_delete,
+        directories_to_create,
+    })
+}
+
+fn sync_action(kind: SyncActionKind, path: &str, bytes: u64) -> SyncAction {
+    SyncAction {
+        kind,
+        path: path.to_owned(),
+        bytes,
     }
-    Ok(plan)
 }
 
 fn files_match(local: &SnapshotEntry, remote: &SnapshotEntry, size_only: bool) -> bool {
@@ -486,5 +485,52 @@ mod tests {
         )]);
         let remote = BTreeMap::from([("cache".to_owned(), file(10, 1))]);
         assert!(build_push_plan(&local, &remote, &SyncOptions::default()).is_err());
+    }
+
+    #[test]
+    fn plan_order_remains_deterministic_without_tree_action_buffers() {
+        let local = BTreeMap::from([
+            (
+                "a".to_owned(),
+                SnapshotEntry {
+                    kind: EntryKind::Directory,
+                    len: 0,
+                    mtime: None,
+                },
+            ),
+            ("a/new.bin".to_owned(), file(20, 2)),
+        ]);
+        let remote = BTreeMap::from([
+            ("old.bin".to_owned(), file(10, 1)),
+            (
+                "z".to_owned(),
+                SnapshotEntry {
+                    kind: EntryKind::Directory,
+                    len: 0,
+                    mtime: None,
+                },
+            ),
+        ]);
+        let options = SyncOptions {
+            delete: true,
+            ..Default::default()
+        };
+        let plan = build_push_plan(&local, &remote, &options).unwrap();
+        assert_eq!(
+            plan.actions
+                .iter()
+                .map(|action| action.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                SyncActionKind::DeleteRemoteFile,
+                SyncActionKind::DeleteRemoteDirectory,
+                SyncActionKind::CreateRemoteDirectory,
+                SyncActionKind::UploadFile,
+            ]
+        );
+        assert_eq!(plan.files_to_upload, 1);
+        assert_eq!(plan.bytes_to_upload, 20);
+        assert_eq!(plan.entries_to_delete, 2);
+        assert_eq!(plan.directories_to_create, 1);
     }
 }
