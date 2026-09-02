@@ -3,7 +3,6 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use russh::client;
@@ -25,9 +24,6 @@ use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
 
-const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const SSH_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
-const SSH_AUTH_TIMEOUT: Duration = Duration::from_secs(30);
 const PROXY_EXPANSION_UNSAFE_CHARS: &str = "'`\"$\\;&<>|(){}";
 
 #[derive(Debug, Clone, Default)]
@@ -76,6 +72,7 @@ pub struct SshClient {
 
 impl SshClient {
     pub async fn connect(config: ConnectionConfig, authentication: Authentication) -> Result<Self> {
+        config.validate_timeouts()?;
         let state = HandlerState {
             agent_forwarding: config.agent_forwarding,
             ..Default::default()
@@ -88,14 +85,14 @@ impl SshClient {
             let handler = handler_for(&config, state.clone());
             (
                 timeout(
-                    SSH_CONNECT_TIMEOUT,
+                    config.connect_timeout,
                     client::connect_stream(ssh_config, stream, handler),
                 )
                 .await
                 .with_context(|| {
                     format!(
                         "SSH handshake through ProxyCommand timed out after {} seconds",
-                        SSH_CONNECT_TIMEOUT.as_secs()
+                        config.connect_timeout.as_secs()
                     )
                 })?
                 .context("SSH handshake through ProxyCommand failed")?,
@@ -105,7 +102,7 @@ impl SshClient {
             let handler = handler_for(&config, state.clone());
             (
                 timeout(
-                    SSH_CONNECT_TIMEOUT,
+                    config.connect_timeout,
                     client::connect(ssh_config, (config.host.as_str(), config.port), handler),
                 )
                 .await
@@ -114,7 +111,7 @@ impl SshClient {
                         "SSH connection to {}:{} timed out after {} seconds",
                         config.host,
                         config.port,
-                        SSH_CONNECT_TIMEOUT.as_secs()
+                        config.connect_timeout.as_secs()
                     )
                 })?
                 .with_context(|| format!("failed to connect to {}:{}", config.host, config.port))?,
@@ -123,7 +120,7 @@ impl SshClient {
         };
 
         let authenticated = timeout(
-            SSH_AUTH_TIMEOUT,
+            config.authentication_timeout,
             authenticate(&mut session, &config.username, &authentication),
         )
         .await
@@ -131,7 +128,7 @@ impl SshClient {
             format!(
                 "SSH authentication for user {} timed out after {} seconds",
                 config.username,
-                SSH_AUTH_TIMEOUT.as_secs()
+                config.authentication_timeout.as_secs()
             )
         })??;
         if !authenticated {
@@ -365,7 +362,7 @@ async fn wait_for_resize(
 
 fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
     Arc::new(client::Config {
-        connection_timeout: Some(SSH_CONNECT_TIMEOUT),
+        connection_timeout: Some(config.connect_timeout),
         inactivity_timeout: config.inactivity_timeout,
         keepalive_interval: config.keepalive_interval,
         keepalive_max: 3,
@@ -375,9 +372,9 @@ fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
     })
 }
 
-fn jump_ssh_config() -> Arc<client::Config> {
+fn jump_ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
     Arc::new(client::Config {
-        connection_timeout: Some(SSH_CONNECT_TIMEOUT),
+        connection_timeout: Some(config.connect_timeout),
         nodelay: true,
         preferred: hardened_preferred(),
         ..Default::default()
@@ -421,7 +418,7 @@ async fn connect_via_jumps(
     for jump in &config.jump_hosts {
         let mut next = if let Some(previous) = current.take() {
             let channel = timeout(
-                SSH_CHANNEL_OPEN_TIMEOUT,
+                config.channel_open_timeout,
                 previous.channel_open_direct_tcpip(
                     jump.host.clone(),
                     u32::from(jump.port),
@@ -433,16 +430,16 @@ async fn connect_via_jumps(
             .with_context(|| {
                 format!(
                     "timed out after {} seconds opening tunnel to jump host {}",
-                    SSH_CHANNEL_OPEN_TIMEOUT.as_secs(),
+                    config.channel_open_timeout.as_secs(),
                     jump.alias
                 )
             })?
             .with_context(|| format!("failed to open tunnel to jump host {}", jump.alias))?;
             keepalive.push(Arc::new(previous));
             timeout(
-                SSH_CONNECT_TIMEOUT,
+                config.connect_timeout,
                 client::connect_stream(
-                    jump_ssh_config(),
+                    jump_ssh_config(config),
                     channel.into_stream(),
                     jump_handler(jump, config),
                 ),
@@ -452,15 +449,15 @@ async fn connect_via_jumps(
                 format!(
                     "SSH handshake for jump host {} timed out after {} seconds",
                     jump.alias,
-                    SSH_CONNECT_TIMEOUT.as_secs()
+                    config.connect_timeout.as_secs()
                 )
             })?
             .with_context(|| format!("SSH handshake failed for jump host {}", jump.alias))?
         } else {
             timeout(
-                SSH_CONNECT_TIMEOUT,
+                config.connect_timeout,
                 client::connect(
-                    jump_ssh_config(),
+                    jump_ssh_config(config),
                     (jump.host.as_str(), jump.port),
                     jump_handler(jump, config),
                 ),
@@ -470,7 +467,7 @@ async fn connect_via_jumps(
                 format!(
                     "connection to jump host {} timed out after {} seconds",
                     jump.alias,
-                    SSH_CONNECT_TIMEOUT.as_secs()
+                    config.connect_timeout.as_secs()
                 )
             })?
             .with_context(|| format!("failed to connect to jump host {}", jump.alias))?
@@ -481,7 +478,7 @@ async fn connect_via_jumps(
             passphrase: None,
         };
         let authenticated = timeout(
-            SSH_AUTH_TIMEOUT,
+            config.authentication_timeout,
             authenticate(&mut next, &jump.username, &jump_auth),
         )
         .await
@@ -489,7 +486,7 @@ async fn connect_via_jumps(
             format!(
                 "authentication for jump host {} timed out after {} seconds",
                 jump.alias,
-                SSH_AUTH_TIMEOUT.as_secs()
+                config.authentication_timeout.as_secs()
             )
         })??;
         if !authenticated {
@@ -500,7 +497,7 @@ async fn connect_via_jumps(
 
     let last = current.context("ProxyJump chain is empty")?;
     let channel = timeout(
-        SSH_CHANNEL_OPEN_TIMEOUT,
+        config.channel_open_timeout,
         last.channel_open_direct_tcpip(
             config.host.clone(),
             u32::from(config.port),
@@ -512,14 +509,14 @@ async fn connect_via_jumps(
     .with_context(|| {
         format!(
             "final ProxyJump tunnel timed out after {} seconds",
-            SSH_CHANNEL_OPEN_TIMEOUT.as_secs()
+            config.channel_open_timeout.as_secs()
         )
     })?
     .context("failed to open final ProxyJump tunnel")?;
     keepalive.push(Arc::new(last));
 
     let final_session = timeout(
-        SSH_CONNECT_TIMEOUT,
+        config.connect_timeout,
         client::connect_stream(
             final_ssh_config,
             channel.into_stream(),
@@ -530,7 +527,7 @@ async fn connect_via_jumps(
     .with_context(|| {
         format!(
             "final SSH handshake through ProxyJump timed out after {} seconds",
-            SSH_CONNECT_TIMEOUT.as_secs()
+            config.connect_timeout.as_secs()
         )
     })?
     .context("final SSH handshake through ProxyJump failed")?;
@@ -736,12 +733,5 @@ mod tests {
         config.username = "deploy".into();
         config.alias = "prod|cat".into();
         assert!(expand_proxy_command("proxy %n", &config).is_err());
-    }
-
-    #[test]
-    fn connection_boundaries_are_nonzero() {
-        assert!(!SSH_CONNECT_TIMEOUT.is_zero());
-        assert!(!SSH_CHANNEL_OPEN_TIMEOUT.is_zero());
-        assert!(!SSH_AUTH_TIMEOUT.is_zero());
     }
 }
