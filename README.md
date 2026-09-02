@@ -1,5 +1,7 @@
 # Kaduox-SSH
 
+**English** | [简体中文](README.zh-CN.md)
+
 Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core that can power CLI, TUI, and GUI frontends.
 
 ## Current capabilities
