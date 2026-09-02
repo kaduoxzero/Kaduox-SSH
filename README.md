@@ -9,7 +9,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - ProxyJump chains and ProxyCommand transports
 - password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
 - RSA authentication through an external SSH agent while local RSA private-key signing is disabled by security policy
-- RSA server host-key compatibility without enabling the affected local RSA signer
+- explicit early rejection of RSA-only server host keys while the affected RSA verification feature is disabled
 - opt-in agent forwarding
 - local (`-L`), remote (`-R`), and SOCKS5 dynamic (`-D`) forwarding
 - fast remote OS user switching over an existing SSH transport through `sudo`
@@ -45,9 +45,9 @@ This policy distinguishes private-key signing from public-key compatibility:
 - Ed25519 and ECDSA private-key files can be used directly.
 - A local RSA private-key file fails closed with an explicit remediation message.
 - RSA user authentication remains available through an external SSH agent because the private-key operation stays inside the agent rather than Kaduox-SSH.
-- RSA server host keys remain supported for host authentication; verifying a server signature does not require Kaduox-SSH to perform an RSA private-key operation.
+- RSA-only server host keys are currently rejected during key-exchange negotiation. In Russh 0.63.1 the feature needed for RSA host-signature verification is coupled to the affected local RSA signer dependency, so Kaduox-SSH prefers a fail-closed compatibility tradeoff over advertising an algorithm it cannot safely verify. Servers should expose Ed25519 or ECDSA host keys.
 
-The real OpenSSH integration suite continuously verifies direct RSA-key rejection, agent-backed RSA authentication, and connection to an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite remains green.
+The real OpenSSH integration suite continuously verifies direct RSA-key rejection, agent-backed RSA authentication, and early negotiation failure against an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite remains green.
 
 ## Architecture
 
@@ -138,7 +138,7 @@ Symbolic links encountered during recursive transfer or synchronization scans ar
 
 ## Validation and performance
 
-Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, RSA security policy and host-key compatibility, SFTP, synchronization, privilege switching, and TCP forwarding.
+Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, and TCP forwarding.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 

@@ -169,9 +169,18 @@ echo '[integration] direct exec'
 exec_output="$(run_kssh exec -- printf integration-ok)"
 [[ "$exec_output" == 'integration-ok' ]] || fail "unexpected exec output: $exec_output"
 
-echo '[integration] RSA server host-key verification path'
-rsa_host_output="$("$KSSH" 127.0.0.1 --port "$RSA_HOST_PORT" --user "$TEST_USER" --identity "$KEY" --host-key insecure exec -- printf rsa-host-ok)"
-[[ "$rsa_host_output" == 'rsa-host-ok' ]] || fail "RSA host-key server returned: $rsa_host_output"
+echo '[integration] RSA-only server host keys fail during algorithm negotiation'
+if "$KSSH" 127.0.0.1 --port "$RSA_HOST_PORT" --user "$TEST_USER" --identity "$KEY" --host-key insecure exec -- true >"$WORK/rsa-host.log" 2>&1; then
+  fail 'RSA-only server host key unexpectedly succeeded while RSA verification is disabled'
+fi
+if grep -q 'Wrong server signature' "$WORK/rsa-host.log"; then
+  cat "$WORK/rsa-host.log" >&2
+  fail 'RSA host-key algorithm was advertised even though its verifier is disabled'
+fi
+grep -qi 'No common.*algorithm' "$WORK/rsa-host.log" || {
+  cat "$WORK/rsa-host.log" >&2
+  fail 'RSA-only host did not fail during algorithm negotiation'
+}
 
 echo '[integration] sudo privilege switch'
 sudo_output="$(run_kssh exec --as-user root -- id -u | tr -d '\r\n')"

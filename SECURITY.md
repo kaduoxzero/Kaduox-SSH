@@ -23,13 +23,13 @@ Security fixes are developed and validated on `develop` first. Stable fixes are 
 - Full OpenSSH host-certificate / `@cert-authority` support must not be advertised until certificate signatures, principals, critical options, validity, host patterns, and revocation behavior are all validated.
 - Kaduox-SSH must not perform RSA private-key operations through Russh's optional RustCrypto RSA signer while `RUSTSEC-2023-0071` remains unresolved. The `russh/rsa` feature is disabled and the affected `rsa` crate must remain absent from `Cargo.lock`.
 - Direct local RSA private-key authentication therefore fails closed with a remediation message. RSA user authentication may use an external SSH agent because the private signing operation remains inside the agent.
-- RSA server host keys remain an allowed compatibility path because host-key verification is a public-key operation and does not require Kaduox-SSH to possess or operate on an RSA private exponent.
+- RSA host-key algorithms are removed from the client preference list while the Russh feature that verifies them remains coupled to the affected RSA dependency. RSA-only servers must fail during key-exchange negotiation rather than after accepting an unsupported signature algorithm.
 
 ## RSA compatibility boundary
 
 The RSA restriction is deliberately narrow rather than a blanket ban. Ed25519/ECDSA direct private-key authentication is supported. RSA identities supplied by an external OpenSSH agent or Pageant-compatible agent can still be used, subject to the agent implementation's own security posture. Kaduox-SSH negotiates the appropriate signature hash and forwards the signing request; it does not import the RSA private key into the process.
 
-The OpenSSH integration suite includes three independent regression checks: direct RSA private-key files are rejected, the same RSA identity succeeds through an external agent, and an RSA-host-key-only SSH server can still be authenticated with a non-RSA client key. Any change to crypto features must keep all three behaviors explicit.
+The OpenSSH integration suite includes three independent regression checks: direct RSA private-key files are rejected, the same RSA identity succeeds through an external agent, and an RSA-host-key-only SSH server is rejected during algorithm negotiation without reaching `WrongServerSig`. Any change to crypto features must keep all three behaviors explicit.
 
 ## Dependency and CI policy
 
