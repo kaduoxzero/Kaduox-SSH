@@ -58,13 +58,36 @@ pub(crate) async fn authenticate(
                 return Ok(true);
             }
 
+            let mut first_identity_error = None;
             for path in identity_candidates(identity_files) {
-                if authenticate_private_key(session, username, &path, passphrase.as_deref())
-                    .await
-                    .unwrap_or(false)
-                {
-                    return Ok(true);
+                match tokio::fs::try_exists(&path).await {
+                    Ok(false) => continue,
+                    Ok(true) => {}
+                    Err(error) => {
+                        first_identity_error.get_or_insert_with(|| {
+                            anyhow::Error::new(error).context(format!(
+                                "failed to inspect SSH identity {}",
+                                path.display()
+                            ))
+                        });
+                        continue;
+                    }
                 }
+
+                match authenticate_private_key(session, username, &path, passphrase.as_deref()).await
+                {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {}
+                    Err(error) => {
+                        first_identity_error.get_or_insert(error);
+                    }
+                }
+            }
+
+            if let Some(error) = first_identity_error {
+                return Err(error.context(
+                    "automatic SSH authentication exhausted all available identity files",
+                ));
             }
             Ok(false)
         }
