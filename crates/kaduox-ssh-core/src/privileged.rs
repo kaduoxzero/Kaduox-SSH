@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::client::{RemoteUser, SshClient, quote_posix};
+use crate::client::{CommandOutput, RemoteUser, SshClient, quote_posix};
 use crate::transfer::{TransferOptions, unique_staging_path};
 
 fn validate_mode(mode: u32) -> Result<()> {
@@ -10,6 +10,20 @@ fn validate_mode(mode: u32) -> Result<()> {
         bail!("invalid file mode {mode:#o}; expected <= 0o7777");
     }
     Ok(())
+}
+
+fn ensure_privileged_install_success(output: &CommandOutput) -> Result<()> {
+    match output.exit_status {
+        Some(0) => Ok(()),
+        Some(status) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "privileged install failed with status {status}: {}",
+                stderr.trim()
+            )
+        }
+        None => bail!("privileged install failed: remote command did not report an exit status"),
+    }
 }
 
 impl SshClient {
@@ -59,15 +73,7 @@ impl SshClient {
         let _ = self.exec(&cleanup_command, &RemoteUser::Current).await;
 
         let output = result?;
-        if output.exit_status.unwrap_or(0) != 0 {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "privileged install failed with status {:?}: {}",
-                output.exit_status,
-                stderr.trim()
-            );
-        }
-
+        ensure_privileged_install_success(&output)?;
         Ok(bytes)
     }
 }
@@ -80,5 +86,25 @@ mod tests {
     fn mode_range_accepts_unix_special_bits() {
         assert!(validate_mode(0o7777).is_ok());
         assert!(validate_mode(0o10000).is_err());
+    }
+
+    #[test]
+    fn privileged_install_requires_explicit_success_status() {
+        let missing = CommandOutput::default();
+        assert!(ensure_privileged_install_success(&missing).is_err());
+
+        let success = CommandOutput {
+            exit_status: Some(0),
+            ..Default::default()
+        };
+        assert!(ensure_privileged_install_success(&success).is_ok());
+
+        let failure = CommandOutput {
+            stderr: b"permission denied".to_vec(),
+            exit_status: Some(1),
+            ..Default::default()
+        };
+        let error = ensure_privileged_install_success(&failure).unwrap_err();
+        assert!(error.to_string().contains("permission denied"));
     }
 }
