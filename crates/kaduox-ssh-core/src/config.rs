@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 const MAX_JUMP_HOPS: usize = 8;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CHANNEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -38,8 +39,10 @@ pub struct ConnectionConfig {
     pub inactivity_timeout: Option<Duration>,
     /// Upper bound for TCP connection establishment and SSH handshakes.
     pub connect_timeout: Duration,
-    /// Upper bound for SSH channel-open requests used by ProxyJump and forwarding setup.
+    /// Upper bound for SSH channel-open requests used by sessions and ProxyJump.
     pub channel_open_timeout: Duration,
+    /// Upper bound for channel requests that wait for a server reply, such as exec/shell/subsystem.
+    pub channel_request_timeout: Duration,
     /// Upper bound for one SSH authentication phase.
     pub authentication_timeout: Duration,
     pub proxy_command: Option<String>,
@@ -62,6 +65,7 @@ impl ConnectionConfig {
             inactivity_timeout: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             channel_open_timeout: DEFAULT_CHANNEL_OPEN_TIMEOUT,
+            channel_request_timeout: DEFAULT_CHANNEL_REQUEST_TIMEOUT,
             authentication_timeout: DEFAULT_AUTHENTICATION_TIMEOUT,
             proxy_command: None,
             jump_hosts: Vec::new(),
@@ -118,6 +122,9 @@ impl ConnectionConfig {
         }
         if self.channel_open_timeout.is_zero() {
             bail!("SSH channel-open timeout must be greater than zero");
+        }
+        if self.channel_request_timeout.is_zero() {
+            bail!("SSH channel request timeout must be greater than zero");
         }
         if self.authentication_timeout.is_zero() {
             bail!("SSH authentication timeout must be greater than zero");
@@ -216,6 +223,7 @@ mod tests {
         let mut config = ConnectionConfig::new("example.com", "deploy");
         assert_eq!(config.connect_timeout, Duration::from_secs(15));
         assert_eq!(config.channel_open_timeout, Duration::from_secs(15));
+        assert_eq!(config.channel_request_timeout, Duration::from_secs(15));
         assert_eq!(config.authentication_timeout, Duration::from_secs(30));
         assert!(config.validate_timeouts().is_ok());
 
@@ -225,6 +233,9 @@ mod tests {
         config.channel_open_timeout = Duration::ZERO;
         assert!(config.validate_timeouts().is_err());
         config.channel_open_timeout = DEFAULT_CHANNEL_OPEN_TIMEOUT;
+        config.channel_request_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
+        config.channel_request_timeout = DEFAULT_CHANNEL_REQUEST_TIMEOUT;
         config.authentication_timeout = Duration::ZERO;
         assert!(config.validate_timeouts().is_err());
     }
