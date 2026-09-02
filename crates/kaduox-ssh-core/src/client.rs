@@ -15,8 +15,8 @@ use tokio::sync::watch;
 use crate::auth::{Authentication, authenticate};
 use crate::config::{ConnectionConfig, JumpHost};
 use crate::forward::{
-    DynamicForward, ForwardHandle, LocalForward, RemoteForward, start_dynamic_forward,
-    start_local_forward, start_remote_forward,
+    DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle,
+    start_dynamic_forward, start_local_forward, start_remote_forward, start_remote_forward_managed,
 };
 use crate::handler::{ClientHandler, HandlerState};
 use crate::transfer::{
@@ -283,6 +283,13 @@ impl SshClient {
 
     pub async fn remote_forward(&self, spec: RemoteForward) -> Result<u16> {
         start_remote_forward(Arc::clone(&self.session), &self.state, spec).await
+    }
+
+    pub async fn remote_forward_managed(
+        &self,
+        spec: RemoteForward,
+    ) -> Result<RemoteForwardHandle> {
+        start_remote_forward_managed(Arc::clone(&self.session), &self.state, spec).await
     }
 
     pub async fn close(&self) -> Result<()> {
