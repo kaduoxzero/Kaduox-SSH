@@ -7,7 +7,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 ## Current capabilities
 
 - SSH connection, command execution, and interactive PTY shell
-- OpenSSH `~/.ssh/config` resolution
+- OpenSSH `~/.ssh/config` resolution for supported host-scoped directives, with fail-closed handling for unsupported structural directives
 - ProxyJump chains and ProxyCommand transports
 - password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
 - RSA authentication through an external SSH agent while local RSA private-key signing is disabled by security policy
@@ -50,6 +50,20 @@ This policy distinguishes private-key signing from public-key compatibility:
 - RSA-only server host keys are currently rejected during key-exchange negotiation. In Russh 0.63.1 the feature needed for RSA host-signature verification is coupled to the affected local RSA signer dependency, so Kaduox-SSH prefers a fail-closed compatibility tradeoff over advertising an algorithm it cannot safely verify. Servers should expose Ed25519 or ECDSA host keys.
 
 The real OpenSSH integration suite continuously verifies direct RSA-key rejection, agent-backed RSA authentication, and early negotiation failure against an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite remains green.
+
+## OpenSSH config compatibility
+
+Kaduox-SSH resolves normal host-scoped OpenSSH settings such as `HostName`, `User`, `Port`, `IdentityFile`, `UserKnownHostsFile`, `ProxyCommand`, and `ProxyJump` from `~/.ssh/config`.
+
+Configuration resolution is intentionally fail-closed when the current parser cannot preserve OpenSSH semantics safely:
+
+- A missing `~/.ssh/config` is normal and falls back to direct/default connection settings.
+- Read errors and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
+- `Match` blocks are currently rejected because `russh-config 0.58.0` does not evaluate them correctly and can otherwise allow subordinate settings to bleed into an unrelated `Host` block.
+- `Include` is currently rejected rather than pretending included files were resolved.
+- The upstream parser exposes `StrictHostKeyChecking` only as a boolean. Values other than `no` therefore lose their exact OpenSSH policy. Use Kaduox-SSH's explicit `--host-key strict`, `--host-key accept-new`, or `--host-key insecure` when exact behavior matters.
+
+The long-term target is lossless OpenSSH-compatible resolution, including `Include` and correctly evaluated `Match` semantics. Until that is implemented and protocol-tested, unsupported structural configuration fails explicitly instead of guessing.
 
 ## Architecture
 
@@ -157,6 +171,7 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 Some features are deliberately not enabled until they can be implemented completely and tested as security boundaries:
 
 - full OpenSSH host-certificate / `@cert-authority` semantics, including CA signature, principals, critical options, host-pattern matching, validity and revocation behavior
+- lossless OpenSSH `Include` / `Match` configuration semantics
 - encrypted persistent credential storage and its key-management model
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol
 - explicit symbolic-link transfer/sync policy
