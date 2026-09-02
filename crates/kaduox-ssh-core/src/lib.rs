@@ -3,8 +3,13 @@ mod client;
 mod config;
 mod forward;
 mod handler;
+mod privileged;
+mod transfer;
 
 pub use auth::Authentication;
 pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix};
 pub use config::{ConnectionConfig, HostKeyPolicy, JumpHost, resolve_jump_hosts};
 pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
+pub use transfer::{
+    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
+};

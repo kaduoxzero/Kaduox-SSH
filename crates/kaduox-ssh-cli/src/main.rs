@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -6,10 +7,12 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
     Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix, resolve_jump_hosts,
+    RemoteUser, SshClient, TerminalSize, TerminalSpec, TransferCancellation, TransferDirection,
+    TransferEvent, TransferOptions, quote_posix, resolve_jump_hosts,
 };
 use tokio::io::AsyncWriteExt;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -109,10 +112,64 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
-    /// Upload one file through SFTP.
-    Upload { local: PathBuf, remote: String },
-    /// Download one file through SFTP.
-    Download { remote: String, local: PathBuf },
+    /// Upload a file or directory through SFTP.
+    Upload {
+        local: PathBuf,
+        remote: String,
+        /// Recursively upload a directory tree.
+        #[arg(short = 'r', long)]
+        recursive: bool,
+        /// Resume from a stable .kaduox.part file when possible.
+        #[arg(long)]
+        resume: bool,
+        /// Write directly to the destination instead of using an atomic staging file.
+        #[arg(long)]
+        no_atomic: bool,
+        /// Number of files transferred concurrently during recursive transfers.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+        /// Maximum pipelined SFTP write requests per file.
+        #[arg(long, default_value_t = 16)]
+        write_concurrency: usize,
+        /// Requested SFTP packet size; server limits can reduce the effective size.
+        #[arg(long, default_value_t = 262_144)]
+        packet_size: u32,
+        /// SFTP request timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+        /// Install the uploaded file as this remote OS user through sudo.
+        #[arg(long)]
+        as_user: Option<String>,
+        /// Unix mode for --as-user uploads, interpreted as octal (for example 0644).
+        #[arg(long, requires = "as_user")]
+        mode: Option<String>,
+    },
+    /// Download a file or directory through SFTP.
+    Download {
+        remote: String,
+        local: PathBuf,
+        /// Recursively download a directory tree.
+        #[arg(short = 'r', long)]
+        recursive: bool,
+        /// Resume from a stable .kaduox.part file when possible.
+        #[arg(long)]
+        resume: bool,
+        /// Write directly to the destination instead of using an atomic staging file.
+        #[arg(long)]
+        no_atomic: bool,
+        /// Number of files transferred concurrently during recursive transfers.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+        /// Maximum pipelined SFTP write requests per file.
+        #[arg(long, default_value_t = 16)]
+        write_concurrency: usize,
+        /// Requested SFTP packet size; server limits can reduce the effective size.
+        #[arg(long, default_value_t = 262_144)]
+        packet_size: u32,
+        /// SFTP request timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+    },
     /// Keep only configured -L/-R/-D forwards alive until Ctrl-C.
     Tunnel,
 }
@@ -259,19 +316,189 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 }
             }
         }
-        Command::Upload { local, remote } => {
-            let bytes = ssh.upload(&local, &remote).await?;
-            eprintln!("uploaded {bytes} bytes");
+        Command::Upload {
+            local,
+            remote,
+            recursive,
+            resume,
+            no_atomic,
+            jobs,
+            write_concurrency,
+            packet_size,
+            request_timeout,
+            as_user,
+            mode,
+        } => {
+            if recursive && as_user.is_some() {
+                bail!("--as-user currently supports single-file uploads only");
+            }
+            let ui = TransferUi::new(
+                resume,
+                !no_atomic,
+                jobs,
+                write_concurrency,
+                packet_size,
+                request_timeout,
+            );
+            if recursive {
+                let summary = ssh
+                    .upload_recursive(&local, &remote, ui.options.clone())
+                    .await?;
+                eprintln!(
+                    "uploaded {} files, {} directories, {} bytes; skipped {} entries",
+                    summary.files, summary.directories, summary.bytes, summary.skipped
+                );
+            } else if let Some(user) = as_user {
+                let mode = parse_mode(mode.as_deref().unwrap_or("0644"))?;
+                let bytes = ssh
+                    .upload_privileged(&local, &remote, &user, mode, ui.options.clone())
+                    .await?;
+                eprintln!("uploaded {bytes} bytes and installed as {user}");
+            } else {
+                let bytes = ssh
+                    .upload_with_options(&local, &remote, ui.options.clone())
+                    .await?;
+                eprintln!("uploaded {bytes} new bytes");
+            }
         }
-        Command::Download { remote, local } => {
-            let bytes = ssh.download(&remote, &local).await?;
-            eprintln!("downloaded {bytes} bytes");
+        Command::Download {
+            remote,
+            local,
+            recursive,
+            resume,
+            no_atomic,
+            jobs,
+            write_concurrency,
+            packet_size,
+            request_timeout,
+        } => {
+            let ui = TransferUi::new(
+                resume,
+                !no_atomic,
+                jobs,
+                write_concurrency,
+                packet_size,
+                request_timeout,
+            );
+            if recursive {
+                let summary = ssh
+                    .download_recursive(&remote, &local, ui.options.clone())
+                    .await?;
+                eprintln!(
+                    "downloaded {} files, {} directories, {} bytes; skipped {} entries",
+                    summary.files, summary.directories, summary.bytes, summary.skipped
+                );
+            } else {
+                let bytes = ssh
+                    .download_with_options(&remote, &local, ui.options.clone())
+                    .await?;
+                eprintln!("downloaded {bytes} new bytes");
+            }
         }
         Command::Tunnel => {
             tokio::signal::ctrl_c().await?;
         }
     }
     Ok(())
+}
+
+struct TransferUi {
+    options: TransferOptions,
+    progress_task: JoinHandle<()>,
+    cancellation_task: JoinHandle<()>,
+}
+
+impl TransferUi {
+    fn new(
+        resume: bool,
+        atomic: bool,
+        jobs: usize,
+        write_concurrency: usize,
+        packet_size: u32,
+        request_timeout: u64,
+    ) -> Self {
+        let (progress_tx, progress_rx) = mpsc::unbounded_channel();
+        let cancellation = TransferCancellation::default();
+        let cancellation_for_signal = cancellation.clone();
+        let progress_task = tokio::spawn(report_transfer_progress(progress_rx));
+        let cancellation_task = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancellation_for_signal.cancel();
+            }
+        });
+        let options = TransferOptions {
+            resume,
+            atomic,
+            file_concurrency: jobs,
+            sftp_write_concurrency: write_concurrency,
+            sftp_packet_size: packet_size,
+            request_timeout_secs: request_timeout,
+            cancellation,
+            progress: Some(progress_tx),
+        };
+        Self {
+            options,
+            progress_task,
+            cancellation_task,
+        }
+    }
+}
+
+impl Drop for TransferUi {
+    fn drop(&mut self) {
+        self.progress_task.abort();
+        self.cancellation_task.abort();
+    }
+}
+
+async fn report_transfer_progress(mut receiver: mpsc::UnboundedReceiver<TransferEvent>) {
+    let mut last_bucket = HashMap::<String, u64>::new();
+    while let Some(event) = receiver.recv().await {
+        if event.completed {
+            eprintln!(
+                "{} {}: complete ({} bytes)",
+                transfer_direction(event.direction),
+                event.path,
+                event.bytes_transferred
+            );
+            last_bucket.remove(&event.path);
+            continue;
+        }
+
+        let Some(total) = event.total_bytes.filter(|total| *total != 0) else {
+            continue;
+        };
+        let percent = event.bytes_transferred.saturating_mul(100) / total;
+        let bucket = percent / 5;
+        let previous = last_bucket.insert(event.path.clone(), bucket);
+        if previous != Some(bucket) {
+            eprintln!(
+                "{} {}: {}% ({}/{})",
+                transfer_direction(event.direction),
+                event.path,
+                percent,
+                event.bytes_transferred,
+                total
+            );
+        }
+    }
+}
+
+fn transfer_direction(direction: TransferDirection) -> &'static str {
+    match direction {
+        TransferDirection::Upload => "upload",
+        TransferDirection::Download => "download",
+    }
+}
+
+fn parse_mode(value: &str) -> Result<u32> {
+    let value = value.strip_prefix("0o").unwrap_or(value);
+    let mode = u32::from_str_radix(value, 8)
+        .with_context(|| format!("invalid octal Unix mode: {value}"))?;
+    if mode > 0o7777 {
+        bail!("Unix mode must be <= 07777");
+    }
+    Ok(mode)
 }
 
 async fn track_terminal_size(sender: watch::Sender<TerminalSize>) {
@@ -425,5 +652,12 @@ mod tests {
             split_fields("[::1]:8080:db.internal:5432").unwrap(),
             vec!["::1", "8080", "db.internal", "5432"]
         );
+    }
+
+    #[test]
+    fn parses_unix_modes_as_octal() {
+        assert_eq!(parse_mode("0644").unwrap(), 0o644);
+        assert_eq!(parse_mode("0o755").unwrap(), 0o755);
+        assert!(parse_mode("0999").is_err());
     }
 }
