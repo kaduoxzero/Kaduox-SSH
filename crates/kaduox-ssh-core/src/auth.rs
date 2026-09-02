@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,6 +11,8 @@ use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
 
 use crate::handler::ClientHandler;
+
+const DEFAULT_IDENTITY_NAMES: &[&str] = &["id_ed25519", "id_ecdsa"];
 
 #[derive(Debug, Clone)]
 pub enum Authentication {
@@ -53,8 +56,9 @@ pub(crate) async fn authenticate(
             {
                 return Ok(true);
             }
-            for path in identity_files {
-                if authenticate_private_key(session, username, path, passphrase.as_deref())
+
+            for path in identity_candidates(identity_files) {
+                if authenticate_private_key(session, username, &path, passphrase.as_deref())
                     .await
                     .unwrap_or(false)
                 {
@@ -64,6 +68,39 @@ pub(crate) async fn authenticate(
             Ok(false)
         }
     }
+}
+
+fn identity_candidates(configured: &[PathBuf]) -> Vec<PathBuf> {
+    if !configured.is_empty() {
+        return configured.to_vec();
+    }
+
+    user_home_dir()
+        .map(|home| default_identity_candidates(&home))
+        .unwrap_or_default()
+}
+
+fn default_identity_candidates(home: &Path) -> Vec<PathBuf> {
+    let ssh_dir = home.join(".ssh");
+    DEFAULT_IDENTITY_NAMES
+        .iter()
+        .map(|name| ssh_dir.join(name))
+        .collect()
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .or_else(windows_home_from_drive_path)
+        .map(PathBuf::from)
+}
+
+fn windows_home_from_drive_path() -> Option<OsString> {
+    let drive = std::env::var_os("HOMEDRIVE")?;
+    let path = std::env::var_os("HOMEPATH")?;
+    let mut home = drive;
+    home.push(path);
+    Some(home)
 }
 
 async fn authenticate_private_key(
@@ -168,4 +205,28 @@ pub(crate) async fn connect_system_agent() -> Result<DynamicAgent> {
 #[cfg(not(any(unix, windows)))]
 pub(crate) async fn connect_system_agent() -> Result<DynamicAgent> {
     anyhow::bail!("SSH agent is not supported on this platform")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_identities_are_not_augmented() {
+        let configured = vec![PathBuf::from("custom-key")];
+        assert_eq!(identity_candidates(&configured), configured);
+    }
+
+    #[test]
+    fn default_identity_candidates_only_include_supported_local_algorithms() {
+        let home = Path::new("home");
+        let candidates = default_identity_candidates(home);
+        let names = candidates
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["id_ed25519", "id_ecdsa"]);
+        assert!(!names.iter().any(|name| name.contains("rsa")));
+    }
 }
