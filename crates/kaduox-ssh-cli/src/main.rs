@@ -216,13 +216,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let mut config = ConnectionConfig::from_openssh(&cli.host, cli.user.as_deref(), cli.port)
-        .unwrap_or_else(|_| {
-            ConnectionConfig::new(
-                cli.host.clone(),
-                cli.user.clone().unwrap_or_else(default_username),
-            )
-        });
+    let mut config = ConnectionConfig::from_openssh(&cli.host, cli.user.as_deref(), cli.port)?;
 
     if let Some(port) = cli.port {
         config.port = port;
@@ -718,12 +712,6 @@ fn split_fields(value: &str) -> Result<Vec<String>> {
     }
     fields.push(current);
     Ok(fields)
-}
-
-fn default_username() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "root".to_owned())
 }
 
 struct RawModeGuard;
