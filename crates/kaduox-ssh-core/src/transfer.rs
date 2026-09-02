@@ -489,21 +489,17 @@ async fn emit_progress(
     let Some(sender) = &options.progress else {
         return;
     };
-    let event = TransferEvent {
+    // Progress is an observational side channel and must never apply backpressure
+    // to SFTP. If a consumer is slow, any sample — including completion — may be
+    // dropped. Transfer correctness and final summaries come from the operation's
+    // return value, not from progress delivery.
+    let _ = sender.try_send(TransferEvent {
         direction,
         path: path.to_owned(),
         bytes_transferred,
         total_bytes,
         completed,
-    };
-    if completed {
-        let _ = sender.send(event).await;
-    } else {
-        // Progress samples are advisory. Dropping a sample under UI pressure keeps
-        // transfer throughput and memory usage bounded; the final completion event
-        // uses the async path above and is not intentionally sampled away.
-        let _ = sender.try_send(event);
-    }
+    });
 }
 
 fn check_cancelled(options: &TransferOptions) -> Result<()> {
@@ -695,7 +691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_progress_drops_intermediate_samples_but_delivers_completion() {
+    async fn bounded_progress_never_blocks_when_queue_is_full() {
         let (sender, mut receiver) = mpsc::channel(1);
         let mut options = TransferOptions::default();
         options.progress = Some(sender);
@@ -713,14 +709,16 @@ mod tests {
             &options,
             TransferDirection::Upload,
             "file",
-            2,
+            3,
             Some(3),
-            false,
+            true,
         )
         .await;
 
         let first = receiver.recv().await.unwrap();
         assert_eq!(first.bytes_transferred, 1);
+        assert!(!first.completed);
+        assert!(receiver.try_recv().is_err());
 
         emit_progress(
             &options,
