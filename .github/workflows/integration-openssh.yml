@@ -22,6 +22,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openssh-server netcat-openbsd curl
       - name: Build Kaduox-SSH
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
       - name: Run real OpenSSH integration suite
         run: bash scripts/ci/openssh-integration.sh
