@@ -15,6 +15,10 @@ const DEFAULT_FILE_CONCURRENCY: usize = 4;
 const DEFAULT_SFTP_WRITE_CONCURRENCY: usize = 16;
 const DEFAULT_SFTP_PACKET_SIZE: u32 = 256 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+const MAX_FILE_CONCURRENCY: usize = 128;
+const MAX_SFTP_WRITE_CONCURRENCY: usize = 128;
+const MAX_SFTP_PACKET_SIZE: u32 = 4 * 1024 * 1024;
+const MAX_ESTIMATED_IN_FLIGHT_WRITE_BYTES: u128 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferDirection {
@@ -78,14 +82,32 @@ impl TransferOptions {
         if self.file_concurrency == 0 {
             bail!("file concurrency must be greater than zero");
         }
+        if self.file_concurrency > MAX_FILE_CONCURRENCY {
+            bail!("file concurrency must be <= {MAX_FILE_CONCURRENCY}");
+        }
         if self.sftp_write_concurrency == 0 {
             bail!("SFTP write concurrency must be greater than zero");
+        }
+        if self.sftp_write_concurrency > MAX_SFTP_WRITE_CONCURRENCY {
+            bail!("SFTP write concurrency must be <= {MAX_SFTP_WRITE_CONCURRENCY}");
         }
         if self.sftp_packet_size < 4096 {
             bail!("SFTP packet size must be at least 4096 bytes");
         }
+        if self.sftp_packet_size > MAX_SFTP_PACKET_SIZE {
+            bail!("SFTP packet size must be <= {MAX_SFTP_PACKET_SIZE} bytes");
+        }
         if self.request_timeout_secs == 0 {
             bail!("SFTP request timeout must be greater than zero");
+        }
+
+        let estimated_in_flight = self.file_concurrency as u128
+            * self.sftp_write_concurrency as u128
+            * u128::from(self.sftp_packet_size);
+        if estimated_in_flight > MAX_ESTIMATED_IN_FLIGHT_WRITE_BYTES {
+            bail!(
+                "transfer concurrency/window settings estimate {estimated_in_flight} in-flight write bytes, exceeding the {MAX_ESTIMATED_IN_FLIGHT_WRITE_BYTES}-byte safety budget"
+            );
         }
         Ok(())
     }
@@ -674,9 +696,27 @@ mod tests {
     }
 
     #[test]
-    fn validates_concurrency() {
+    fn validates_concurrency_and_resource_budget() {
         let mut options = TransferOptions::default();
+        assert!(options.validated().is_ok());
+
         options.file_concurrency = 0;
+        assert!(options.validated().is_err());
+        options.file_concurrency = MAX_FILE_CONCURRENCY + 1;
+        assert!(options.validated().is_err());
+
+        options = TransferOptions::default();
+        options.sftp_write_concurrency = MAX_SFTP_WRITE_CONCURRENCY + 1;
+        assert!(options.validated().is_err());
+
+        options = TransferOptions::default();
+        options.sftp_packet_size = MAX_SFTP_PACKET_SIZE + 1;
+        assert!(options.validated().is_err());
+
+        options = TransferOptions::default();
+        options.file_concurrency = MAX_FILE_CONCURRENCY;
+        options.sftp_write_concurrency = MAX_SFTP_WRITE_CONCURRENCY;
+        options.sftp_packet_size = MAX_SFTP_PACKET_SIZE;
         assert!(options.validated().is_err());
     }
 }
