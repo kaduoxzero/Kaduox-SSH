@@ -389,7 +389,7 @@ async fn connect_via_jumps(
             client::connect_stream(
                 jump_ssh_config(),
                 channel.into_stream(),
-                jump_handler(jump, config),
+                jump_handler(jump),
             )
             .await
             .with_context(|| format!("SSH handshake failed for jump host {}", jump.alias))?
@@ -397,7 +397,7 @@ async fn connect_via_jumps(
             client::connect(
                 jump_ssh_config(),
                 (jump.host.as_str(), jump.port),
-                jump_handler(jump, config),
+                jump_handler(jump),
             )
             .await
             .with_context(|| format!("failed to connect to jump host {}", jump.alias))?
@@ -430,12 +430,12 @@ async fn connect_via_jumps(
     Ok((final_session, keepalive))
 }
 
-fn jump_handler(jump: &JumpHost, primary: &ConnectionConfig) -> ClientHandler {
+fn jump_handler(jump: &JumpHost) -> ClientHandler {
     ClientHandler {
         host: jump.host.clone(),
         port: jump.port,
-        host_key_policy: primary.host_key_policy,
-        known_hosts_file: primary.known_hosts_file.clone(),
+        host_key_policy: jump.host_key_policy,
+        known_hosts_file: jump.known_hosts_file.clone(),
         state: HandlerState::default(),
     }
 }
