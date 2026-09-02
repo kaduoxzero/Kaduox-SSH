@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use russh::keys::load_secret_key;
 
 use crate::handler::ClientHandler;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Authentication {
     Password(String),
     KeyboardInteractive(String),
@@ -24,6 +25,35 @@ pub enum Authentication {
         identity_files: Vec<PathBuf>,
         passphrase: Option<String>,
     },
+}
+
+impl fmt::Debug for Authentication {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Password(_) => formatter
+                .debug_tuple("Password")
+                .field(&"<redacted>")
+                .finish(),
+            Self::KeyboardInteractive(_) => formatter
+                .debug_tuple("KeyboardInteractive")
+                .field(&"<redacted>")
+                .finish(),
+            Self::PrivateKey { path, passphrase } => formatter
+                .debug_struct("PrivateKey")
+                .field("path", path)
+                .field("has_passphrase", &passphrase.is_some())
+                .finish(),
+            Self::Agent => formatter.write_str("Agent"),
+            Self::Auto {
+                identity_files,
+                passphrase,
+            } => formatter
+                .debug_struct("Auto")
+                .field("identity_files", identity_files)
+                .field("has_passphrase", &passphrase.is_some())
+                .finish(),
+        }
+    }
 }
 
 pub(crate) async fn authenticate(
@@ -168,4 +198,48 @@ pub(crate) async fn connect_system_agent() -> Result<DynamicAgent> {
 #[cfg(not(any(unix, windows)))]
 pub(crate) async fn connect_system_agent() -> Result<DynamicAgent> {
     anyhow::bail!("SSH agent is not supported on this platform")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_password_and_keyboard_interactive_secrets() {
+        let password = format!("{:?}", Authentication::Password("super-secret".into()));
+        assert!(!password.contains("super-secret"));
+        assert!(password.contains("redacted"));
+
+        let interactive = format!(
+            "{:?}",
+            Authentication::KeyboardInteractive("challenge-secret".into())
+        );
+        assert!(!interactive.contains("challenge-secret"));
+        assert!(interactive.contains("redacted"));
+    }
+
+    #[test]
+    fn debug_reports_passphrase_presence_without_exposing_value() {
+        let private_key = format!(
+            "{:?}",
+            Authentication::PrivateKey {
+                path: PathBuf::from("id_ed25519"),
+                passphrase: Some("key-secret".into()),
+            }
+        );
+        assert!(!private_key.contains("key-secret"));
+        assert!(private_key.contains("has_passphrase: true"));
+        assert!(private_key.contains("id_ed25519"));
+
+        let auto = format!(
+            "{:?}",
+            Authentication::Auto {
+                identity_files: vec![PathBuf::from("id_ecdsa")],
+                passphrase: Some("auto-secret".into()),
+            }
+        );
+        assert!(!auto.contains("auto-secret"));
+        assert!(auto.contains("has_passphrase: true"));
+        assert!(auto.contains("id_ecdsa"));
+    }
 }
