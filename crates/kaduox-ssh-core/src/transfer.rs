@@ -234,13 +234,13 @@ pub(crate) async fn download_file(
     if !remote_metadata.is_regular() {
         bail!("remote path {remote_path} is not a regular file");
     }
+
+    if let Some(parent) = local_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        ensure_local_directory_no_symlinks(parent, "download parent directory").await?;
+    }
     reject_existing_local_symlink(local_path, "download destination").await?;
 
     let total = remote_metadata.len();
-    if let Some(parent) = local_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
     let work_path = transfer_local_work_path(local_path, options.atomic);
     reject_existing_local_symlink(&work_path, "download staging path").await?;
     let mut offset = if options.resume {
@@ -431,8 +431,7 @@ pub(crate) async fn download_tree(
         bail!("remote path {remote_root} is not a regular file or directory");
     }
 
-    reject_existing_local_symlink(local_root, "recursive download root").await?;
-    tokio::fs::create_dir_all(local_root).await?;
+    ensure_local_directory_no_symlinks(local_root, "recursive download root").await?;
     let mut summary = TransferSummary {
         directories: 1,
         ..Default::default()
@@ -449,8 +448,11 @@ pub(crate) async fn download_tree(
             let remote_path = join_remote(&remote_dir, &name);
             let local_path = local_dir.join(&name);
             if file_type.is_dir() {
-                reject_existing_local_symlink(&local_path, "recursive download directory").await?;
-                tokio::fs::create_dir_all(&local_path).await?;
+                ensure_local_directory_no_symlinks(
+                    &local_path,
+                    "recursive download directory",
+                )
+                .await?;
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
             } else if file_type.is_file() {
@@ -491,6 +493,61 @@ async fn reject_existing_local_symlink(path: &Path, role: &str) -> Result<()> {
         Err(error) => Err(error)
             .with_context(|| format!("failed to inspect {role} {}", path.display())),
     }
+}
+
+async fn ensure_local_directory_no_symlinks(path: &Path, role: &str) -> Result<()> {
+    let mut ancestors = path
+        .ancestors()
+        .filter(|candidate| !candidate.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    ancestors.reverse();
+
+    for candidate in ancestors {
+        match tokio::fs::symlink_metadata(candidate).await {
+            Ok(metadata) => {
+                validate_local_directory(candidate, &metadata, role)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match tokio::fs::create_dir(candidate).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = tokio::fs::symlink_metadata(candidate)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "failed to inspect concurrently created {role} {}",
+                                    candidate.display()
+                                )
+                            })?;
+                        validate_local_directory(candidate, &metadata, role)?;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to create {role} {}", candidate.display())
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {role} {}", candidate.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_directory(path: &Path, metadata: &std::fs::Metadata, role: &str) -> Result<()> {
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow symbolic-link component in {role}: {}",
+            path.display()
+        );
+    }
+    if !metadata.is_dir() {
+        bail!("{role} component is not a directory: {}", path.display());
+    }
+    Ok(())
 }
 
 fn validate_remote_entry_name(name: &str) -> Result<()> {
@@ -665,17 +722,37 @@ async fn finish_remote_atomic(sftp: &SftpSession, work_path: &str, final_path: &
 }
 
 async fn finish_local_atomic(work_path: &Path, final_path: &Path) -> Result<()> {
+    if let Some(parent) = final_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        ensure_local_directory_no_symlinks(parent, "atomic download destination parent").await?;
+    }
+    reject_existing_local_symlink(final_path, "atomic download destination").await?;
+
     match tokio::fs::rename(work_path, final_path).await {
         Ok(()) => Ok(()),
-        Err(first_error) => {
-            if tokio::fs::try_exists(final_path).await? {
+        Err(first_error) => match tokio::fs::symlink_metadata(final_path).await {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                bail!(
+                    "refusing to replace symbolic link at atomic download destination: {}",
+                    final_path.display()
+                )
+            }
+            Ok(metadata) if metadata.is_file() => {
                 tokio::fs::remove_file(final_path).await?;
                 tokio::fs::rename(work_path, final_path).await?;
                 Ok(())
-            } else {
-                Err(first_error.into())
             }
-        }
+            Ok(_) => bail!(
+                "atomic download destination is not a regular file: {}",
+                final_path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(first_error.into()),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to inspect atomic download destination {}",
+                    final_path.display()
+                )
+            }),
+        },
     }
 }
 
@@ -763,5 +840,46 @@ mod tests {
             assert!(validate_remote_entry_name(unsafe_name).is_err());
         }
         assert!(validate_remote_entry_name("normal-file.txt").is_ok());
+    }
+
+    #[tokio::test]
+    async fn creates_missing_local_directory_chain_without_symlinks() {
+        let root = test_temp_path("local-chain");
+        let nested = root.join("one").join("two");
+        ensure_local_directory_no_symlinks(&nested, "test directory")
+            .await
+            .unwrap();
+        assert!(tokio::fs::metadata(&nested).await.unwrap().is_dir());
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_in_local_directory_chain() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_temp_path("local-symlink");
+        let real = root.join("real");
+        tokio::fs::create_dir_all(&real).await.unwrap();
+        let link = root.join("link");
+        symlink(&real, &link).unwrap();
+
+        let result = ensure_local_directory_no_symlinks(
+            &link.join("nested"),
+            "test directory",
+        )
+        .await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_file(link).await;
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    fn test_temp_path(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("kaduox-{label}-{stamp}"))
     }
 }
