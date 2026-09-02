@@ -2,13 +2,31 @@ name: OpenSSH Integration
 
 on:
   push:
+    branches:
+      - develop
+      - main
+      - "release/**"
   pull_request:
+    branches:
+      - develop
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   openssh:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -22,6 +40,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y openssh-server netcat-openbsd curl
       - name: Build Kaduox-SSH
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
       - name: Run real OpenSSH integration suite
         run: bash scripts/ci/openssh-integration.sh
