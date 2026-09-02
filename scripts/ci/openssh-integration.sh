@@ -27,11 +27,18 @@ cleanup() {
     ssh-agent -k >/dev/null 2>&1 || true
   fi
   sudo rm -f /etc/sudoers.d/kaduox-ci /etc/kaduox-ci-integration.conf
+  sudo userdel -r "$TEST_USER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 fail() {
   echo "integration failure: $*" >&2
+  for log in "$WORK"/sshd-*.log; do
+    if [[ -f "$log" ]]; then
+      echo "--- $log ---" >&2
+      sudo tail -n 120 "$log" >&2 || true
+    fi
+  done
   exit 1
 }
 
@@ -76,6 +83,7 @@ PermitRootLogin no
 UsePAM no
 AllowUsers $TEST_USER
 AllowTcpForwarding yes
+AllowAgentForwarding yes
 GatewayPorts no
 X11Forwarding no
 PermitTunnel no
@@ -113,6 +121,10 @@ if id "$TEST_USER" >/dev/null 2>&1; then
   sudo userdel -r "$TEST_USER" >/dev/null 2>&1 || true
 fi
 sudo useradd -m -s /bin/bash "$TEST_USER"
+# Ubuntu creates passwordless test accounts in a locked state by default. OpenSSH
+# rejects locked accounts before public-key authentication, so unlock the fixture
+# account while keeping PasswordAuthentication disabled in both test daemons.
+sudo passwd -d "$TEST_USER" >/dev/null
 ssh-keygen -q -t ed25519 -N '' -f "$KEY"
 sudo install -d -m 0700 -o "$TEST_USER" -g "$TEST_USER" "$SSH_DIR"
 sudo install -m 0600 -o "$TEST_USER" -g "$TEST_USER" "$KEY.pub" "$SSH_DIR/authorized_keys"
@@ -131,6 +143,15 @@ chmod 600 "$HOME/.ssh/config"
 
 start_sshd jump "$JUMP_PORT" >/dev/null
 start_sshd target "$TARGET_PORT" >/dev/null
+
+echo '[integration] fixture OpenSSH client baseline'
+fixture_output="$(ssh -F /dev/null -i "$KEY" -p "$TARGET_PORT" \
+  -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  "$TEST_USER@127.0.0.1" printf fixture-ok)" || fail 'native OpenSSH client could not authenticate to target fixture'
+[[ "$fixture_output" == 'fixture-ok' ]] || fail "unexpected fixture output: $fixture_output"
 
 echo '[integration] direct exec'
 exec_output="$(run_kssh exec -- printf integration-ok)"
