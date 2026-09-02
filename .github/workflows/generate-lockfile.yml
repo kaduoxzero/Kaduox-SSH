@@ -1,0 +1,23 @@
+name: Generate Lockfile
+
+on:
+  push:
+    branches:
+      - feat/v0.3-engineering
+
+permissions:
+  contents: read
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate Cargo.lock
+        run: cargo generate-lockfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
