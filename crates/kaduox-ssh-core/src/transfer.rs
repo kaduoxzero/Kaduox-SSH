@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use russh_sftp::client::{SftpSession, error::Error as SftpError};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
@@ -124,8 +124,20 @@ pub(crate) async fn upload_file(
     ensure_remote_parent(sftp, remote_path).await?;
 
     let work_path = transfer_remote_work_path(remote_path, options.atomic);
-    let mut offset = if options.resume && sftp.try_exists(work_path.clone()).await? {
-        sftp.metadata(work_path.clone()).await?.len().min(total)
+    let work_metadata = remote_symlink_metadata_if_exists(sftp, &work_path).await?;
+    if let Some(metadata) = work_metadata.as_ref() {
+        if metadata.is_symlink() {
+            bail!("refusing to write through remote symbolic link: {work_path}");
+        }
+        if !metadata.is_regular() {
+            bail!("remote upload staging path is not a regular file: {work_path}");
+        }
+    }
+    let mut offset = if options.resume {
+        work_metadata
+            .as_ref()
+            .map(|metadata| metadata.len().min(total))
+            .unwrap_or(0)
     } else {
         0
     };
@@ -497,6 +509,17 @@ fn validate_remote_entry_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn remote_symlink_metadata_if_exists(
+    sftp: &SftpSession,
+    path: &str,
+) -> Result<Option<FileAttributes>> {
+    match sftp.symlink_metadata(path.to_owned()).await {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn copy_with_progress<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -570,8 +593,11 @@ pub(crate) async fn ensure_remote_dir(sftp: &SftpSession, path: &str) -> Result<
             bail!("remote directory traversal with '..' is not supported: {path}");
         }
         current = join_remote(&current, segment);
-        if sftp.try_exists(current.clone()).await? {
-            if !sftp.metadata(current.clone()).await?.is_dir() {
+        if let Some(metadata) = remote_symlink_metadata_if_exists(sftp, &current).await? {
+            if metadata.is_symlink() {
+                bail!("refusing to follow remote symbolic-link directory component: {current}");
+            }
+            if !metadata.is_dir() {
                 bail!("remote path component is not a directory: {current}");
             }
         } else {
