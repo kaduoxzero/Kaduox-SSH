@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use russh_sftp::client::SftpSession;
@@ -233,6 +233,7 @@ pub(crate) async fn download_file(
         if options.atomic {
             finish_local_atomic(&work_path, local_path).await?;
         }
+        preserve_local_mtime(local_path, remote_metadata.mtime).await?;
         emit_progress(
             options,
             TransferDirection::Download,
@@ -626,12 +627,19 @@ async fn preserve_remote_mtime(
 }
 
 async fn preserve_local_mtime(path: &Path, mtime: Option<u32>) -> Result<()> {
-    let Some(_mtime) = mtime else {
+    let Some(mtime) = mtime else {
         return Ok(());
     };
-    // std/tokio do not currently expose a portable stable API for setting mtime.
-    // Keep the remote timestamp in transfer metadata; platform adapters can apply it later.
-    let _ = path;
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("failed to open {} to preserve mtime", path.display()))?;
+        let modified = UNIX_EPOCH + Duration::from_secs(u64::from(mtime));
+        file.set_modified(modified)
+            .with_context(|| format!("failed to preserve mtime for {}", path.display()))?;
+        Ok(())
+    })
+    .await??;
     Ok(())
 }
 
@@ -677,5 +685,31 @@ mod tests {
         let mut options = TransferOptions::default();
         options.file_concurrency = 0;
         assert!(options.validated().is_err());
+    }
+
+    #[tokio::test]
+    async fn preserves_downloaded_file_mtime() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "kaduox-mtime-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"mtime").unwrap();
+        let expected = 1_700_000_000_u32;
+
+        preserve_local_mtime(&path, Some(expected)).await.unwrap();
+        let actual = std::fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(actual, u64::from(expected));
     }
 }
