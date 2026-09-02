@@ -1,0 +1,93 @@
+name: Patch hardened RSA negotiation
+
+on:
+  push:
+    branches:
+      - feat/v0.3-engineering
+    paths:
+      - .github/workflows/patch-rsa-negotiation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/v0.3-engineering
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Harden host-key negotiation
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('crates/kaduox-ssh-core/src/client.rs')
+          text = path.read_text()
+          text = text.replace('use std::path::Path;\n', 'use std::borrow::Cow;\nuse std::path::Path;\n', 1)
+          text = text.replace('use russh::{ChannelMsg, Disconnect};', 'use russh::{ChannelMsg, Disconnect, Preferred};', 1)
+          old = '''fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
+              Arc::new(client::Config {
+                  inactivity_timeout: config.inactivity_timeout,
+                  keepalive_interval: config.keepalive_interval,
+                  keepalive_max: 3,
+                  nodelay: true,
+                  ..Default::default()
+              })
+          }
+          '''
+          new = '''fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
+              Arc::new(client::Config {
+                  inactivity_timeout: config.inactivity_timeout,
+                  keepalive_interval: config.keepalive_interval,
+                  keepalive_max: 3,
+                  nodelay: true,
+                  preferred: hardened_preferred(),
+                  ..Default::default()
+              })
+          }
+
+          fn jump_ssh_config() -> Arc<client::Config> {
+              Arc::new(client::Config {
+                  nodelay: true,
+                  preferred: hardened_preferred(),
+                  ..Default::default()
+              })
+          }
+
+          fn hardened_preferred() -> Preferred {
+              let mut preferred = Preferred::default();
+              preferred.key = Cow::Owned(
+                  preferred
+                      .key
+                      .iter()
+                      .filter(|algorithm| !algorithm.as_str().contains("rsa"))
+                      .cloned()
+                      .collect(),
+              );
+              preferred
+          }
+          '''
+          if old not in text:
+              raise SystemExit('ssh_config block not found')
+          text = text.replace(old, new, 1)
+          count = text.count('Arc::new(client::Config::default())')
+          if count != 2:
+              raise SystemExit(f'expected 2 jump default configs, found {count}')
+          text = text.replace('Arc::new(client::Config::default())', 'jump_ssh_config()')
+          path.write_text(text)
+      - name: Format and validate
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/kaduox-ssh-core/src/client.rs
+          git commit -m 'security: reject unsupported RSA host-key negotiation'
+          git push origin HEAD:feat/v0.3-engineering
