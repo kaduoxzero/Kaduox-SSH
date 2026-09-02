@@ -1,16 +1,21 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
-use russh::Channel;
 use russh::client::{self, ChannelOpenHandle, Msg};
 use russh::keys::PublicKeyOrCertificate;
+use russh::{Channel, ChannelOpenFailure};
 use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 
 use crate::config::HostKeyPolicy;
+
+const REMOTE_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const AGENT_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardTarget {
@@ -45,10 +50,16 @@ impl HandlerState {
             .or_else(|| {
                 forwards
                     .iter()
-                    .find(|((_, registered_port), _)| *registered_port == port)
+                    .find(|((registered_address, registered_port), _)| {
+                        *registered_port == port && is_wildcard_bind(registered_address)
+                    })
                     .map(|(_, target)| target.clone())
             })
     }
+}
+
+fn is_wildcard_bind(address: &str) -> bool {
+    address.is_empty() || address == "*"
 }
 
 pub(crate) struct ClientHandler {
@@ -117,15 +128,28 @@ impl client::Handler for ClientHandler {
             .remote_forward(connected_address, connected_port)
             .await
         else {
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
             return Ok(());
         };
 
-        let Ok(mut local) = TcpStream::connect((target.host.as_str(), target.port)).await else {
-            return Ok(());
-        };
-
-        reply.accept().await;
+        // ChannelOpenHandle is deliberately movable out of the handler callback.
+        // Do not hold the Russh client event loop while a local target is slow or
+        // unreachable: resolve the local connection and confirm/reject the SSH
+        // channel asynchronously instead.
         tokio::spawn(async move {
+            let local = timeout(
+                REMOTE_FORWARD_CONNECT_TIMEOUT,
+                TcpStream::connect((target.host.as_str(), target.port)),
+            )
+            .await;
+            let Ok(Ok(mut local)) = local else {
+                reply.reject(ChannelOpenFailure::ConnectFailed).await;
+                return;
+            };
+
+            reply.accept().await;
             let mut remote = channel.into_stream();
             let _ = copy_bidirectional(&mut local, &mut remote).await;
         });
@@ -139,19 +163,29 @@ impl client::Handler for ClientHandler {
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
         if !self.state.agent_forwarding {
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
             return Ok(());
         }
 
         #[cfg(unix)]
         {
             let Some(socket) = std::env::var_os("SSH_AUTH_SOCK") else {
+                reply.reject(ChannelOpenFailure::ConnectFailed).await;
                 return Ok(());
             };
-            let Ok(mut agent) = tokio::net::UnixStream::connect(socket).await else {
-                return Ok(());
-            };
-            reply.accept().await;
             tokio::spawn(async move {
+                let agent = timeout(
+                    AGENT_FORWARD_CONNECT_TIMEOUT,
+                    tokio::net::UnixStream::connect(socket),
+                )
+                .await;
+                let Ok(Ok(mut agent)) = agent else {
+                    reply.reject(ChannelOpenFailure::ConnectFailed).await;
+                    return;
+                };
+                reply.accept().await;
                 let mut remote = channel.into_stream();
                 let _ = copy_bidirectional(&mut agent, &mut remote).await;
             });
@@ -162,6 +196,7 @@ impl client::Handler for ClientHandler {
         {
             use tokio::net::windows::named_pipe::ClientOptions;
             let Ok(mut agent) = ClientOptions::new().open(r"\\.\pipe\openssh-ssh-agent") else {
+                reply.reject(ChannelOpenFailure::ConnectFailed).await;
                 return Ok(());
             };
             reply.accept().await;
@@ -174,5 +209,47 @@ impl client::Handler for ClientHandler {
 
         #[allow(unreachable_code)]
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn explicit_remote_forward_does_not_fall_back_by_port() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward(
+                "127.0.0.1".to_owned(),
+                2200,
+                ForwardTarget {
+                    host: "db.internal".to_owned(),
+                    port: 5432,
+                },
+            )
+            .await;
+
+        assert!(state.remote_forward("127.0.0.1", 2200).await.is_some());
+        assert!(state.remote_forward("10.0.0.5", 2200).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn wildcard_remote_forward_accepts_server_connected_address() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward(
+                "*".to_owned(),
+                2200,
+                ForwardTarget {
+                    host: "db.internal".to_owned(),
+                    port: 5432,
+                },
+            )
+            .await;
+
+        let target = state.remote_forward("192.0.2.10", 2200).await.unwrap();
+        assert_eq!(target.host, "db.internal");
+        assert_eq!(target.port, 5432);
     }
 }
