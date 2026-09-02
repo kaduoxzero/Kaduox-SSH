@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
+
 mod auth;
 mod client;
 mod config;
