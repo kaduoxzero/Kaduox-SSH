@@ -3,6 +3,7 @@ mod client;
 mod config;
 mod forward;
 mod handler;
+mod privileged;
 mod transfer;
 
 pub use auth::Authentication;
