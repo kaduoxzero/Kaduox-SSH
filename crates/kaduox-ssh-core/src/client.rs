@@ -6,7 +6,7 @@ use std::task::{Context as TaskContext, Poll};
 use anyhow::{Context, Result, bail};
 use russh::client;
 use russh::{ChannelMsg, Disconnect};
-use russh_sftp::client::SftpSession;
+use russh_sftp::client::{Config as SftpConfig, SftpSession};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::watch;
@@ -18,8 +18,9 @@ use crate::forward::{
     start_local_forward, start_remote_forward,
 };
 use crate::handler::{ClientHandler, HandlerState};
-
-const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
+use crate::transfer::{
+    TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
+};
 
 #[derive(Debug, Clone, Default)]
 pub enum RemoteUser {
@@ -208,35 +209,67 @@ impl SshClient {
     }
 
     pub async fn upload(&self, local_path: &Path, remote_path: &str) -> Result<u64> {
-        let sftp = self.open_sftp().await?;
-        let mut local = tokio::fs::File::open(local_path)
+        self.upload_with_options(local_path, remote_path, TransferOptions::default())
             .await
-            .with_context(|| format!("failed to open {}", local_path.display()))?;
-        let mut remote = sftp
-            .create(remote_path)
-            .await
-            .with_context(|| format!("failed to create remote file {remote_path}"))?;
-        let copied = stream_copy(&mut local, &mut remote).await?;
-        remote.flush().await?;
-        remote.shutdown().await?;
-        sftp.close().await?;
-        Ok(copied)
+    }
+
+    pub async fn upload_with_options(
+        &self,
+        local_path: &Path,
+        remote_path: &str,
+        options: TransferOptions,
+    ) -> Result<u64> {
+        let sftp = self.open_sftp_for_transfer(&options).await?;
+        let result = upload_file(&sftp, local_path, remote_path, &options).await;
+        let close_result = sftp.close().await;
+        let bytes = result?;
+        close_result?;
+        Ok(bytes)
+    }
+
+    pub async fn upload_recursive(
+        &self,
+        local_path: &Path,
+        remote_path: &str,
+        options: TransferOptions,
+    ) -> Result<TransferSummary> {
+        let sftp = Arc::new(self.open_sftp_for_transfer(&options).await?);
+        let result = upload_tree(Arc::clone(&sftp), local_path, remote_path, options).await;
+        let summary = result?;
+        drop(sftp);
+        Ok(summary)
     }
 
     pub async fn download(&self, remote_path: &str, local_path: &Path) -> Result<u64> {
-        let sftp = self.open_sftp().await?;
-        let mut remote = sftp
-            .open(remote_path)
+        self.download_with_options(remote_path, local_path, TransferOptions::default())
             .await
-            .with_context(|| format!("failed to open remote file {remote_path}"))?;
-        let mut local = tokio::fs::File::create(local_path)
-            .await
-            .with_context(|| format!("failed to create {}", local_path.display()))?;
-        let copied = stream_copy(&mut remote, &mut local).await?;
-        local.flush().await?;
-        drop(remote);
-        sftp.close().await?;
-        Ok(copied)
+    }
+
+    pub async fn download_with_options(
+        &self,
+        remote_path: &str,
+        local_path: &Path,
+        options: TransferOptions,
+    ) -> Result<u64> {
+        let sftp = self.open_sftp_for_transfer(&options).await?;
+        let result = download_file(&sftp, remote_path, local_path, &options).await;
+        let close_result = sftp.close().await;
+        let bytes = result?;
+        close_result?;
+        Ok(bytes)
+    }
+
+    pub async fn download_recursive(
+        &self,
+        remote_path: &str,
+        local_path: &Path,
+        options: TransferOptions,
+    ) -> Result<TransferSummary> {
+        let sftp = Arc::new(self.open_sftp_for_transfer(&options).await?);
+        let result = download_tree(Arc::clone(&sftp), remote_path, local_path, options).await;
+        let summary = result?;
+        drop(sftp);
+        Ok(summary)
     }
 
     pub async fn local_forward(&self, spec: LocalForward) -> Result<ForwardHandle> {
@@ -261,10 +294,16 @@ impl SshClient {
         Ok(())
     }
 
-    async fn open_sftp(&self) -> Result<SftpSession> {
+    async fn open_sftp_for_transfer(&self, options: &TransferOptions) -> Result<SftpSession> {
+        options.validated()?;
         let channel = self.session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
-        Ok(SftpSession::new(channel.into_stream()).await?)
+        let config = SftpConfig {
+            max_packet_len: options.sftp_packet_size,
+            max_concurrent_writes: options.sftp_write_concurrency,
+            request_timeout_secs: options.request_timeout_secs,
+        };
+        Ok(SftpSession::new_with_config(channel.into_stream(), config).await?)
     }
 }
 
@@ -373,24 +412,6 @@ fn jump_handler(jump: &JumpHost, primary: &ConnectionConfig) -> ClientHandler {
         known_hosts_file: primary.known_hosts_file.clone(),
         state: HandlerState::default(),
     }
-}
-
-async fn stream_copy<R, W>(reader: &mut R, writer: &mut W) -> Result<u64>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut total = 0_u64;
-    let mut buffer = vec![0_u8; TRANSFER_BUFFER_SIZE];
-    loop {
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        writer.write_all(&buffer[..read]).await?;
-        total += read as u64;
-    }
-    Ok(total)
 }
 
 fn command_for_user(command: &str, remote_user: &RemoteUser) -> String {
