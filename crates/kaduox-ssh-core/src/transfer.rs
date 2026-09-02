@@ -55,7 +55,7 @@ pub struct TransferOptions {
     pub sftp_packet_size: u32,
     pub request_timeout_secs: u64,
     pub cancellation: TransferCancellation,
-    pub progress: Option<mpsc::UnboundedSender<TransferEvent>>,
+    pub progress: Option<mpsc::Sender<TransferEvent>>,
 }
 
 impl Default for TransferOptions {
@@ -135,7 +135,8 @@ pub(crate) async fn upload_file(
             total,
             Some(total),
             true,
-        );
+        )
+        .await;
         return Ok(0);
     }
 
@@ -168,7 +169,8 @@ pub(crate) async fn upload_file(
         offset,
         Some(total),
         false,
-    );
+    )
+    .await;
     let copied = copy_with_progress(
         &mut local,
         &mut remote,
@@ -193,7 +195,8 @@ pub(crate) async fn upload_file(
         total,
         Some(total),
         true,
-    );
+    )
+    .await;
     Ok(copied)
 }
 
@@ -240,7 +243,8 @@ pub(crate) async fn download_file(
             total,
             Some(total),
             true,
-        );
+        )
+        .await;
         return Ok(0);
     }
     if offset > total {
@@ -273,7 +277,8 @@ pub(crate) async fn download_file(
         offset,
         Some(total),
         false,
-    );
+    )
+    .await;
     let copied = copy_with_progress(
         &mut remote,
         &mut local,
@@ -300,7 +305,8 @@ pub(crate) async fn download_file(
         total,
         Some(total),
         true,
-    );
+    )
+    .await;
     Ok(copied)
 }
 
@@ -467,12 +473,12 @@ where
         }
         writer.write_all(&buffer[..read]).await?;
         copied += read as u64;
-        emit_progress(options, direction, path, initial + copied, total, false);
+        emit_progress(options, direction, path, initial + copied, total, false).await;
     }
     Ok(copied)
 }
 
-fn emit_progress(
+async fn emit_progress(
     options: &TransferOptions,
     direction: TransferDirection,
     path: &str,
@@ -480,14 +486,23 @@ fn emit_progress(
     total_bytes: Option<u64>,
     completed: bool,
 ) {
-    if let Some(sender) = &options.progress {
-        let _ = sender.send(TransferEvent {
-            direction,
-            path: path.to_owned(),
-            bytes_transferred,
-            total_bytes,
-            completed,
-        });
+    let Some(sender) = &options.progress else {
+        return;
+    };
+    let event = TransferEvent {
+        direction,
+        path: path.to_owned(),
+        bytes_transferred,
+        total_bytes,
+        completed,
+    };
+    if completed {
+        let _ = sender.send(event).await;
+    } else {
+        // Progress samples are advisory. Dropping a sample under UI pressure keeps
+        // transfer throughput and memory usage bounded; the final completion event
+        // uses the async path above and is not intentionally sampled away.
+        let _ = sender.try_send(event);
     }
 }
 
@@ -677,5 +692,47 @@ mod tests {
         let mut options = TransferOptions::default();
         options.file_concurrency = 0;
         assert!(options.validated().is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_progress_drops_intermediate_samples_but_delivers_completion() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut options = TransferOptions::default();
+        options.progress = Some(sender);
+
+        emit_progress(
+            &options,
+            TransferDirection::Upload,
+            "file",
+            1,
+            Some(3),
+            false,
+        )
+        .await;
+        emit_progress(
+            &options,
+            TransferDirection::Upload,
+            "file",
+            2,
+            Some(3),
+            false,
+        )
+        .await;
+
+        let first = receiver.recv().await.unwrap();
+        assert_eq!(first.bytes_transferred, 1);
+
+        emit_progress(
+            &options,
+            TransferDirection::Upload,
+            "file",
+            3,
+            Some(3),
+            true,
+        )
+        .await;
+        let completed = receiver.recv().await.unwrap();
+        assert!(completed.completed);
+        assert_eq!(completed.bytes_transferred, 3);
     }
 }
