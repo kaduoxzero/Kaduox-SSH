@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::{Authentication, ConnectionConfig, SshClient};
 
@@ -25,13 +25,15 @@ impl Default for ConnectionManagerConfig {
 struct ManagedConnection {
     client: Arc<SshClient>,
     last_used: Mutex<Instant>,
+    _capacity_permit: OwnedSemaphorePermit,
 }
 
 impl ManagedConnection {
-    fn new(client: Arc<SshClient>) -> Self {
+    fn new(client: Arc<SshClient>, capacity_permit: OwnedSemaphorePermit) -> Self {
         Self {
             client,
             last_used: Mutex::new(Instant::now()),
+            _capacity_permit: capacity_permit,
         }
     }
 
@@ -51,6 +53,7 @@ impl ManagedConnection {
 /// shell, SFTP and forwarding operations still open independent SSH channels.
 pub struct ConnectionManager {
     config: ConnectionManagerConfig,
+    capacity: Arc<Semaphore>,
     connections: RwLock<HashMap<String, Arc<ManagedConnection>>>,
 }
 
@@ -63,6 +66,7 @@ impl Default for ConnectionManager {
 impl ConnectionManager {
     pub fn new(config: ConnectionManagerConfig) -> Self {
         Self {
+            capacity: Arc::new(Semaphore::new(config.max_connections)),
             config,
             connections: RwLock::new(HashMap::new()),
         }
@@ -102,28 +106,29 @@ impl ConnectionManager {
         }
 
         self.prune_idle().await;
-        if self.len().await >= self.config.max_connections {
-            bail!(
+        let permit = Arc::clone(&self.capacity).try_acquire_owned().map_err(|_| {
+            anyhow::anyhow!(
                 "connection manager capacity reached (max {})",
                 self.config.max_connections
-            );
-        }
+            )
+        })?;
 
         // Do not hold the manager lock across DNS, TCP, SSH handshake or auth.
         let candidate = Arc::new(SshClient::connect(config, authentication).await?);
-        let managed = Arc::new(ManagedConnection::new(Arc::clone(&candidate)));
+        let managed = Arc::new(ManagedConnection::new(Arc::clone(&candidate), permit));
 
         let existing = {
             let mut connections = self.connections.write().await;
             if let Some(existing) = connections.get(&name).cloned() {
                 Some(existing)
             } else {
-                connections.insert(name, managed);
+                connections.insert(name, Arc::clone(&managed));
                 None
             }
         };
 
         if let Some(existing) = existing {
+            drop(managed);
             let _ = candidate.close().await;
             existing.touch().await;
             return Ok(Arc::clone(&existing.client));
@@ -209,5 +214,14 @@ mod tests {
         let config = ConnectionManagerConfig::default();
         assert!(config.max_connections > 0);
         assert!(config.idle_timeout > Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn zero_capacity_is_strictly_bounded() {
+        let manager = ConnectionManager::new(ConnectionManagerConfig {
+            max_connections: 0,
+            idle_timeout: Duration::from_secs(1),
+        });
+        assert_eq!(manager.capacity.available_permits(), 0);
     }
 }
