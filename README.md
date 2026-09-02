@@ -1,6 +1,6 @@
 # Kaduox-SSH
 
-Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, and a reusable core that can power CLI, TUI, and GUI frontends.
+Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core that can power CLI, TUI, and GUI frontends.
 
 ## Current capabilities
 
@@ -22,6 +22,13 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - sudo-backed privileged single-file upload using unprivileged SFTP staging
 - SFTP-native local-to-remote directory synchronization with non-mutating planning
 - explicit `--delete` policy for destructive sync operations
+- reusable in-process authenticated connection manager for future long-lived TUI/GUI frontends
+- real OpenSSH protocol integration tests
+- Linux/macOS/Windows CI plus a verified Rust 1.85 MSRV gate
+- committed `Cargo.lock` with `--locked` CI builds
+- clippy `-D warnings` and dependency audit quality gates
+- on-demand real-OpenSSH performance benchmark harness
+- tag-driven Linux/macOS/Windows release packaging
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
@@ -31,7 +38,7 @@ Privileged file upload does not pretend SFTP can change uid. Kaduox-SSH uploads 
 
 ```text
 crates/
-  kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege core
+  kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege/manager core
   kaduox-ssh-cli/    # current CLI frontend
 ```
 
@@ -39,10 +46,10 @@ The core is intentionally independent from a particular terminal UI so future de
 
 ## Build
 
-Rust 1.85+ is required.
+Rust 1.85+ is required and continuously checked as the declared MSRV.
 
 ```bash
-cargo build --release
+cargo build --release --locked
 ```
 
 The CLI binary is named `kssh`.
@@ -80,7 +87,7 @@ kssh server.example.com download /var/log/app.log ./app.log
 kssh server.example.com upload ./large.img /srv/large.img --resume
 kssh server.example.com download /srv/large.img ./large.img --resume
 
-# Recursive directory transfers, four files at a time by default
+# Recursive directory transfers
 kssh server.example.com upload ./dist /srv/www/dist -r --jobs 8
 kssh server.example.com download /srv/logs ./logs -r --jobs 8
 
@@ -90,7 +97,7 @@ kssh server.example.com upload ./nginx.conf /etc/nginx/nginx.conf --as-user root
 # Inspect a sync plan without modifying the server
 kssh server.example.com sync ./dist /srv/www/dist --dry-run
 
-# Apply non-destructive synchronization: upload/update/create only
+# Apply non-destructive synchronization
 kssh server.example.com sync ./dist /srv/www/dist
 
 # Mirror the local tree, explicitly allowing deletion of remote-only entries
@@ -108,31 +115,29 @@ Transfers use bounded buffers and leave large-file request pipelining to `russh-
 
 Synchronization scans both local and remote directory trees and builds a typed action plan before mutation. The CLI prints the plan before applying it. Remote-only entries are preserved by default; deletion and file/directory conflict replacement are only permitted when `--delete` is explicitly supplied. `--dry-run` never mutates the remote tree.
 
-Symbolic links encountered during recursive transfer or synchronization scans are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy will be added separately.
+Symbolic links encountered during recursive transfer or synchronization scans are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy is intentionally separate.
+
+## Validation and performance
+
+Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, SFTP, synchronization, privilege switching, and TCP forwarding.
+
+The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
 ## Branch model
 
 ```text
-feat/* / fix/* / perf/* -> develop -> release/* -> main
+feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 ```
 
 `develop` is the small-version integration branch. `main` is reserved for stable/major release promotion.
 
-## Roadmap
+## Remaining security-sensitive work
 
-### v0.2 follow-up
+Some features are deliberately not enabled until they can be implemented completely and tested as security boundaries:
 
-- richer transfer verification/checksum policy
-- connection profiles
-- integration tests against real OpenSSH servers
-- Windows CI and agent-forwarding compatibility coverage
+- full OpenSSH host-certificate / `@cert-authority` semantics, including CA signature, principals, critical options, host-pattern matching, validity and revocation behavior
+- encrypted persistent credential storage and its key-management model
+- cross-process ControlMaster-style reuse through a local daemon/IPC protocol
+- explicit symbolic-link transfer/sync policy
 
-### v0.3+
-
-- connection pool and multiplexed session manager
-- terminal state/event API suitable for TUI/GUI
-- encrypted credential/profile storage
-- SCP compatibility where required
-- benchmarks, flamegraphs, fuzzing, and protocol integration tests
-
-See `docs/ARCHITECTURE.md` for design constraints and invariants.
+See `docs/ARCHITECTURE.md` and `docs/ENGINEERING.md` for design constraints, validation gates, release policy, and invariants.
