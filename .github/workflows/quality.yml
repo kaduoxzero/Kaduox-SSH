@@ -3,6 +3,9 @@ name: Quality
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,12 +24,11 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: Audit dependencies
-        run: cargo audit
+      - name: Audit resolved dependencies
+        uses: actions-rust-lang/audit@v1
+        with:
+          file: Cargo.lock
+          createIssues: false
