@@ -1,0 +1,27 @@
+name: OpenSSH Integration
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  openssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenSSH fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server netcat-openbsd curl
+      - name: Build Kaduox-SSH
+        run: cargo build --workspace
+      - name: Run real OpenSSH integration suite
+        run: bash scripts/ci/openssh-integration.sh
