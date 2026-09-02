@@ -11,7 +11,6 @@ use kaduox_ssh_core::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
     resolve_jump_hosts,
 };
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
@@ -340,13 +339,16 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 .map(|argument| quote_posix(argument))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let output = ssh.exec(&command, &remote_user(as_user)).await?;
-            tokio::io::stdout().write_all(&output.stdout).await?;
-            tokio::io::stderr().write_all(&output.stderr).await?;
-            if let Some(status) = output.exit_status {
-                if status != 0 {
-                    bail!("remote command exited with status {status}");
-                }
+            let remote_user = remote_user(as_user);
+            let mut stdout = tokio::io::stdout();
+            let mut stderr = tokio::io::stderr();
+            match ssh
+                .exec_stream(&command, &remote_user, &mut stdout, &mut stderr)
+                .await?
+            {
+                Some(0) => {}
+                Some(status) => bail!("remote command exited with status {status}"),
+                None => bail!("remote command closed without an SSH exit status"),
             }
         }
         Command::Upload {
