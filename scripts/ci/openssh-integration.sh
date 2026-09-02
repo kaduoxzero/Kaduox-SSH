@@ -5,6 +5,7 @@ KSSH="${KSSH:-target/debug/kssh}"
 TEST_USER="${KADUOX_TEST_USER:-kaduox-ci}"
 JUMP_PORT="${KADUOX_JUMP_PORT:-40222}"
 TARGET_PORT="${KADUOX_TARGET_PORT:-40223}"
+RSA_HOST_PORT="${KADUOX_RSA_HOST_PORT:-40224}"
 HTTP_PORT="${KADUOX_HTTP_PORT:-39080}"
 LOCAL_FORWARD_PORT="${KADUOX_LOCAL_FORWARD_PORT:-39081}"
 SOCKS_PORT="${KADUOX_SOCKS_PORT:-39082}"
@@ -64,12 +65,17 @@ stop_pid() {
 start_sshd() {
   local name="$1"
   local port="$2"
+  local host_key_type="${3:-ed25519}"
   local config="$WORK/sshd-$name.conf"
   local pid_file="$WORK/sshd-$name.pid"
-  local host_key="$WORK/ssh_host_${name}_ed25519_key"
+  local host_key="$WORK/ssh_host_${name}_${host_key_type}_key"
   local log="$WORK/sshd-$name.log"
 
-  ssh-keygen -q -t ed25519 -N '' -f "$host_key"
+  if [[ "$host_key_type" == 'rsa' ]]; then
+    ssh-keygen -q -t rsa -b 3072 -N '' -f "$host_key"
+  else
+    ssh-keygen -q -t ed25519 -N '' -f "$host_key"
+  fi
   cat >"$config" <<EOF
 Port $port
 ListenAddress 127.0.0.1
@@ -124,7 +130,7 @@ fi
 sudo useradd -m -s /bin/bash "$TEST_USER"
 # Ubuntu creates passwordless test accounts in a locked state by default. OpenSSH
 # rejects locked accounts before public-key authentication, so unlock the fixture
-# account while keeping PasswordAuthentication disabled in both test daemons.
+# account while keeping PasswordAuthentication disabled in all test daemons.
 sudo passwd -d "$TEST_USER" >/dev/null
 ssh-keygen -q -t ed25519 -N '' -f "$KEY"
 ssh-keygen -q -t rsa -b 3072 -N '' -f "$RSA_KEY"
@@ -148,6 +154,7 @@ chmod 600 "$HOME/.ssh/config"
 
 start_sshd jump "$JUMP_PORT" >/dev/null
 start_sshd target "$TARGET_PORT" >/dev/null
+start_sshd rsa-host "$RSA_HOST_PORT" rsa >/dev/null
 
 echo '[integration] fixture OpenSSH client baseline'
 fixture_output="$(ssh -F /dev/null -i "$KEY" -p "$TARGET_PORT" \
@@ -161,6 +168,10 @@ fixture_output="$(ssh -F /dev/null -i "$KEY" -p "$TARGET_PORT" \
 echo '[integration] direct exec'
 exec_output="$(run_kssh exec -- printf integration-ok)"
 [[ "$exec_output" == 'integration-ok' ]] || fail "unexpected exec output: $exec_output"
+
+echo '[integration] RSA server host-key verification path'
+rsa_host_output="$("$KSSH" 127.0.0.1 --port "$RSA_HOST_PORT" --user "$TEST_USER" --identity "$KEY" --host-key insecure exec -- printf rsa-host-ok)"
+[[ "$rsa_host_output" == 'rsa-host-ok' ]] || fail "RSA host-key server returned: $rsa_host_output"
 
 echo '[integration] sudo privilege switch'
 sudo_output="$(run_kssh exec --as-user root -- id -u | tr -d '\r\n')"
