@@ -115,10 +115,12 @@ impl SshClient {
         for action in &plan.actions {
             match action.kind {
                 SyncActionKind::DeleteRemoteFile => {
-                    sftp.remove_file(join_remote(remote_root, &action.path)).await?;
+                    sftp.remove_file(join_remote(remote_root, &action.path))
+                        .await?;
                 }
                 SyncActionKind::DeleteRemoteDirectory => {
-                    sftp.remove_dir(join_remote(remote_root, &action.path)).await?;
+                    sftp.remove_dir(join_remote(remote_root, &action.path))
+                        .await?;
                 }
                 SyncActionKind::CreateRemoteDirectory => {
                     ensure_remote_dir(&sftp, &join_remote(remote_root, &action.path)).await?;
@@ -224,10 +226,7 @@ async fn scan_local(root: &Path) -> Result<BTreeMap<String, SnapshotEntry>> {
     Ok(snapshot)
 }
 
-async fn scan_remote(
-    sftp: &SftpSession,
-    root: &str,
-) -> Result<BTreeMap<String, SnapshotEntry>> {
+async fn scan_remote(sftp: &SftpSession, root: &str) -> Result<BTreeMap<String, SnapshotEntry>> {
     if !sftp.try_exists(root.to_owned()).await? {
         return Ok(BTreeMap::new());
     }
