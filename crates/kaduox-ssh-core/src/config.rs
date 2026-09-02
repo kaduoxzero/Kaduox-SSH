@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 const MAX_JUMP_HOPS: usize = 8;
+const SHELL_ACTIVE_TOKEN_CHARS: &str = "'`\"$\\;&<>|(){}";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HostKeyPolicy {
@@ -64,6 +65,16 @@ impl ConnectionConfig {
         username_override: Option<&str>,
         port_override: Option<u16>,
     ) -> Result<Self> {
+        // The host alias and explicit user override originate from the caller/CLI
+        // and may later be expanded into ProxyCommand tokens. Keep the same trust
+        // boundary OpenSSH 9.6 introduced for command-line host/user values: local
+        // ssh_config contents remain user-controlled/trusted, but untrusted input
+        // must not contain shell-active characters.
+        validate_untrusted_shell_token(alias, "SSH host")?;
+        if let Some(username) = username_override {
+            validate_untrusted_shell_token(username, "SSH username")?;
+        }
+
         let parsed = parse_home_config(alias)?;
 
         let mut config = Self::new(
@@ -88,7 +99,9 @@ impl ConnectionConfig {
 
         if let Some(proxy_jump) = &parsed.host_config.proxy_jump {
             if !proxy_jump.eq_ignore_ascii_case("none") {
-                config.jump_hosts = resolve_jump_hosts(proxy_jump)?;
+                // ProxyJump from the local config file is trusted configuration,
+                // just like ProxyCommand/HostName values from that file.
+                config.jump_hosts = resolve_jump_hosts_internal(proxy_jump, false)?;
             }
         }
 
@@ -103,6 +116,10 @@ impl ConnectionConfig {
 }
 
 pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
+    resolve_jump_hosts_internal(spec, true)
+}
+
+fn resolve_jump_hosts_internal(spec: &str, validate_untrusted: bool) -> Result<Vec<JumpHost>> {
     let raw_hops = spec
         .split(',')
         .map(str::trim)
@@ -116,16 +133,26 @@ pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
         bail!("ProxyJump chain exceeds the {MAX_JUMP_HOPS}-hop safety limit");
     }
 
-    raw_hops.into_iter().map(resolve_jump_host).collect()
+    raw_hops
+        .into_iter()
+        .map(|hop| resolve_jump_host(hop, validate_untrusted))
+        .collect()
 }
 
-fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
+fn resolve_jump_host(spec: &str, validate_untrusted: bool) -> Result<JumpHost> {
     let (user_override, host_port) = match spec.rsplit_once('@') {
         Some((user, host_port)) if !user.is_empty() => (Some(user), host_port),
         _ => (None, spec),
     };
 
     let (alias, port_override) = parse_host_port(host_port)?;
+    if validate_untrusted {
+        validate_untrusted_shell_token(&alias, "ProxyJump host")?;
+        if let Some(username) = user_override {
+            validate_untrusted_shell_token(username, "ProxyJump username")?;
+        }
+    }
+
     let parsed = parse_home_config(&alias)?;
 
     Ok(JumpHost {
@@ -137,6 +164,23 @@ fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
             .unwrap_or_else(|| parsed.user()),
         identity_files: parsed.host_config.identity_file.unwrap_or_default(),
     })
+}
+
+fn validate_untrusted_shell_token(value: &str, role: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("{role} cannot be empty");
+    }
+    if value.starts_with('-') {
+        bail!("{role} cannot begin with '-'");
+    }
+    if value.chars().any(|ch| {
+        ch.is_whitespace() || ch.is_control() || SHELL_ACTIVE_TOKEN_CHARS.contains(ch)
+    }) {
+        bail!(
+            "{role} contains shell-active or whitespace characters that are unsafe for ProxyCommand token expansion"
+        );
+    }
+    Ok(())
 }
 
 fn parse_home_config(alias: &str) -> Result<russh_config::Config> {
@@ -281,5 +325,30 @@ mod tests {
     #[test]
     fn malformed_config_is_not_silently_defaulted() {
         assert!(parse_openssh_contents("User deploy\nHost prod\n", "prod").is_err());
+    }
+
+    #[test]
+    fn shell_active_untrusted_tokens_are_rejected() {
+        for value in [
+            "-option",
+            "host name",
+            "host;touch-pwned",
+            "$(touch-pwned)",
+            "`touch-pwned`",
+            r"host\name",
+        ] {
+            assert!(validate_untrusted_shell_token(value, "test token").is_err());
+        }
+
+        for value in ["server.example", "user-name", "2001:db8::1", "user@example"] {
+            assert!(validate_untrusted_shell_token(value, "test token").is_ok());
+        }
+    }
+
+    #[test]
+    fn explicit_proxy_jump_rejects_shell_active_tokens() {
+        assert!(resolve_jump_hosts("deploy@bastion.example:2222").is_ok());
+        assert!(resolve_jump_hosts("deploy@bad;host:2222").is_err());
+        assert!(resolve_jump_hosts("bad;user@bastion.example:2222").is_err());
     }
 }
