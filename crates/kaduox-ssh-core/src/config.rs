@@ -4,6 +4,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 const MAX_JUMP_HOPS: usize = 8;
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HostKeyPolicy {
@@ -33,6 +36,12 @@ pub struct ConnectionConfig {
     pub known_hosts_file: Option<PathBuf>,
     pub keepalive_interval: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
+    /// Upper bound for TCP connection establishment and SSH handshakes.
+    pub connect_timeout: Duration,
+    /// Upper bound for SSH channel-open requests used by ProxyJump and forwarding setup.
+    pub channel_open_timeout: Duration,
+    /// Upper bound for one SSH authentication phase.
+    pub authentication_timeout: Duration,
     pub proxy_command: Option<String>,
     pub jump_hosts: Vec<JumpHost>,
     pub agent_forwarding: bool,
@@ -51,6 +60,9 @@ impl ConnectionConfig {
             known_hosts_file: None,
             keepalive_interval: Some(Duration::from_secs(30)),
             inactivity_timeout: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            channel_open_timeout: DEFAULT_CHANNEL_OPEN_TIMEOUT,
+            authentication_timeout: DEFAULT_AUTHENTICATION_TIMEOUT,
             proxy_command: None,
             jump_hosts: Vec::new(),
             agent_forwarding: false,
@@ -98,6 +110,19 @@ impl ConnectionConfig {
         self.jump_hosts = resolve_jump_hosts(spec)?;
         self.proxy_command = None;
         Ok(self)
+    }
+
+    pub(crate) fn validate_timeouts(&self) -> Result<()> {
+        if self.connect_timeout.is_zero() {
+            bail!("SSH connect timeout must be greater than zero");
+        }
+        if self.channel_open_timeout.is_zero() {
+            bail!("SSH channel-open timeout must be greater than zero");
+        }
+        if self.authentication_timeout.is_zero() {
+            bail!("SSH authentication timeout must be greater than zero");
+        }
+        Ok(())
     }
 }
 
@@ -184,5 +209,23 @@ mod tests {
         let (host, port) = parse_host_port("[2001:db8::1]:2200").unwrap();
         assert_eq!(host, "2001:db8::1");
         assert_eq!(port, Some(2200));
+    }
+
+    #[test]
+    fn connection_timeouts_have_safe_defaults_and_reject_zero() {
+        let mut config = ConnectionConfig::new("example.com", "deploy");
+        assert_eq!(config.connect_timeout, Duration::from_secs(15));
+        assert_eq!(config.channel_open_timeout, Duration::from_secs(15));
+        assert_eq!(config.authentication_timeout, Duration::from_secs(30));
+        assert!(config.validate_timeouts().is_ok());
+
+        config.connect_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
+        config.connect_timeout = DEFAULT_CONNECT_TIMEOUT;
+        config.channel_open_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
+        config.channel_open_timeout = DEFAULT_CHANNEL_OPEN_TIMEOUT;
+        config.authentication_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
     }
 }
