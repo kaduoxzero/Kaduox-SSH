@@ -11,6 +11,7 @@ SOCKS_PORT="${KADUOX_SOCKS_PORT:-39082}"
 REMOTE_FORWARD_PORT="${KADUOX_REMOTE_FORWARD_PORT:-39083}"
 WORK="${RUNNER_TEMP:-/tmp}/kaduox-ssh-integration"
 KEY="$WORK/client_ed25519"
+RSA_KEY="$WORK/client_rsa"
 SSH_DIR="/home/$TEST_USER/.ssh"
 
 mkdir -p "$WORK"
@@ -126,8 +127,12 @@ sudo useradd -m -s /bin/bash "$TEST_USER"
 # account while keeping PasswordAuthentication disabled in both test daemons.
 sudo passwd -d "$TEST_USER" >/dev/null
 ssh-keygen -q -t ed25519 -N '' -f "$KEY"
+ssh-keygen -q -t rsa -b 3072 -N '' -f "$RSA_KEY"
 sudo install -d -m 0700 -o "$TEST_USER" -g "$TEST_USER" "$SSH_DIR"
 sudo install -m 0600 -o "$TEST_USER" -g "$TEST_USER" "$KEY.pub" "$SSH_DIR/authorized_keys"
+sudo tee -a "$SSH_DIR/authorized_keys" <"$RSA_KEY.pub" >/dev/null
+sudo chown "$TEST_USER:$TEST_USER" "$SSH_DIR/authorized_keys"
+sudo chmod 0600 "$SSH_DIR/authorized_keys"
 echo "$TEST_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/kaduox-ci >/dev/null
 sudo chmod 0440 /etc/sudoers.d/kaduox-ci
 
@@ -174,6 +179,23 @@ eval "$(ssh-agent -s)" >/dev/null
 ssh-add "$KEY" >/dev/null
 agent_output="$("$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --host-key insecure exec -- printf agent-ok)"
 [[ "$agent_output" == 'agent-ok' ]] || fail "agent authentication returned: $agent_output"
+
+echo '[integration] direct RSA private-key signing is blocked'
+if "$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --identity "$RSA_KEY" --host-key insecure exec -- true >"$WORK/rsa-direct.log" 2>&1; then
+  fail 'direct RSA private-key authentication unexpectedly succeeded'
+fi
+grep -q 'direct RSA private-key authentication is disabled' "$WORK/rsa-direct.log" || {
+  cat "$WORK/rsa-direct.log" >&2
+  fail 'direct RSA private-key rejection did not explain the security policy'
+}
+
+echo '[integration] RSA authentication through external SSH agent'
+ssh-add -D >/dev/null
+ssh-add "$RSA_KEY" >/dev/null
+rsa_agent_output="$("$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --host-key insecure exec -- printf rsa-agent-ok)"
+[[ "$rsa_agent_output" == 'rsa-agent-ok' ]] || fail "RSA agent authentication returned: $rsa_agent_output"
+ssh-add -D >/dev/null
+ssh-add "$KEY" >/dev/null
 
 echo '[integration] agent forwarding'
 forwarded_output="$("$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --host-key insecure -A exec -- sh -lc "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $JUMP_PORT $TEST_USER@127.0.0.1 printf forwarded-agent")"
