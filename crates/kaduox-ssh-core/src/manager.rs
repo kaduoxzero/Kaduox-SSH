@@ -22,6 +22,21 @@ impl Default for ConnectionManagerConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionSnapshot {
+    pub name: String,
+    pub idle_for: Duration,
+    pub in_use: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConnectionManagerSnapshot {
+    pub total_connections: usize,
+    pub in_use_connections: usize,
+    pub max_connections: usize,
+    pub available_capacity: usize,
+}
+
 struct ManagedConnection {
     client: Arc<SshClient>,
     last_used: Mutex<Instant>,
@@ -49,6 +64,10 @@ impl ManagedConnection {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .elapsed()
+    }
+
+    fn in_use(&self) -> bool {
+        Arc::strong_count(&self.client) > 1
     }
 }
 
@@ -88,6 +107,40 @@ impl ConnectionManager {
 
     pub async fn is_empty(&self) -> bool {
         self.connections.read().await.is_empty()
+    }
+
+    /// Return a stable, non-sensitive view of all managed connections.
+    ///
+    /// The snapshot deliberately omits authentication material and transport
+    /// internals so it can be exposed by TUI/GUI/agent frontends safely.
+    pub async fn connection_snapshots(&self) -> Vec<ConnectionSnapshot> {
+        let connections = self.connections.read().await;
+        let mut snapshots = connections
+            .iter()
+            .map(|(name, managed)| ConnectionSnapshot {
+                name: name.clone(),
+                idle_for: managed.idle_for(),
+                in_use: managed.in_use(),
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.name.cmp(&right.name));
+        snapshots
+    }
+
+    /// Return aggregate connection-pool capacity and lease state.
+    pub async fn snapshot(&self) -> ConnectionManagerSnapshot {
+        let connections = self.connections.read().await;
+        let total_connections = connections.len();
+        let in_use_connections = connections
+            .values()
+            .filter(|managed| managed.in_use())
+            .count();
+        ConnectionManagerSnapshot {
+            total_connections,
+            in_use_connections,
+            max_connections: self.config.max_connections,
+            available_capacity: self.capacity.available_permits(),
+        }
     }
 
     pub async fn get(&self, name: &str) -> Option<Arc<SshClient>> {
@@ -226,6 +279,13 @@ mod tests {
         let manager = ConnectionManager::default();
         assert!(manager.is_empty().await);
         assert_eq!(manager.len().await, 0);
+        assert!(manager.connection_snapshots().await.is_empty());
+
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.total_connections, 0);
+        assert_eq!(snapshot.in_use_connections, 0);
+        assert_eq!(snapshot.max_connections, 64);
+        assert_eq!(snapshot.available_capacity, 64);
     }
 
     #[test]
@@ -242,5 +302,8 @@ mod tests {
             idle_timeout: Duration::from_secs(1),
         });
         assert_eq!(manager.capacity.available_permits(), 0);
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.max_connections, 0);
+        assert_eq!(snapshot.available_capacity, 0);
     }
 }
