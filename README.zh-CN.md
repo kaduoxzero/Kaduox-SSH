@@ -23,7 +23,7 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 - 默认采用原子目标文件暂存策略
 - 文件传输进度事件与协作式取消
 - 可配置 SFTP packet size、写请求流水线并发数和请求超时
-- 使用普通用户 SFTP 暂存 + sudo 的特权单文件上传
+- 使用普通用户 SFTP 暂存 + sudo 的特权单文件及递归目录上传
 - 基于 SFTP 原生协议的本地到远端目录同步，并先生成无副作用同步计划
 - 对具有破坏性的同步删除操作要求显式 `--delete`
 - 可复用的进程内已认证连接管理器，为后续长生命周期 TUI/GUI 前端提供基础
@@ -36,7 +36,7 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 
 SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 会在现有传输上继续打开额外 channel；交互式权限切换使用 `sudo -iu <user>`，远端命令切换用户使用 `sudo -n -u <user> -- sh -lc ...`。
 
-特权文件上传不会假设 SFTP 可以修改 uid。Kaduox-SSH 会先以当前 SSH 登录用户上传临时文件，再显式执行 `sudo install`/move 将文件安装到目标位置，最后删除暂存文件。
+特权上传不会假设 SFTP 可以修改 uid。Kaduox-SSH 会先以当前 SSH 登录用户暂存单文件或整棵目录树，再以指定远端操作系统用户执行显式 sudo 安装阶段，最后清理暂存数据。递归特权上传在目标目录已存在时会使用同级工作目录，并通过“删除旧目标后 rename”完成替换，因此不会把已有目录替换宣称为原子操作。
 
 ## RSA 安全策略
 
@@ -114,6 +114,9 @@ kssh server.example.com download /srv/logs ./logs -r --jobs 8
 
 # 先以普通用户暂存，再以 root 身份安装，不以 root 直接运行 SFTP
 kssh server.example.com upload ./nginx.conf /etc/nginx/nginx.conf --as-user root --mode 0644
+
+# 递归暂存整棵树后以 root 安装，并显式设置文件/目录 mode
+kssh server.example.com upload ./dist /srv/www/app -r --as-user root --mode 0644 --dir-mode 0755 --jobs 8
 
 # 只查看同步计划，不修改服务器
 kssh server.example.com sync ./dist /srv/www/dist --dry-run
