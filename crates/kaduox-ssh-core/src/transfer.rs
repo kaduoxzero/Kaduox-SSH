@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
@@ -334,12 +334,13 @@ pub(crate) async fn upload_tree(
         ..Default::default()
     };
     let mut stack = vec![(local_root.to_path_buf(), remote_root.to_owned())];
-    let mut files = Vec::new();
+    let mut tasks = JoinSet::new();
 
     while let Some((local_dir, remote_dir)) = stack.pop() {
         check_cancelled(&options)?;
         let mut entries = tokio::fs::read_dir(&local_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
+            check_cancelled(&options)?;
             let file_type = entry.file_type().await?;
             let local_path = entry.path();
             let file_name = entry.file_name().to_string_lossy().into_owned();
@@ -349,29 +350,22 @@ pub(crate) async fn upload_tree(
                 summary.directories += 1;
                 stack.push((local_path, remote_path));
             } else if file_type.is_file() {
-                files.push((local_path, remote_path));
+                if tasks.len() >= options.file_concurrency {
+                    collect_next_transfer(&mut tasks, &mut summary).await?;
+                }
+                let sftp = Arc::clone(&sftp);
+                let options = options.clone();
+                tasks.spawn(async move {
+                    upload_file(&sftp, &local_path, &remote_path, &options).await
+                });
             } else if file_type.is_symlink() {
                 summary.skipped += 1;
             }
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(options.file_concurrency));
-    let mut tasks = JoinSet::new();
-    for (local_path, remote_path) in files {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let sftp = Arc::clone(&sftp);
-        let options = options.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            let bytes = upload_file(&sftp, &local_path, &remote_path, &options).await?;
-            Ok::<u64, anyhow::Error>(bytes)
-        });
-    }
-
-    while let Some(result) = tasks.join_next().await {
-        summary.bytes += result??;
-        summary.files += 1;
+    while !tasks.is_empty() {
+        collect_next_transfer(&mut tasks, &mut summary).await?;
     }
     Ok(summary)
 }
@@ -404,11 +398,12 @@ pub(crate) async fn download_tree(
         ..Default::default()
     };
     let mut stack = vec![(remote_root.to_owned(), local_root.to_path_buf())];
-    let mut files = Vec::new();
+    let mut tasks = JoinSet::new();
 
     while let Some((remote_dir, local_dir)) = stack.pop() {
         check_cancelled(&options)?;
         for entry in sftp.read_dir(remote_dir).await? {
+            check_cancelled(&options)?;
             let file_type = entry.file_type();
             let remote_path = entry.path();
             let local_path = local_dir.join(entry.file_name());
@@ -417,31 +412,37 @@ pub(crate) async fn download_tree(
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
             } else if file_type.is_file() {
-                files.push((remote_path, local_path));
+                if tasks.len() >= options.file_concurrency {
+                    collect_next_transfer(&mut tasks, &mut summary).await?;
+                }
+                let sftp = Arc::clone(&sftp);
+                let options = options.clone();
+                tasks.spawn(async move {
+                    download_file(&sftp, &remote_path, &local_path, &options).await
+                });
             } else if file_type.is_symlink() {
                 summary.skipped += 1;
             }
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(options.file_concurrency));
-    let mut tasks = JoinSet::new();
-    for (remote_path, local_path) in files {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let sftp = Arc::clone(&sftp);
-        let options = options.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            let bytes = download_file(&sftp, &remote_path, &local_path, &options).await?;
-            Ok::<u64, anyhow::Error>(bytes)
-        });
-    }
-
-    while let Some(result) = tasks.join_next().await {
-        summary.bytes += result??;
-        summary.files += 1;
+    while !tasks.is_empty() {
+        collect_next_transfer(&mut tasks, &mut summary).await?;
     }
     Ok(summary)
+}
+
+async fn collect_next_transfer(
+    tasks: &mut JoinSet<Result<u64>>,
+    summary: &mut TransferSummary,
+) -> Result<()> {
+    let bytes = tasks
+        .join_next()
+        .await
+        .context("recursive transfer task set unexpectedly empty")??;
+    summary.bytes += bytes;
+    summary.files += 1;
+    Ok(())
 }
 
 async fn copy_with_progress<R, W>(
