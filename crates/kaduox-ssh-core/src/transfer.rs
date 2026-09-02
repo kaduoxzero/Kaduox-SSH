@@ -108,9 +108,15 @@ pub(crate) async fn upload_file(
     options.validated()?;
     check_cancelled(options)?;
 
-    let local_metadata = tokio::fs::metadata(local_path)
+    let local_metadata = tokio::fs::symlink_metadata(local_path)
         .await
         .with_context(|| format!("failed to stat {}", local_path.display()))?;
+    if local_metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow local symbolic link during upload: {}",
+            local_path.display()
+        );
+    }
     if !local_metadata.is_file() {
         bail!("{} is not a regular file", local_path.display());
     }
@@ -207,18 +213,24 @@ pub(crate) async fn download_file(
     check_cancelled(options)?;
 
     let remote_metadata = sftp
-        .metadata(remote_path.to_owned())
+        .symlink_metadata(remote_path.to_owned())
         .await
         .with_context(|| format!("failed to stat remote file {remote_path}"))?;
+    if remote_metadata.is_symlink() {
+        bail!("refusing to follow remote symbolic link during download: {remote_path}");
+    }
     if !remote_metadata.is_regular() {
         bail!("remote path {remote_path} is not a regular file");
     }
+    reject_existing_local_symlink(local_path, "download destination").await?;
+
     let total = remote_metadata.len();
     if let Some(parent) = local_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
     let work_path = transfer_local_work_path(local_path, options.atomic);
+    reject_existing_local_symlink(&work_path, "download staging path").await?;
     let mut offset = if options.resume {
         match tokio::fs::metadata(&work_path).await {
             Ok(metadata) => metadata.len().min(total),
@@ -313,9 +325,15 @@ pub(crate) async fn upload_tree(
     options.validated()?;
     check_cancelled(&options)?;
 
-    let root_metadata = tokio::fs::metadata(local_root)
+    let root_metadata = tokio::fs::symlink_metadata(local_root)
         .await
         .with_context(|| format!("failed to stat {}", local_root.display()))?;
+    if root_metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow local symbolic-link root during recursive upload: {}",
+            local_root.display()
+        );
+    }
     if root_metadata.is_file() {
         let bytes = upload_file(&sftp, local_root, remote_root, &options).await?;
         return Ok(TransferSummary {
@@ -385,7 +403,10 @@ pub(crate) async fn download_tree(
     options.validated()?;
     check_cancelled(&options)?;
 
-    let root_metadata = sftp.metadata(remote_root.to_owned()).await?;
+    let root_metadata = sftp.symlink_metadata(remote_root.to_owned()).await?;
+    if root_metadata.is_symlink() {
+        bail!("refusing to follow remote symbolic-link root during recursive download: {remote_root}");
+    }
     if root_metadata.is_regular() {
         let bytes = download_file(&sftp, remote_root, local_root, &options).await?;
         return Ok(TransferSummary {
@@ -398,6 +419,7 @@ pub(crate) async fn download_tree(
         bail!("remote path {remote_root} is not a regular file or directory");
     }
 
+    reject_existing_local_symlink(local_root, "recursive download root").await?;
     tokio::fs::create_dir_all(local_root).await?;
     let mut summary = TransferSummary {
         directories: 1,
@@ -408,11 +430,14 @@ pub(crate) async fn download_tree(
 
     while let Some((remote_dir, local_dir)) = stack.pop() {
         check_cancelled(&options)?;
-        for entry in sftp.read_dir(remote_dir).await? {
+        for entry in sftp.read_dir(remote_dir.clone()).await? {
             let file_type = entry.file_type();
-            let remote_path = entry.path();
-            let local_path = local_dir.join(entry.file_name());
+            let name = entry.file_name();
+            validate_remote_entry_name(&name)?;
+            let remote_path = join_remote(&remote_dir, &name);
+            let local_path = local_dir.join(&name);
             if file_type.is_dir() {
+                reject_existing_local_symlink(&local_path, "recursive download directory").await?;
                 tokio::fs::create_dir_all(&local_path).await?;
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
@@ -442,6 +467,34 @@ pub(crate) async fn download_tree(
         summary.files += 1;
     }
     Ok(summary)
+}
+
+async fn reject_existing_local_symlink(path: &Path, role: &str) -> Result<()> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("refusing to follow symbolic link at {role}: {}", path.display())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect {role} {}", path.display())),
+    }
+}
+
+fn validate_remote_entry_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        bail!("unsafe remote directory entry name: {name:?}");
+    }
+    #[cfg(windows)]
+    if name.contains(':') {
+        bail!("unsafe remote directory entry name on Windows: {name:?}");
+    }
+    Ok(())
 }
 
 async fn copy_with_progress<R, W>(
@@ -619,8 +672,7 @@ async fn preserve_remote_mtime(
         attributes.permissions = Some(local_metadata.permissions().mode());
     }
     if attributes.mtime.is_some() || attributes.permissions.is_some() {
-        sftp.set_metadata(remote_path.to_owned(), attributes)
-            .await?;
+        sftp.set_metadata(remote_path.to_owned(), attributes).await?;
     }
     Ok(())
 }
@@ -677,5 +729,13 @@ mod tests {
         let mut options = TransferOptions::default();
         options.file_concurrency = 0;
         assert!(options.validated().is_err());
+    }
+
+    #[test]
+    fn remote_entry_names_cannot_escape_local_tree() {
+        for unsafe_name in ["", ".", "..", "../escape", "sub/file", r"..\escape"] {
+            assert!(validate_remote_entry_name(unsafe_name).is_err());
+        }
+        assert!(validate_remote_entry_name("normal-file.txt").is_ok());
     }
 }
