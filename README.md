@@ -7,7 +7,9 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - SSH connection, command execution, and interactive PTY shell
 - OpenSSH `~/.ssh/config` resolution
 - ProxyJump chains and ProxyCommand transports
-- password, private-key, keyboard-interactive, OpenSSH-agent, and Pageant/Windows-agent authentication paths
+- password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
+- RSA authentication through an external SSH agent while local RSA private-key signing is disabled by security policy
+- RSA server host-key compatibility without enabling the affected local RSA signer
 - opt-in agent forwarding
 - local (`-L`), remote (`-R`), and SOCKS5 dynamic (`-D`) forwarding
 - fast remote OS user switching over an existing SSH transport through `sudo`
@@ -33,6 +35,19 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
 Privileged file upload does not pretend SFTP can change uid. Kaduox-SSH uploads a temporary file as the SSH login user, performs an explicit `sudo install`/move to the privileged destination, and then removes the staging file.
+
+## RSA security policy
+
+Kaduox-SSH intentionally disables Russh's optional local RSA signer while the dependency path is affected by `RUSTSEC-2023-0071` (the Marvin timing attack advisory). The affected `rsa` crate is therefore absent from the resolved application lockfile.
+
+This policy distinguishes private-key signing from public-key compatibility:
+
+- Ed25519 and ECDSA private-key files can be used directly.
+- A local RSA private-key file fails closed with an explicit remediation message.
+- RSA user authentication remains available through an external SSH agent because the private-key operation stays inside the agent rather than Kaduox-SSH.
+- RSA server host keys remain supported for host authentication; verifying a server signature does not require Kaduox-SSH to perform an RSA private-key operation.
+
+The real OpenSSH integration suite continuously verifies direct RSA-key rejection, agent-backed RSA authentication, and connection to an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite remains green.
 
 ## Architecture
 
@@ -71,9 +86,13 @@ kssh server.example.com --user deploy exec -- uname -a
 # Execute as another remote OS user
 kssh server.example.com --user deploy exec --as-user root -- id
 
-# Private key / password
+# Direct private key (Ed25519/ECDSA) / password
 kssh server.example.com --user deploy --identity ~/.ssh/id_ed25519 shell
 kssh server.example.com --user deploy --password shell
+
+# RSA keys remain usable through ssh-agent; direct RSA key files are rejected
+ssh-add ~/.ssh/id_rsa
+kssh server.example.com --user deploy shell
 
 # ProxyJump and forwarding
 kssh target.internal -J bastion.example -L 8080:127.0.0.1:80 tunnel
@@ -119,7 +138,7 @@ Symbolic links encountered during recursive transfer or synchronization scans ar
 
 ## Validation and performance
 
-Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, SFTP, synchronization, privilege switching, and TCP forwarding.
+Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, RSA security policy and host-key compatibility, SFTP, synchronization, privilege switching, and TCP forwarding.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
@@ -140,4 +159,4 @@ Some features are deliberately not enabled until they can be implemented complet
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol
 - explicit symbolic-link transfer/sync policy
 
-See `docs/ARCHITECTURE.md` and `docs/ENGINEERING.md` for design constraints, validation gates, release policy, and invariants.
+See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
