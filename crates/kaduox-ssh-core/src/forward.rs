@@ -1,13 +1,19 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use russh::client;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use crate::handler::{ClientHandler, ForwardTarget, HandlerState};
+
+const MAX_ACTIVE_FORWARD_CONNECTIONS: usize = 256;
+const FORWARD_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct LocalForward {
@@ -46,24 +52,34 @@ pub(crate) async fn start_local_forward(
     let listener = TcpListener::bind(spec.bind)
         .await
         .with_context(|| format!("failed to bind local forward {}", spec.bind))?;
+    let slots = Arc::new(Semaphore::new(MAX_ACTIVE_FORWARD_CONNECTIONS));
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut local, peer)) = listener.accept().await else {
                 break;
             };
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                // Fail fast under local connection floods instead of creating an
+                // unbounded number of tasks waiting for capacity.
+                drop(local);
+                continue;
+            };
             let session = Arc::clone(&session);
             let host = spec.target_host.clone();
             let port = spec.target_port;
             tokio::spawn(async move {
-                let Ok(channel) = session
-                    .channel_open_direct_tcpip(
+                let _slot = slot;
+                let channel = timeout(
+                    FORWARD_CHANNEL_OPEN_TIMEOUT,
+                    session.channel_open_direct_tcpip(
                         host,
                         u32::from(port),
                         peer.ip().to_string(),
                         u32::from(peer.port()),
-                    )
-                    .await
-                else {
+                    ),
+                )
+                .await;
+                let Ok(Ok(channel)) = channel else {
                     return;
                 };
                 let mut remote = channel.into_stream();
@@ -81,13 +97,19 @@ pub(crate) async fn start_dynamic_forward(
     let listener = TcpListener::bind(spec.bind)
         .await
         .with_context(|| format!("failed to bind SOCKS5 forward {}", spec.bind))?;
+    let slots = Arc::new(Semaphore::new(MAX_ACTIVE_FORWARD_CONNECTIONS));
     let task = tokio::spawn(async move {
         loop {
             let Ok((stream, peer)) = listener.accept().await else {
                 break;
             };
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
             let session = Arc::clone(&session);
             tokio::spawn(async move {
+                let _slot = slot;
                 let _ = handle_socks5(session, stream, peer).await;
             });
         }
@@ -151,24 +173,31 @@ async fn handle_socks5(
     };
     let port = local.read_u16().await?;
 
-    match session
-        .channel_open_direct_tcpip(
+    let channel = timeout(
+        FORWARD_CHANNEL_OPEN_TIMEOUT,
+        session.channel_open_direct_tcpip(
             host,
             u32::from(port),
             peer.ip().to_string(),
             u32::from(peer.port()),
-        )
-        .await
-    {
-        Ok(channel) => {
+        ),
+    )
+    .await;
+
+    match channel {
+        Ok(Ok(channel)) => {
             local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
             let mut remote = channel.into_stream();
             copy_bidirectional(&mut local, &mut remote).await?;
             Ok(())
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             Err(error.into())
+        }
+        Err(_) => {
+            let _ = local.write_all(&[5, 6, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            bail!("SOCKS SSH channel-open request timed out")
         }
     }
 }
@@ -178,9 +207,12 @@ pub(crate) async fn start_remote_forward(
     state: &HandlerState,
     spec: RemoteForward,
 ) -> Result<u16> {
-    let allocated = session
-        .tcpip_forward(spec.bind_address.clone(), u32::from(spec.bind_port))
-        .await?;
+    let allocated = timeout(
+        FORWARD_CHANNEL_OPEN_TIMEOUT,
+        session.tcpip_forward(spec.bind_address.clone(), u32::from(spec.bind_port)),
+    )
+    .await
+    .context("remote forwarding request timed out")??;
     let actual_port = if spec.bind_port == 0 {
         u16::try_from(allocated).context("server allocated an invalid remote port")?
     } else {
@@ -201,4 +233,15 @@ pub(crate) async fn start_remote_forward(
 
 pub fn loopback(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_resource_limits_are_nonzero() {
+        assert!(MAX_ACTIVE_FORWARD_CONNECTIONS > 0);
+        assert!(!FORWARD_CHANNEL_OPEN_TIMEOUT.is_zero());
+    }
 }
