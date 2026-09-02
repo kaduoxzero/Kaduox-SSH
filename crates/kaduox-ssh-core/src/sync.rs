@@ -91,11 +91,20 @@ impl SshClient {
         options: SyncOptions,
     ) -> Result<TransferSummary> {
         options.transfer.validated()?;
-        let metadata = tokio::fs::metadata(local_root)
+        let metadata = tokio::fs::symlink_metadata(local_root)
             .await
             .with_context(|| format!("failed to stat {}", local_root.display()))?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "refusing to follow symbolic-link sync source root: {}",
+                local_root.display()
+            );
+        }
         if !metadata.is_dir() {
             bail!("sync source {} must be a directory", local_root.display());
+        }
+        for action in &plan.actions {
+            validate_sync_relative_path(&action.path)?;
         }
 
         let sftp = Arc::new(self.open_sftp_for_transfer(&options.transfer).await?);
@@ -167,9 +176,15 @@ impl SshClient {
 }
 
 async fn scan_local(root: &Path) -> Result<BTreeMap<String, SnapshotEntry>> {
-    let metadata = tokio::fs::metadata(root)
+    let metadata = tokio::fs::symlink_metadata(root)
         .await
         .with_context(|| format!("failed to stat {}", root.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow symbolic-link sync source root: {}",
+            root.display()
+        );
+    }
     if !metadata.is_dir() {
         bail!("sync source {} must be a directory", root.display());
     }
@@ -220,15 +235,20 @@ async fn scan_remote(sftp: &SftpSession, root: &str) -> Result<BTreeMap<String, 
     if !sftp.try_exists(root.to_owned()).await? {
         return Ok(BTreeMap::new());
     }
-    if !sftp.metadata(root.to_owned()).await?.is_dir() {
+    let root_metadata = sftp.symlink_metadata(root.to_owned()).await?;
+    if root_metadata.is_symlink() {
+        bail!("refusing to follow remote symbolic-link sync destination root: {root}");
+    }
+    if !root_metadata.is_dir() {
         bail!("remote sync destination {root} is not a directory");
     }
 
     let mut snapshot = BTreeMap::new();
     let mut stack = vec![(root.to_owned(), String::new())];
     while let Some((directory, relative)) = stack.pop() {
-        for entry in sftp.read_dir(directory).await? {
+        for entry in sftp.read_dir(directory.clone()).await? {
             let name = entry.file_name();
+            validate_remote_entry_name(&name)?;
             let child_relative = join_relative(&relative, &name);
             let metadata = entry.metadata();
             let kind = if metadata.is_dir() {
@@ -247,7 +267,7 @@ async fn scan_remote(sftp: &SftpSession, root: &str) -> Result<BTreeMap<String, 
                 },
             );
             if kind == EntryKind::Directory {
-                stack.push((entry.path(), child_relative));
+                stack.push((join_remote(&directory, &name), child_relative));
             }
         }
     }
@@ -411,6 +431,38 @@ fn local_mtime(metadata: &std::fs::Metadata) -> Option<u32> {
         .and_then(|duration| u32::try_from(duration.as_secs()).ok())
 }
 
+fn validate_remote_entry_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        bail!("unsafe remote sync directory entry name: {name:?}");
+    }
+    #[cfg(windows)]
+    if name.contains(':') {
+        bail!("unsafe remote sync directory entry name on Windows: {name:?}");
+    }
+    Ok(())
+}
+
+fn validate_sync_relative_path(path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') {
+        bail!("unsafe sync action path: {path:?}");
+    }
+    #[cfg(windows)]
+    if path.contains(':') {
+        bail!("unsafe sync action path on Windows: {path:?}");
+    }
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            bail!("unsafe sync action path: {path:?}");
+        }
+    }
+    Ok(())
+}
+
 fn join_relative(parent: &str, child: &str) -> String {
     if parent.is_empty() {
         child.to_owned()
@@ -486,5 +538,21 @@ mod tests {
         )]);
         let remote = BTreeMap::from([("cache".to_owned(), file(10, 1))]);
         assert!(build_push_plan(&local, &remote, &SyncOptions::default()).is_err());
+    }
+
+    #[test]
+    fn sync_action_paths_cannot_escape_roots() {
+        for unsafe_path in ["", ".", "..", "../escape", "a/../escape", "/absolute", r"..\escape"] {
+            assert!(validate_sync_relative_path(unsafe_path).is_err());
+        }
+        assert!(validate_sync_relative_path("nested/app.bin").is_ok());
+    }
+
+    #[test]
+    fn remote_entry_names_cannot_inject_sync_paths() {
+        for unsafe_name in ["", ".", "..", "../escape", "nested/file", r"..\escape"] {
+            assert!(validate_remote_entry_name(unsafe_name).is_err());
+        }
+        assert!(validate_remote_entry_name("normal.txt").is_ok());
     }
 }
