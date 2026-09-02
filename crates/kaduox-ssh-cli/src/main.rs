@@ -7,8 +7,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
     Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, TerminalSize, TerminalSpec, TransferCancellation, TransferDirection,
-    TransferEvent, TransferOptions, quote_posix, resolve_jump_hosts,
+    RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec,
+    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
+    resolve_jump_hosts,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
@@ -158,6 +159,38 @@ enum Command {
         #[arg(long)]
         no_atomic: bool,
         /// Number of files transferred concurrently during recursive transfers.
+        #[arg(long, default_value_t = 4)]
+        jobs: usize,
+        /// Maximum pipelined SFTP write requests per file.
+        #[arg(long, default_value_t = 16)]
+        write_concurrency: usize,
+        /// Requested SFTP packet size; server limits can reduce the effective size.
+        #[arg(long, default_value_t = 262_144)]
+        packet_size: u32,
+        /// SFTP request timeout in seconds.
+        #[arg(long, default_value_t = 30)]
+        request_timeout: u64,
+    },
+    /// Synchronize a local directory tree to a remote directory through SFTP.
+    Sync {
+        local: PathBuf,
+        remote: String,
+        /// Print the synchronization plan without modifying the remote tree.
+        #[arg(long)]
+        dry_run: bool,
+        /// Delete remote entries absent locally and permit file/directory replacement.
+        #[arg(long)]
+        delete: bool,
+        /// Compare files only by size instead of size plus modification time.
+        #[arg(long)]
+        size_only: bool,
+        /// Resume interrupted uploads from stable .kaduox.part files when possible.
+        #[arg(long)]
+        resume: bool,
+        /// Write directly to destinations instead of atomic staging files.
+        #[arg(long)]
+        no_atomic: bool,
+        /// Number of files uploaded concurrently.
         #[arg(long, default_value_t = 4)]
         jobs: usize,
         /// Maximum pipelined SFTP write requests per file.
@@ -395,11 +428,77 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 eprintln!("downloaded {bytes} new bytes");
             }
         }
+        Command::Sync {
+            local,
+            remote,
+            dry_run,
+            delete,
+            size_only,
+            resume,
+            no_atomic,
+            jobs,
+            write_concurrency,
+            packet_size,
+            request_timeout,
+        } => {
+            let ui = TransferUi::new(
+                resume,
+                !no_atomic,
+                jobs,
+                write_concurrency,
+                packet_size,
+                request_timeout,
+            );
+            let options = SyncOptions {
+                delete,
+                size_only,
+                transfer: ui.options.clone(),
+            };
+            let plan = ssh.plan_sync_to_remote(&local, &remote, &options).await?;
+            print_sync_plan(&plan, dry_run);
+            if !dry_run && !plan.is_empty() {
+                let summary = ssh
+                    .apply_sync_to_remote(&local, &remote, &plan, options)
+                    .await?;
+                eprintln!(
+                    "sync complete: uploaded {} files / {} bytes, created {} directories",
+                    summary.files, summary.bytes, summary.directories
+                );
+            }
+        }
         Command::Tunnel => {
             tokio::signal::ctrl_c().await?;
         }
     }
     Ok(())
+}
+
+fn print_sync_plan(plan: &SyncPlan, dry_run: bool) {
+    let prefix = if dry_run { "dry-run" } else { "plan" };
+    if plan.is_empty() {
+        eprintln!("{prefix}: remote tree is already synchronized");
+        return;
+    }
+    eprintln!(
+        "{prefix}: {} uploads / {} bytes, {} mkdirs, {} deletions",
+        plan.files_to_upload,
+        plan.bytes_to_upload,
+        plan.directories_to_create,
+        plan.entries_to_delete
+    );
+    for action in &plan.actions {
+        let operation = match action.kind {
+            SyncActionKind::DeleteRemoteFile => "delete-file",
+            SyncActionKind::DeleteRemoteDirectory => "delete-dir",
+            SyncActionKind::CreateRemoteDirectory => "mkdir",
+            SyncActionKind::UploadFile => "upload",
+        };
+        if action.kind == SyncActionKind::UploadFile {
+            eprintln!("  {operation:11} {} ({} bytes)", action.path, action.bytes);
+        } else {
+            eprintln!("  {operation:11} {}", action.path);
+        }
+    }
 }
 
 struct TransferUi {
