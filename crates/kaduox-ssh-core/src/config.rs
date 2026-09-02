@@ -67,11 +67,6 @@ impl ConnectionConfig {
         username_override: Option<&str>,
         port_override: Option<u16>,
     ) -> Result<Self> {
-        // The host alias and explicit user override originate from the caller/CLI
-        // and may later be expanded into ProxyCommand tokens. Keep the same trust
-        // boundary OpenSSH 9.6 introduced for command-line host/user values: local
-        // ssh_config contents remain user-controlled/trusted, but untrusted input
-        // must not contain shell-active characters.
         validate_untrusted_shell_token(alias, "SSH host")?;
         if let Some(username) = username_override {
             validate_untrusted_shell_token(username, "SSH username")?;
@@ -95,8 +90,6 @@ impl ConnectionConfig {
 
         if let Some(proxy_jump) = &parsed.host_config.proxy_jump {
             if !proxy_jump.eq_ignore_ascii_case("none") {
-                // ProxyJump from the local config file is trusted configuration,
-                // just like ProxyCommand/HostName values from that file.
                 config.jump_hosts = resolve_jump_hosts_internal(proxy_jump, false)?;
             }
         }
@@ -286,7 +279,7 @@ fn parse_host_port(value: &str) -> Result<(String, Option<u16>)> {
             return Ok((value.to_owned(), None));
         };
         if !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Ok((host.to_owned(), Some(port.parse()?));
+            return Ok((host.to_owned(), Some(port.parse()?)));
         }
     }
 
