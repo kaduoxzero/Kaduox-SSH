@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::{Authentication, ConnectionConfig, SshClient};
 
@@ -37,12 +37,18 @@ impl ManagedConnection {
         }
     }
 
-    async fn touch(&self) {
-        *self.last_used.lock().await = Instant::now();
+    fn touch(&self) {
+        *self
+            .last_used
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
     }
 
-    async fn idle_for(&self) -> Duration {
-        self.last_used.lock().await.elapsed()
+    fn idle_for(&self) -> Duration {
+        self.last_used
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .elapsed()
     }
 }
 
@@ -85,9 +91,15 @@ impl ConnectionManager {
     }
 
     pub async fn get(&self, name: &str) -> Option<Arc<SshClient>> {
-        let managed = self.connections.read().await.get(name).cloned()?;
-        managed.touch().await;
-        Some(Arc::clone(&managed.client))
+        // Clone the client while the read lock is held. `prune_idle` takes the
+        // write lock before inspecting Arc ownership, so it cannot evict a
+        // connection in the gap between lookup and handing the client out.
+        let connections = self.connections.read().await;
+        let managed = connections.get(name)?;
+        managed.touch();
+        let client = Arc::clone(&managed.client);
+        drop(connections);
+        Some(client)
     }
 
     pub async fn connect(
@@ -132,7 +144,7 @@ impl ConnectionManager {
         if let Some(existing) = existing {
             drop(managed);
             let _ = candidate.close().await;
-            existing.touch().await;
+            existing.touch();
             return Ok(Arc::clone(&existing.client));
         }
 
@@ -148,24 +160,29 @@ impl ConnectionManager {
         Ok(false)
     }
 
+    /// Evicts connections that have exceeded the idle timeout and are not
+    /// currently leased by a caller.
+    ///
+    /// Idle eviction is intentionally ownership-aware. It never force-closes
+    /// an evicted transport: child channel/forwarding tasks may still hold
+    /// transport handles even after the caller releases its `Arc<SshClient>`.
+    /// Explicit `remove` and `close_all` remain the force-disconnect APIs.
     pub async fn prune_idle(&self) -> usize {
-        let entries: Vec<(String, Arc<ManagedConnection>)> = self
-            .connections
-            .read()
-            .await
-            .iter()
-            .map(|(name, managed)| (name.clone(), Arc::clone(managed)))
-            .collect();
-
-        let mut expired = Vec::new();
-        for (name, managed) in entries {
-            if managed.idle_for().await >= self.config.idle_timeout {
-                expired.push(name);
-            }
-        }
-
         let removed: Vec<Arc<ManagedConnection>> = {
+            // Holding the write lock makes the ownership check atomic with
+            // removal relative to `get`, which takes the read lock and clones
+            // the client before releasing it.
             let mut connections = self.connections.write().await;
+            let expired: Vec<String> = connections
+                .iter()
+                .filter_map(|(name, managed)| {
+                    let manager_is_only_client_owner = Arc::strong_count(&managed.client) == 1;
+                    (manager_is_only_client_owner
+                        && managed.idle_for() >= self.config.idle_timeout)
+                        .then(|| name.clone())
+                })
+                .collect();
+
             expired
                 .into_iter()
                 .filter_map(|name| connections.remove(&name))
@@ -173,9 +190,10 @@ impl ConnectionManager {
         };
 
         let count = removed.len();
-        for managed in removed {
-            let _ = managed.client.close().await;
-        }
+        // Dropping the manager's ownership is enough for idle eviction. Do not
+        // send SSH disconnect here: a forwarding/channel task may still own a
+        // lower-level transport handle. Explicit removal is allowed to close.
+        drop(removed);
         count
     }
 
