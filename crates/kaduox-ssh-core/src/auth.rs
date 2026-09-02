@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -88,13 +89,20 @@ fn default_identity_candidates(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+#[cfg(not(windows))]
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(windows)]
 fn user_home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
         .or_else(windows_home_from_drive_path)
+        .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
 }
 
+#[cfg(windows)]
 fn windows_home_from_drive_path() -> Option<OsString> {
     let drive = std::env::var_os("HOMEDRIVE")?;
     let path = std::env::var_os("HOMEPATH")?;
