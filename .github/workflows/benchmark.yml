@@ -1,0 +1,41 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      size_mb:
+        description: Large-file benchmark size in MiB
+        required: false
+        default: "64"
+      iterations:
+        description: Connect/exec iterations
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  local-openssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenSSH fixture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+      - name: Build release binary
+        run: cargo build --workspace --release --locked
+      - name: Run local OpenSSH benchmark
+        env:
+          KADUOX_BENCH_SIZE_MB: ${{ inputs.size_mb }}
+          KADUOX_BENCH_ITERATIONS: ${{ inputs.iterations }}
+        run: bash scripts/bench/local-openssh.sh | tee benchmark.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kaduox-benchmark-${{ github.sha }}
+          path: benchmark.csv
+          if-no-files-found: error

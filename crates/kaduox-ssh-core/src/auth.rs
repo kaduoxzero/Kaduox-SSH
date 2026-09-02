@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use russh::client::{self, KeyboardInteractiveAuthResponse};
+use russh::keys::Algorithm;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::key::PrivateKeyWithHashAlg;
@@ -73,9 +74,15 @@ async fn authenticate_private_key(
 ) -> Result<bool> {
     let key = load_secret_key(path, passphrase)
         .with_context(|| format!("failed to load private key {}", path.display()))?;
-    let hash = session.best_supported_rsa_hash().await?.flatten();
+
+    if matches!(key.algorithm(), Algorithm::Rsa { .. }) {
+        bail!(
+            "direct RSA private-key authentication is disabled because the current Russh RSA signer depends on RUSTSEC-2023-0071; use an SSH agent for RSA keys or migrate the key to Ed25519/ECDSA"
+        );
+    }
+
     Ok(session
-        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), None))
         .await?
         .success())
 }
@@ -111,6 +118,10 @@ pub(crate) async fn authenticate_with_agent(
     let identities = agent.request_identities().await?;
 
     for identity in identities {
+        // RSA identities are safe to keep compatible here because the private-key
+        // operation is delegated to the external agent. Kaduox only negotiates the
+        // RSA hash and forwards the signing request; it never handles the RSA
+        // private exponent locally.
         let hash = session.best_supported_rsa_hash().await?.flatten();
         let result = match identity {
             AgentIdentity::PublicKey { key, .. } => {

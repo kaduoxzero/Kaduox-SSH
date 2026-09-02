@@ -5,12 +5,14 @@ KSSH="${KSSH:-target/debug/kssh}"
 TEST_USER="${KADUOX_TEST_USER:-kaduox-ci}"
 JUMP_PORT="${KADUOX_JUMP_PORT:-40222}"
 TARGET_PORT="${KADUOX_TARGET_PORT:-40223}"
+RSA_HOST_PORT="${KADUOX_RSA_HOST_PORT:-40224}"
 HTTP_PORT="${KADUOX_HTTP_PORT:-39080}"
 LOCAL_FORWARD_PORT="${KADUOX_LOCAL_FORWARD_PORT:-39081}"
 SOCKS_PORT="${KADUOX_SOCKS_PORT:-39082}"
 REMOTE_FORWARD_PORT="${KADUOX_REMOTE_FORWARD_PORT:-39083}"
 WORK="${RUNNER_TEMP:-/tmp}/kaduox-ssh-integration"
 KEY="$WORK/client_ed25519"
+RSA_KEY="$WORK/client_rsa"
 SSH_DIR="/home/$TEST_USER/.ssh"
 
 mkdir -p "$WORK"
@@ -63,12 +65,17 @@ stop_pid() {
 start_sshd() {
   local name="$1"
   local port="$2"
+  local host_key_type="${3:-ed25519}"
   local config="$WORK/sshd-$name.conf"
   local pid_file="$WORK/sshd-$name.pid"
-  local host_key="$WORK/ssh_host_${name}_ed25519_key"
+  local host_key="$WORK/ssh_host_${name}_${host_key_type}_key"
   local log="$WORK/sshd-$name.log"
 
-  ssh-keygen -q -t ed25519 -N '' -f "$host_key"
+  if [[ "$host_key_type" == 'rsa' ]]; then
+    ssh-keygen -q -t rsa -b 3072 -N '' -f "$host_key"
+  else
+    ssh-keygen -q -t ed25519 -N '' -f "$host_key"
+  fi
   cat >"$config" <<EOF
 Port $port
 ListenAddress 127.0.0.1
@@ -123,11 +130,15 @@ fi
 sudo useradd -m -s /bin/bash "$TEST_USER"
 # Ubuntu creates passwordless test accounts in a locked state by default. OpenSSH
 # rejects locked accounts before public-key authentication, so unlock the fixture
-# account while keeping PasswordAuthentication disabled in both test daemons.
+# account while keeping PasswordAuthentication disabled in all test daemons.
 sudo passwd -d "$TEST_USER" >/dev/null
 ssh-keygen -q -t ed25519 -N '' -f "$KEY"
+ssh-keygen -q -t rsa -b 3072 -N '' -f "$RSA_KEY"
 sudo install -d -m 0700 -o "$TEST_USER" -g "$TEST_USER" "$SSH_DIR"
 sudo install -m 0600 -o "$TEST_USER" -g "$TEST_USER" "$KEY.pub" "$SSH_DIR/authorized_keys"
+sudo tee -a "$SSH_DIR/authorized_keys" <"$RSA_KEY.pub" >/dev/null
+sudo chown "$TEST_USER:$TEST_USER" "$SSH_DIR/authorized_keys"
+sudo chmod 0600 "$SSH_DIR/authorized_keys"
 echo "$TEST_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/kaduox-ci >/dev/null
 sudo chmod 0440 /etc/sudoers.d/kaduox-ci
 
@@ -143,6 +154,7 @@ chmod 600 "$HOME/.ssh/config"
 
 start_sshd jump "$JUMP_PORT" >/dev/null
 start_sshd target "$TARGET_PORT" >/dev/null
+start_sshd rsa-host "$RSA_HOST_PORT" rsa >/dev/null
 
 echo '[integration] fixture OpenSSH client baseline'
 fixture_output="$(ssh -F /dev/null -i "$KEY" -p "$TARGET_PORT" \
@@ -156,6 +168,19 @@ fixture_output="$(ssh -F /dev/null -i "$KEY" -p "$TARGET_PORT" \
 echo '[integration] direct exec'
 exec_output="$(run_kssh exec -- printf integration-ok)"
 [[ "$exec_output" == 'integration-ok' ]] || fail "unexpected exec output: $exec_output"
+
+echo '[integration] RSA-only server host keys fail during algorithm negotiation'
+if "$KSSH" 127.0.0.1 --port "$RSA_HOST_PORT" --user "$TEST_USER" --identity "$KEY" --host-key insecure exec -- true >"$WORK/rsa-host.log" 2>&1; then
+  fail 'RSA-only server host key unexpectedly succeeded while RSA verification is disabled'
+fi
+if grep -q 'Wrong server signature' "$WORK/rsa-host.log"; then
+  cat "$WORK/rsa-host.log" >&2
+  fail 'RSA host-key algorithm was advertised even though its verifier is disabled'
+fi
+grep -qi 'No common.*algorithm' "$WORK/rsa-host.log" || {
+  cat "$WORK/rsa-host.log" >&2
+  fail 'RSA-only host did not fail during algorithm negotiation'
+}
 
 echo '[integration] sudo privilege switch'
 sudo_output="$(run_kssh exec --as-user root -- id -u | tr -d '\r\n')"
@@ -174,6 +199,23 @@ eval "$(ssh-agent -s)" >/dev/null
 ssh-add "$KEY" >/dev/null
 agent_output="$("$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --host-key insecure exec -- printf agent-ok)"
 [[ "$agent_output" == 'agent-ok' ]] || fail "agent authentication returned: $agent_output"
+
+echo '[integration] direct RSA private-key signing is blocked'
+if "$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --identity "$RSA_KEY" --host-key insecure exec -- true >"$WORK/rsa-direct.log" 2>&1; then
+  fail 'direct RSA private-key authentication unexpectedly succeeded'
+fi
+grep -q 'direct RSA private-key authentication is disabled' "$WORK/rsa-direct.log" || {
+  cat "$WORK/rsa-direct.log" >&2
+  fail 'direct RSA private-key rejection did not explain the security policy'
+}
+
+echo '[integration] RSA authentication through external SSH agent'
+ssh-add -D >/dev/null
+ssh-add "$RSA_KEY" >/dev/null
+rsa_agent_output="$("$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --host-key insecure exec -- printf rsa-agent-ok)"
+[[ "$rsa_agent_output" == 'rsa-agent-ok' ]] || fail "RSA agent authentication returned: $rsa_agent_output"
+ssh-add -D >/dev/null
+ssh-add "$KEY" >/dev/null
 
 echo '[integration] agent forwarding'
 forwarded_output="$("$KSSH" 127.0.0.1 --port "$TARGET_PORT" --user "$TEST_USER" --host-key insecure -A exec -- sh -lc "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $JUMP_PORT $TEST_USER@127.0.0.1 printf forwarded-agent")"

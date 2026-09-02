@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -5,7 +6,7 @@ use std::task::{Context as TaskContext, Poll};
 
 use anyhow::{Context, Result, bail};
 use russh::client;
-use russh::{ChannelMsg, Disconnect};
+use russh::{ChannelMsg, Disconnect, Preferred};
 use russh_sftp::client::{Config as SftpConfig, SftpSession};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -331,8 +332,30 @@ fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
         keepalive_interval: config.keepalive_interval,
         keepalive_max: 3,
         nodelay: true,
+        preferred: hardened_preferred(),
         ..Default::default()
     })
+}
+
+fn jump_ssh_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
+        nodelay: true,
+        preferred: hardened_preferred(),
+        ..Default::default()
+    })
+}
+
+fn hardened_preferred() -> Preferred {
+    let mut preferred = Preferred::default();
+    preferred.key = Cow::Owned(
+        preferred
+            .key
+            .iter()
+            .filter(|algorithm| !algorithm.as_str().contains("rsa"))
+            .cloned()
+            .collect(),
+    );
+    preferred
 }
 
 fn handler_for(config: &ConnectionConfig, state: HandlerState) -> ClientHandler {
@@ -364,7 +387,7 @@ async fn connect_via_jumps(
                 .with_context(|| format!("failed to open tunnel to jump host {}", jump.alias))?;
             keepalive.push(Arc::new(previous));
             client::connect_stream(
-                Arc::new(client::Config::default()),
+                jump_ssh_config(),
                 channel.into_stream(),
                 jump_handler(jump, config),
             )
@@ -372,7 +395,7 @@ async fn connect_via_jumps(
             .with_context(|| format!("SSH handshake failed for jump host {}", jump.alias))?
         } else {
             client::connect(
-                Arc::new(client::Config::default()),
+                jump_ssh_config(),
                 (jump.host.as_str(), jump.port),
                 jump_handler(jump, config),
             )

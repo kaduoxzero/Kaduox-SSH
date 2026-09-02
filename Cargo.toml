@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -17,8 +17,19 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
 rpassword = "7.4"
-russh = "0.63.1"
+# Keep Russh's crypto backend and compression, but deliberately do not enable
+# its optional `rsa` feature. Russh 0.63.1's RSA private-key signer pulls
+# rsa 0.10.0-rc.18, which is affected by RUSTSEC-2023-0071 with no fixed
+# release available. Ed25519/ECDSA private keys and agent-backed signing remain
+# the supported authentication paths until an upstream constant-time fix lands.
+russh = { version = "0.63.1", default-features = false, features = ["aws-lc-rs", "flate2"] }
 russh-config = "0.58.0"
 russh-sftp = "2.4.0"
 tokio = { version = "1.47", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
