@@ -14,6 +14,7 @@ use crate::handler::{ClientHandler, ForwardTarget, HandlerState};
 
 const MAX_ACTIVE_FORWARD_CONNECTIONS: usize = 256;
 const FORWARD_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const SOCKS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct LocalForward {
@@ -122,6 +123,40 @@ async fn handle_socks5(
     mut local: TcpStream,
     peer: SocketAddr,
 ) -> Result<()> {
+    let (host, port) = timeout(SOCKS_HANDSHAKE_TIMEOUT, negotiate_socks5(&mut local))
+        .await
+        .context("SOCKS5 handshake timed out")??;
+
+    let channel = timeout(
+        FORWARD_CHANNEL_OPEN_TIMEOUT,
+        session.channel_open_direct_tcpip(
+            host,
+            u32::from(port),
+            peer.ip().to_string(),
+            u32::from(peer.port()),
+        ),
+    )
+    .await;
+
+    match channel {
+        Ok(Ok(channel)) => {
+            local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+            let mut remote = channel.into_stream();
+            copy_bidirectional(&mut local, &mut remote).await?;
+            Ok(())
+        }
+        Ok(Err(error)) => {
+            let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            Err(error.into())
+        }
+        Err(_) => {
+            let _ = local.write_all(&[5, 6, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            bail!("SOCKS SSH channel-open request timed out")
+        }
+    }
+}
+
+async fn negotiate_socks5(local: &mut TcpStream) -> Result<(String, u16)> {
     let version = local.read_u8().await?;
     if version != 5 {
         bail!("unsupported SOCKS version {version}");
@@ -172,34 +207,7 @@ async fn handle_socks5(
         _ => bail!("unsupported SOCKS address type {address_type}"),
     };
     let port = local.read_u16().await?;
-
-    let channel = timeout(
-        FORWARD_CHANNEL_OPEN_TIMEOUT,
-        session.channel_open_direct_tcpip(
-            host,
-            u32::from(port),
-            peer.ip().to_string(),
-            u32::from(peer.port()),
-        ),
-    )
-    .await;
-
-    match channel {
-        Ok(Ok(channel)) => {
-            local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
-            let mut remote = channel.into_stream();
-            copy_bidirectional(&mut local, &mut remote).await?;
-            Ok(())
-        }
-        Ok(Err(error)) => {
-            let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-            Err(error.into())
-        }
-        Err(_) => {
-            let _ = local.write_all(&[5, 6, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-            bail!("SOCKS SSH channel-open request timed out")
-        }
-    }
+    Ok((host, port))
 }
 
 pub(crate) async fn start_remote_forward(
@@ -243,5 +251,6 @@ mod tests {
     fn forward_resource_limits_are_nonzero() {
         assert!(MAX_ACTIVE_FORWARD_CONNECTIONS > 0);
         assert!(!FORWARD_CHANNEL_OPEN_TIMEOUT.is_zero());
+        assert!(!SOCKS_HANDSHAKE_TIMEOUT.is_zero());
     }
 }
