@@ -12,6 +12,21 @@ fn validate_mode(mode: u32) -> Result<()> {
     Ok(())
 }
 
+fn validate_recursive_destination(path: &str) -> Result<()> {
+    if path.is_empty() || path == "/" {
+        bail!("privileged recursive destination must not be empty or the filesystem root");
+    }
+    if path
+        .split('/')
+        .any(|component| component == "." || component == "..")
+    {
+        bail!(
+            "privileged recursive destination must not contain '.' or '..' path components: {path}"
+        );
+    }
+    Ok(())
+}
+
 fn ensure_privileged_install_success(output: &CommandOutput) -> Result<()> {
     match output.exit_status {
         Some(0) => Ok(()),
@@ -111,9 +126,7 @@ impl SshClient {
     ) -> Result<TransferSummary> {
         validate_mode(file_mode)?;
         validate_mode(directory_mode)?;
-        if remote_path.is_empty() {
-            bail!("remote path cannot be empty");
-        }
+        validate_recursive_destination(remote_path)?;
 
         let metadata = tokio::fs::symlink_metadata(local_path)
             .await
@@ -173,6 +186,15 @@ mod tests {
     fn mode_range_accepts_unix_special_bits() {
         assert!(validate_mode(0o7777).is_ok());
         assert!(validate_mode(0o10000).is_err());
+    }
+
+    #[test]
+    fn recursive_destination_rejects_destructive_paths() {
+        assert!(validate_recursive_destination("/").is_err());
+        assert!(validate_recursive_destination(".").is_err());
+        assert!(validate_recursive_destination("..").is_err());
+        assert!(validate_recursive_destination("/srv/../etc").is_err());
+        assert!(validate_recursive_destination("/srv/app").is_ok());
     }
 
     #[test]
