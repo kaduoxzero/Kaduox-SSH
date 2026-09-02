@@ -23,6 +23,8 @@ pub struct JumpHost {
     pub port: u16,
     pub username: String,
     pub identity_files: Vec<PathBuf>,
+    pub host_key_policy: HostKeyPolicy,
+    pub known_hosts_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,14 +90,8 @@ impl ConnectionConfig {
         config.identity_files = parsed.host_config.identity_file.clone().unwrap_or_default();
         config.known_hosts_file = parsed.host_config.user_known_hosts_file.clone();
         config.proxy_command = parsed.host_config.proxy_command.clone();
-
-        if let Some(strict) = parsed.host_config.strict_host_key_checking {
-            config.host_key_policy = if strict {
-                HostKeyPolicy::Strict
-            } else {
-                HostKeyPolicy::Insecure
-            };
-        }
+        config.host_key_policy =
+            host_key_policy_from_config(parsed.host_config.strict_host_key_checking);
 
         if let Some(proxy_jump) = &parsed.host_config.proxy_jump {
             if !proxy_jump.eq_ignore_ascii_case("none") {
@@ -154,6 +150,10 @@ fn resolve_jump_host(spec: &str, validate_untrusted: bool) -> Result<JumpHost> {
     }
 
     let parsed = parse_home_config(&alias)?;
+    let identity_files = parsed.host_config.identity_file.clone().unwrap_or_default();
+    let known_hosts_file = parsed.host_config.user_known_hosts_file.clone();
+    let host_key_policy =
+        host_key_policy_from_config(parsed.host_config.strict_host_key_checking);
 
     Ok(JumpHost {
         alias,
@@ -162,8 +162,18 @@ fn resolve_jump_host(spec: &str, validate_untrusted: bool) -> Result<JumpHost> {
         username: user_override
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| parsed.user()),
-        identity_files: parsed.host_config.identity_file.unwrap_or_default(),
+        identity_files,
+        host_key_policy,
+        known_hosts_file,
     })
+}
+
+fn host_key_policy_from_config(strict: Option<bool>) -> HostKeyPolicy {
+    match strict {
+        Some(true) => HostKeyPolicy::Strict,
+        Some(false) => HostKeyPolicy::Insecure,
+        None => HostKeyPolicy::AcceptNew,
+    }
 }
 
 fn validate_untrusted_shell_token(value: &str, role: &str) -> Result<()> {
@@ -276,7 +286,7 @@ fn parse_host_port(value: &str) -> Result<(String, Option<u16>)> {
             return Ok((value.to_owned(), None));
         };
         if !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Ok((host.to_owned(), Some(port.parse()?)));
+            return Ok((host.to_owned(), Some(port.parse()?));
         }
     }
 
@@ -325,6 +335,13 @@ mod tests {
     #[test]
     fn malformed_config_is_not_silently_defaulted() {
         assert!(parse_openssh_contents("User deploy\nHost prod\n", "prod").is_err());
+    }
+
+    #[test]
+    fn host_key_policy_defaults_and_overrides_are_explicit() {
+        assert_eq!(host_key_policy_from_config(None), HostKeyPolicy::AcceptNew);
+        assert_eq!(host_key_policy_from_config(Some(true)), HostKeyPolicy::Strict);
+        assert_eq!(host_key_policy_from_config(Some(false)), HostKeyPolicy::Insecure);
     }
 
     #[test]
