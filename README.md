@@ -20,6 +20,8 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - transfer progress events and cooperative cancellation
 - configurable SFTP packet size, pipelined write concurrency, and request timeout
 - sudo-backed privileged single-file upload using unprivileged SFTP staging
+- SFTP-native local-to-remote directory synchronization with non-mutating planning
+- explicit `--delete` policy for destructive sync operations
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
@@ -29,11 +31,11 @@ Privileged file upload does not pretend SFTP can change uid. Kaduox-SSH uploads 
 
 ```text
 crates/
-  kaduox-ssh-core/   # transport/auth/session/forward/SFTP/privilege core
+  kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege core
   kaduox-ssh-cli/    # current CLI frontend
 ```
 
-The core is intentionally independent from a particular terminal UI so future desktop and TUI frontends can reuse the same connection and transfer engines.
+The core is intentionally independent from a particular terminal UI so future desktop and TUI frontends can reuse the same connection, forwarding, and transfer engines.
 
 ## Build
 
@@ -84,15 +86,29 @@ kssh server.example.com download /srv/logs ./logs -r --jobs 8
 
 # Install a staged upload as root, without running SFTP as root
 kssh server.example.com upload ./nginx.conf /etc/nginx/nginx.conf --as-user root --mode 0644
+
+# Inspect a sync plan without modifying the server
+kssh server.example.com sync ./dist /srv/www/dist --dry-run
+
+# Apply non-destructive synchronization: upload/update/create only
+kssh server.example.com sync ./dist /srv/www/dist
+
+# Mirror the local tree, explicitly allowing deletion of remote-only entries
+kssh server.example.com sync ./dist /srv/www/dist --delete
+
+# Faster comparisons when timestamps are unreliable
+kssh server.example.com sync ./dist /srv/www/dist --size-only --jobs 8
 ```
 
 By default host keys use `accept-new`: unknown keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing entry. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments.
 
-## Transfer design
+## Transfer and sync design
 
-Transfers use bounded buffers and leave large-file pipelining to `russh-sftp`, while Kaduox-SSH controls higher-level policy such as stable resume files, atomic finalization, directory concurrency, progress, cancellation, and privileged staging. SFTP session limits are configurable locally and are still constrained by limits negotiated with the remote server.
+Transfers use bounded buffers and leave large-file request pipelining to `russh-sftp`, while Kaduox-SSH controls higher-level policy such as stable resume files, atomic finalization, directory concurrency, progress, cancellation, and privileged staging. SFTP session limits are configurable locally and are still constrained by limits negotiated with the remote server.
 
-Symbolic links encountered during recursive transfers are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy will be added separately.
+Synchronization scans both local and remote directory trees and builds a typed action plan before mutation. The CLI prints the plan before applying it. Remote-only entries are preserved by default; deletion and file/directory conflict replacement are only permitted when `--delete` is explicitly supplied. `--dry-run` never mutates the remote tree.
+
+Symbolic links encountered during recursive transfer or synchronization scans are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy will be added separately.
 
 ## Branch model
 
@@ -106,10 +122,10 @@ feat/* / fix/* / perf/* -> develop -> release/* -> main
 
 ### v0.2 follow-up
 
-- mirror/sync mode with explicit dry-run and delete policy
 - richer transfer verification/checksum policy
 - connection profiles
 - integration tests against real OpenSSH servers
+- Windows CI and agent-forwarding compatibility coverage
 
 ### v0.3+
 

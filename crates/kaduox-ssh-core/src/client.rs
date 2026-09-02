@@ -294,7 +294,10 @@ impl SshClient {
         Ok(())
     }
 
-    async fn open_sftp_for_transfer(&self, options: &TransferOptions) -> Result<SftpSession> {
+    pub(crate) async fn open_sftp_for_transfer(
+        &self,
+        options: &TransferOptions,
+    ) -> Result<SftpSession> {
         options.validated()?;
         let channel = self.session.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
