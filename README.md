@@ -5,6 +5,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 ## Current capabilities
 
 - SSH connection, command execution, and interactive PTY shell
+- streaming command stdout/stderr with async backpressure for large-output exec workloads
 - OpenSSH `~/.ssh/config` resolution
 - ProxyJump chains and ProxyCommand transports
 - password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
@@ -80,7 +81,7 @@ kssh server.example.com --user deploy shell
 # Root shell over the same SSH transport
 kssh server.example.com --user deploy shell --as-user root
 
-# Execute a command
+# Execute a command; stdout/stderr are streamed directly to the local terminal
 kssh server.example.com --user deploy exec -- uname -a
 
 # Execute as another remote OS user
@@ -139,6 +140,8 @@ Symbolic links encountered during recursive transfer or synchronization scans ar
 ## Validation and performance
 
 Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, and TCP forwarding.
+
+`SshClient::exec_stream` writes stdout and stderr incrementally to caller-provided async sinks and naturally applies backpressure when a sink is slower than the remote producer. The compatibility `exec` API still collects output for callers that explicitly need a complete `CommandOutput`; the `kssh exec` CLI path uses streaming so large command output is not retained wholesale by the CLI process.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
