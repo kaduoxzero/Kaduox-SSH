@@ -42,23 +42,13 @@ impl SyncPlan {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SyncOptions {
     /// Delete remote entries that are not present locally and allow type-conflict replacement.
     pub delete: bool,
     /// Compare regular files by size only. When false, size and second-resolution mtime are used.
     pub size_only: bool,
     pub transfer: TransferOptions,
-}
-
-impl Default for SyncOptions {
-    fn default() -> Self {
-        Self {
-            delete: false,
-            size_only: false,
-            transfer: TransferOptions::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,8 +466,10 @@ mod tests {
         let safe_plan = build_push_plan(&local, &remote, &SyncOptions::default()).unwrap();
         assert!(safe_plan.is_empty());
 
-        let mut destructive = SyncOptions::default();
-        destructive.delete = true;
+        let destructive = SyncOptions {
+            delete: true,
+            ..Default::default()
+        };
         let plan = build_push_plan(&local, &remote, &destructive).unwrap();
         assert_eq!(plan.entries_to_delete, 1);
     }
