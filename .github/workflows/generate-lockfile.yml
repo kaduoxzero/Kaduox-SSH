@@ -6,21 +6,28 @@ on:
       - chore/reproducible-build
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   lockfile:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: chore/reproducible-build
       - uses: dtolnay/rust-toolchain@stable
       - name: Generate lockfile
         run: cargo generate-lockfile
       - name: Verify locked workspace
         run: cargo check --workspace --all-targets --locked
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cargo-lock
-          path: Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
+      - name: Commit lockfile when changed
+        shell: bash
+        run: |
+          if git diff --quiet -- Cargo.lock && git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock
+          git commit -m 'chore: commit Cargo.lock for reproducible builds'
+          git push origin HEAD:chore/reproducible-build
