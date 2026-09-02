@@ -224,9 +224,6 @@ async fn main() -> Result<()> {
     if let Some(user) = &cli.user {
         config.username = user.clone();
     }
-    if let Some(mode) = cli.host_key {
-        config.host_key_policy = mode.into();
-    }
     if let Some(jump) = &cli.jump {
         config.jump_hosts = resolve_jump_hosts(jump)?;
         config.proxy_command = None;
@@ -234,6 +231,13 @@ async fn main() -> Result<()> {
     if let Some(proxy_command) = &cli.proxy_command {
         config.proxy_command = Some(proxy_command.clone());
         config.jump_hosts.clear();
+    }
+    if let Some(mode) = cli.host_key {
+        let policy: HostKeyPolicy = mode.into();
+        config.host_key_policy = policy;
+        for jump in &mut config.jump_hosts {
+            jump.host_key_policy = policy;
+        }
     }
     config.agent_forwarding = cli.forward_agent;
 
