@@ -467,14 +467,7 @@ where
         }
         writer.write_all(&buffer[..read]).await?;
         copied += read as u64;
-        emit_progress(
-            options,
-            direction,
-            path,
-            initial + copied,
-            total,
-            false,
-        );
+        emit_progress(options, direction, path, initial + copied, total, false);
     }
     Ok(copied)
 }
@@ -511,7 +504,11 @@ pub(crate) async fn ensure_remote_dir(sftp: &SftpSession, path: &str) -> Result<
     }
 
     let absolute = path.starts_with('/');
-    let mut current = if absolute { "/".to_owned() } else { String::new() };
+    let mut current = if absolute {
+        "/".to_owned()
+    } else {
+        String::new()
+    };
     for segment in path.split('/').filter(|segment| !segment.is_empty()) {
         if segment == "." {
             continue;
@@ -570,12 +567,16 @@ fn transfer_local_work_path(path: &Path, atomic: bool) -> PathBuf {
 }
 
 async fn finish_remote_atomic(sftp: &SftpSession, work_path: &str, final_path: &str) -> Result<()> {
-    match sftp.rename(work_path.to_owned(), final_path.to_owned()).await {
+    match sftp
+        .rename(work_path.to_owned(), final_path.to_owned())
+        .await
+    {
         Ok(()) => Ok(()),
         Err(first_error) => {
             if sftp.try_exists(final_path.to_owned()).await? {
                 sftp.remove_file(final_path.to_owned()).await?;
-                sftp.rename(work_path.to_owned(), final_path.to_owned()).await?;
+                sftp.rename(work_path.to_owned(), final_path.to_owned())
+                    .await?;
                 Ok(())
             } else {
                 Err(first_error.into())
@@ -618,7 +619,8 @@ async fn preserve_remote_mtime(
         attributes.permissions = Some(local_metadata.permissions().mode());
     }
     if attributes.mtime.is_some() || attributes.permissions.is_some() {
-        sftp.set_metadata(remote_path.to_owned(), attributes).await?;
+        sftp.set_metadata(remote_path.to_owned(), attributes)
+            .await?;
     }
     Ok(())
 }
@@ -640,7 +642,13 @@ pub(crate) fn unique_staging_path(file_name: &str) -> String {
         .unwrap_or_default();
     let safe_name = file_name
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     format!("/tmp/.kaduox-{stamp}-{safe_name}")
 }
