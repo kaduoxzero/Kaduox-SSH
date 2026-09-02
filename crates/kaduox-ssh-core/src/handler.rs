@@ -9,13 +9,14 @@ use russh::keys::PublicKeyOrCertificate;
 use russh::{Channel, ChannelOpenFailure};
 use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::time::timeout;
 
 use crate::config::HostKeyPolicy;
 
 const REMOTE_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AGENT_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_SERVER_INITIATED_FORWARD_CHANNELS: usize = 128;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardTarget {
@@ -23,10 +24,21 @@ pub(crate) struct ForwardTarget {
     pub port: u16,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct HandlerState {
     pub(crate) remote_forwards: Arc<RwLock<HashMap<(String, u32), ForwardTarget>>>,
     pub agent_forwarding: bool,
+    server_forward_slots: Arc<Semaphore>,
+}
+
+impl Default for HandlerState {
+    fn default() -> Self {
+        Self {
+            remote_forwards: Arc::new(RwLock::new(HashMap::new())),
+            agent_forwarding: false,
+            server_forward_slots: Arc::new(Semaphore::new(MAX_SERVER_INITIATED_FORWARD_CHANNELS)),
+        }
+    }
 }
 
 impl HandlerState {
@@ -55,6 +67,12 @@ impl HandlerState {
                     })
                     .map(|(_, target)| target.clone())
             })
+    }
+
+    fn try_acquire_server_forward_slot(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.server_forward_slots)
+            .try_acquire_owned()
+            .ok()
     }
 }
 
@@ -133,12 +151,18 @@ impl client::Handler for ClientHandler {
                 .await;
             return Ok(());
         };
+        let Some(slot) = self.state.try_acquire_server_forward_slot() else {
+            reply.reject(ChannelOpenFailure::ResourceShortage).await;
+            return Ok(());
+        };
 
         // ChannelOpenHandle is deliberately movable out of the handler callback.
         // Do not hold the Russh client event loop while a local target is slow or
         // unreachable: resolve the local connection and confirm/reject the SSH
-        // channel asynchronously instead.
+        // channel asynchronously instead. The semaphore permit lives for the
+        // complete forwarded connection and bounds socket/task growth.
         tokio::spawn(async move {
+            let _slot = slot;
             let local = timeout(
                 REMOTE_FORWARD_CONNECT_TIMEOUT,
                 TcpStream::connect((target.host.as_str(), target.port)),
@@ -168,6 +192,10 @@ impl client::Handler for ClientHandler {
                 .await;
             return Ok(());
         }
+        let Some(slot) = self.state.try_acquire_server_forward_slot() else {
+            reply.reject(ChannelOpenFailure::ResourceShortage).await;
+            return Ok(());
+        };
 
         #[cfg(unix)]
         {
@@ -176,6 +204,7 @@ impl client::Handler for ClientHandler {
                 return Ok(());
             };
             tokio::spawn(async move {
+                let _slot = slot;
                 let agent = timeout(
                     AGENT_FORWARD_CONNECT_TIMEOUT,
                     tokio::net::UnixStream::connect(socket),
@@ -201,6 +230,7 @@ impl client::Handler for ClientHandler {
             };
             reply.accept().await;
             tokio::spawn(async move {
+                let _slot = slot;
                 let mut remote = channel.into_stream();
                 let _ = copy_bidirectional(&mut agent, &mut remote).await;
             });
@@ -208,7 +238,10 @@ impl client::Handler for ClientHandler {
         }
 
         #[allow(unreachable_code)]
-        Ok(())
+        {
+            drop(slot);
+            Ok(())
+        }
     }
 }
 
@@ -251,5 +284,17 @@ mod tests {
         let target = state.remote_forward("192.0.2.10", 2200).await.unwrap();
         assert_eq!(target.host, "db.internal");
         assert_eq!(target.port, 5432);
+    }
+
+    #[test]
+    fn server_initiated_forward_channels_are_bounded() {
+        let state = HandlerState::default();
+        let mut permits = Vec::new();
+        for _ in 0..MAX_SERVER_INITIATED_FORWARD_CHANNELS {
+            permits.push(state.try_acquire_server_forward_slot().unwrap());
+        }
+        assert!(state.try_acquire_server_forward_slot().is_none());
+        drop(permits.pop());
+        assert!(state.try_acquire_server_forward_slot().is_some());
     }
 }
