@@ -177,8 +177,7 @@ impl ConnectionManager {
                 .iter()
                 .filter_map(|(name, managed)| {
                     let manager_is_only_client_owner = Arc::strong_count(&managed.client) == 1;
-                    (manager_is_only_client_owner
-                        && managed.idle_for() >= self.config.idle_timeout)
+                    (manager_is_only_client_owner && managed.idle_for() >= self.config.idle_timeout)
                         .then(|| name.clone())
                 })
                 .collect();
