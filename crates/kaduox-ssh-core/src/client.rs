@@ -3,6 +3,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use russh::client;
@@ -153,11 +154,26 @@ impl SshClient {
 
     pub async fn exec(&self, command: &str, remote_user: &RemoteUser) -> Result<CommandOutput> {
         let command = command_for_user(command, remote_user);
-        let mut channel = self.session.channel_open_session().await?;
+        let mut channel = timeout(
+            self.config.channel_open_timeout,
+            self.session.channel_open_session(),
+        )
+        .await
+        .context("SSH exec session channel-open timed out")??;
         if self.config.agent_forwarding {
-            channel.agent_forward(true).await?;
+            timeout(
+                self.config.channel_request_timeout,
+                channel.agent_forward(true),
+            )
+            .await
+            .context("SSH agent-forward request timed out")??;
         }
-        channel.exec(true, command).await?;
+        timeout(
+            self.config.channel_request_timeout,
+            channel.exec(true, command),
+        )
+        .await
+        .context("SSH exec request timed out")??;
 
         let mut output = CommandOutput::default();
         while let Some(message) = channel.wait().await {
@@ -183,7 +199,12 @@ impl SshClient {
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
-        let mut channel = self.session.channel_open_session().await?;
+        let mut channel = timeout(
+            self.config.channel_open_timeout,
+            self.session.channel_open_session(),
+        )
+        .await
+        .context("SSH shell session channel-open timed out")??;
         channel
             .request_pty(
                 false,
@@ -196,12 +217,31 @@ impl SshClient {
             )
             .await?;
         if self.config.agent_forwarding {
-            channel.agent_forward(true).await?;
+            timeout(
+                self.config.channel_request_timeout,
+                channel.agent_forward(true),
+            )
+            .await
+            .context("SSH shell agent-forward request timed out")??;
         }
 
         match remote_user {
-            RemoteUser::Current => channel.request_shell(true).await?,
-            RemoteUser::Sudo(user) => channel.exec(true, sudo_login_shell(user)).await?,
+            RemoteUser::Current => {
+                timeout(
+                    self.config.channel_request_timeout,
+                    channel.request_shell(true),
+                )
+                .await
+                .context("SSH shell request timed out")??;
+            }
+            RemoteUser::Sudo(user) => {
+                timeout(
+                    self.config.channel_request_timeout,
+                    channel.exec(true, sudo_login_shell(user)),
+                )
+                .await
+                .context("SSH sudo shell exec request timed out")??;
+            }
         }
 
         let mut buffer = vec![0_u8; 16 * 1024];
@@ -334,14 +374,31 @@ impl SshClient {
         options: &TransferOptions,
     ) -> Result<SftpSession> {
         options.validated()?;
-        let channel = self.session.channel_open_session().await?;
-        channel.request_subsystem(true, "sftp").await?;
+        let channel = timeout(
+            self.config.channel_open_timeout,
+            self.session.channel_open_session(),
+        )
+        .await
+        .context("SFTP session channel-open timed out")??;
+        timeout(
+            self.config.channel_request_timeout,
+            channel.request_subsystem(true, "sftp"),
+        )
+        .await
+        .context("SFTP subsystem request timed out")??;
         let config = SftpConfig {
             max_packet_len: options.sftp_packet_size,
             max_concurrent_writes: options.sftp_write_concurrency,
             request_timeout_secs: options.request_timeout_secs,
         };
-        Ok(SftpSession::new_with_config(channel.into_stream(), config).await?)
+        let initialization_timeout = Duration::from_secs(options.request_timeout_secs);
+        timeout(
+            initialization_timeout,
+            SftpSession::new_with_config(channel.into_stream(), config),
+        )
+        .await
+        .context("SFTP protocol initialization timed out")?
+        .map_err(Into::into)
     }
 }
 
