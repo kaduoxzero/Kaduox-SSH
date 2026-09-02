@@ -5,6 +5,13 @@ use anyhow::{Context, Result, bail};
 use crate::client::{RemoteUser, SshClient, quote_posix};
 use crate::transfer::{TransferOptions, unique_staging_path};
 
+fn validate_mode(mode: u32) -> Result<()> {
+    if mode > 0o7777 {
+        bail!("invalid file mode {mode:#o}; expected <= 0o7777");
+    }
+    Ok(())
+}
+
 impl SshClient {
     /// Upload a file as the SSH login user, then atomically install it as another
     /// remote OS user through sudo. The SFTP server itself never changes uid.
@@ -16,9 +23,7 @@ impl SshClient {
         mode: u32,
         options: TransferOptions,
     ) -> Result<u64> {
-        if mode > 0o7777 {
-            bail!("invalid file mode {mode:#o}; expected <= 0o7777");
-        }
+        validate_mode(mode)?;
         if remote_path.is_empty() {
             bail!("remote path cannot be empty");
         }
@@ -69,9 +74,11 @@ impl SshClient {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn mode_range_matches_unix_special_bits() {
-        assert!(0o7777_u32 <= 0o7777);
-        assert!(0o10000_u32 > 0o7777);
+    fn mode_range_accepts_unix_special_bits() {
+        assert!(validate_mode(0o7777).is_ok());
+        assert!(validate_mode(0o10000).is_err());
     }
 }
