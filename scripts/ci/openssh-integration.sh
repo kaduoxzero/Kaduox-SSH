@@ -149,6 +149,16 @@ Host 127.0.0.1
   User $TEST_USER
   IdentityFile $KEY
   IdentitiesOnly yes
+
+Host default-target
+  HostName 127.0.0.1
+  Port $TARGET_PORT
+  User $TEST_USER
+
+Host default-jump
+  HostName 127.0.0.1
+  Port $JUMP_PORT
+  User $TEST_USER
 EOF
 chmod 600 "$HOME/.ssh/config"
 
@@ -164,6 +174,16 @@ fixture_output="$(ssh -F /dev/null -i "$KEY" -p "$TARGET_PORT" \
   -o UserKnownHostsFile=/dev/null \
   "$TEST_USER@127.0.0.1" printf fixture-ok)" || fail 'native OpenSSH client could not authenticate to target fixture'
 [[ "$fixture_output" == 'fixture-ok' ]] || fail "unexpected fixture output: $fixture_output"
+
+echo '[integration] default identity discovery'
+install -m 0600 "$KEY" "$HOME/.ssh/id_ed25519"
+default_identity_output="$("$KSSH" default-target --host-key insecure exec -- printf default-identity-ok)"
+[[ "$default_identity_output" == 'default-identity-ok' ]] || fail "default identity discovery returned: $default_identity_output"
+
+echo '[integration] ProxyJump default identity discovery'
+default_jump_output="$("$KSSH" default-target --host-key insecure -J default-jump exec -- printf default-jump-ok)"
+[[ "$default_jump_output" == 'default-jump-ok' ]] || fail "ProxyJump default identity discovery returned: $default_jump_output"
+rm -f "$HOME/.ssh/id_ed25519"
 
 echo '[integration] direct exec'
 exec_output="$(run_kssh exec -- printf integration-ok)"
