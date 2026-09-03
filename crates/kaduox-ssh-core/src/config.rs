@@ -1,3 +1,4 @@
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -86,9 +87,7 @@ impl ConnectionConfig {
         }
 
         if let Some(proxy_jump) = &parsed.host_config.proxy_jump {
-            if !proxy_jump.eq_ignore_ascii_case("none") {
-                config.jump_hosts = resolve_jump_hosts(proxy_jump)?;
-            }
+            config.jump_hosts = resolve_jump_hosts(proxy_jump)?;
         }
 
         Ok(config)
@@ -102,14 +101,20 @@ impl ConnectionConfig {
 }
 
 pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
-    let raw_hops = spec
-        .split(',')
-        .map(str::trim)
-        .filter(|hop| !hop.is_empty())
-        .collect::<Vec<_>>();
-
-    if raw_hops.is_empty() {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.eq_ignore_ascii_case("none") {
         return Ok(Vec::new());
+    }
+
+    let raw_hops = spec.split(',').map(str::trim).collect::<Vec<_>>();
+    if raw_hops.iter().any(|hop| hop.is_empty()) {
+        bail!("ProxyJump chain contains an empty hop");
+    }
+    if raw_hops
+        .iter()
+        .any(|hop| hop.eq_ignore_ascii_case("none"))
+    {
+        bail!("ProxyJump 'none' cannot be combined with other hops");
     }
     if raw_hops.len() > MAX_JUMP_HOPS {
         bail!("ProxyJump chain exceeds the {MAX_JUMP_HOPS}-hop safety limit");
@@ -119,9 +124,18 @@ pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
 }
 
 fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
-    let (user_override, host_port) = match spec.rsplit_once('@') {
-        Some((user, host_port)) if !user.is_empty() => (Some(user), host_port),
-        _ => (None, spec),
+    if spec.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        bail!("ProxyJump hop contains whitespace or control characters: {spec:?}");
+    }
+    if spec.matches('@').count() > 1 {
+        bail!("ProxyJump hop contains more than one '@': {spec:?}");
+    }
+
+    let (user_override, host_port) = match spec.split_once('@') {
+        Some(("", _)) => bail!("ProxyJump user cannot be empty"),
+        Some((_, "")) => bail!("ProxyJump host cannot be empty"),
+        Some((user, host_port)) => (Some(user), host_port),
+        None => (None, spec),
     };
 
     let (alias, port_override) = parse_host_port(host_port)?;
@@ -140,32 +154,69 @@ fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
 }
 
 fn parse_host_port(value: &str) -> Result<(String, Option<u16>)> {
+    if value.is_empty() {
+        bail!("ProxyJump host cannot be empty");
+    }
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        bail!("ProxyJump host contains whitespace or control characters: {value:?}");
+    }
+
     if let Some(rest) = value.strip_prefix('[') {
         let end = rest
             .find(']')
             .context("missing closing ']' in ProxyJump IPv6 address")?;
-        let host = rest[..end].to_owned();
+        let host = &rest[..end];
+        if host.is_empty() {
+            bail!("ProxyJump IPv6 host cannot be empty");
+        }
+        host.parse::<Ipv6Addr>()
+            .context("invalid ProxyJump IPv6 address")?;
+
         let suffix = &rest[end + 1..];
         let port = if let Some(port) = suffix.strip_prefix(':') {
+            if port.is_empty() {
+                bail!("ProxyJump port cannot be empty");
+            }
             Some(port.parse().context("invalid ProxyJump port")?)
         } else if suffix.is_empty() {
             None
         } else {
             bail!("invalid ProxyJump address suffix: {suffix}");
         };
-        return Ok((host, port));
+        return Ok((host.to_owned(), port));
     }
 
-    if value.matches(':').count() == 1 {
-        let Some((host, port)) = value.rsplit_once(':') else {
-            return Ok((value.to_owned(), None));
-        };
-        if !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Ok((host.to_owned(), Some(port.parse()?)));
+    if value.contains('[') || value.contains(']') {
+        bail!("invalid ProxyJump bracket placement: {value:?}");
+    }
+
+    match value.matches(':').count() {
+        0 => Ok((value.to_owned(), None)),
+        1 => {
+            let (host, port) = value
+                .rsplit_once(':')
+                .context("invalid ProxyJump host:port specification")?;
+            if host.is_empty() {
+                bail!("ProxyJump host cannot be empty");
+            }
+            if port.is_empty() {
+                bail!("ProxyJump port cannot be empty");
+            }
+            if !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                bail!("invalid ProxyJump port: {port}");
+            }
+            Ok((host.to_owned(), Some(port.parse()?)))
+        }
+        _ => {
+            value
+                .parse::<Ipv6Addr>()
+                .context("invalid unbracketed ProxyJump IPv6 address")?;
+            Ok((value.to_owned(), None))
         }
     }
-
-    Ok((value.to_owned(), None))
 }
 
 #[cfg(test)]
@@ -184,5 +235,48 @@ mod tests {
         let (host, port) = parse_host_port("[2001:db8::1]:2200").unwrap();
         assert_eq!(host, "2001:db8::1");
         assert_eq!(port, Some(2200));
+    }
+
+    #[test]
+    fn parses_unbracketed_ipv6_without_port() {
+        let (host, port) = parse_host_port("2001:db8::1").unwrap();
+        assert_eq!(host, "2001:db8::1");
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn none_disables_proxy_jump_at_the_shared_parser_boundary() {
+        assert!(resolve_jump_hosts("none").unwrap().is_empty());
+        assert!(resolve_jump_hosts("NONE").unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_jump_chains_fail_closed() {
+        for spec in ["host,,other", ",host", "host,", "host,none"] {
+            assert!(resolve_jump_hosts(spec).is_err(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_jump_user_host_forms_are_rejected() {
+        for spec in ["@host", "user@", "a@b@host", "user name@host"] {
+            assert!(resolve_jump_hosts(spec).is_err(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_host_port_forms_are_rejected() {
+        for value in [
+            "",
+            ":22",
+            "host:",
+            "host:ssh",
+            "[]:22",
+            "[not-ipv6]:22",
+            "[2001:db8::1]oops",
+            "foo:bar:baz",
+        ] {
+            assert!(parse_host_port(value).is_err(), "{value:?}");
+        }
     }
 }
