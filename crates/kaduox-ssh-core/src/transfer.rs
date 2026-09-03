@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use russh_sftp::client::{SftpSession, error::Error as SftpError};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
@@ -108,9 +108,15 @@ pub(crate) async fn upload_file(
     options.validated()?;
     check_cancelled(options)?;
 
-    let local_metadata = tokio::fs::metadata(local_path)
+    let local_metadata = tokio::fs::symlink_metadata(local_path)
         .await
         .with_context(|| format!("failed to stat {}", local_path.display()))?;
+    if local_metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow local symbolic link during upload: {}",
+            local_path.display()
+        );
+    }
     if !local_metadata.is_file() {
         bail!("{} is not a regular file", local_path.display());
     }
@@ -118,8 +124,20 @@ pub(crate) async fn upload_file(
     ensure_remote_parent(sftp, remote_path).await?;
 
     let work_path = transfer_remote_work_path(remote_path, options.atomic);
-    let mut offset = if options.resume && sftp.try_exists(work_path.clone()).await? {
-        sftp.metadata(work_path.clone()).await?.len().min(total)
+    let work_metadata = remote_symlink_metadata_if_exists(sftp, &work_path).await?;
+    if let Some(metadata) = work_metadata.as_ref() {
+        if metadata.is_symlink() {
+            bail!("refusing to write through remote symbolic link: {work_path}");
+        }
+        if !metadata.is_regular() {
+            bail!("remote upload staging path is not a regular file: {work_path}");
+        }
+    }
+    let mut offset = if options.resume {
+        work_metadata
+            .as_ref()
+            .map(|metadata| metadata.len().min(total))
+            .unwrap_or(0)
     } else {
         0
     };
@@ -207,18 +225,24 @@ pub(crate) async fn download_file(
     check_cancelled(options)?;
 
     let remote_metadata = sftp
-        .metadata(remote_path.to_owned())
+        .symlink_metadata(remote_path.to_owned())
         .await
         .with_context(|| format!("failed to stat remote file {remote_path}"))?;
+    if remote_metadata.is_symlink() {
+        bail!("refusing to follow remote symbolic link during download: {remote_path}");
+    }
     if !remote_metadata.is_regular() {
         bail!("remote path {remote_path} is not a regular file");
     }
-    let total = remote_metadata.len();
-    if let Some(parent) = local_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
 
+    if let Some(parent) = local_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        ensure_local_directory_no_symlinks(parent, "download parent directory").await?;
+    }
+    reject_existing_local_symlink(local_path, "download destination").await?;
+
+    let total = remote_metadata.len();
     let work_path = transfer_local_work_path(local_path, options.atomic);
+    reject_existing_local_symlink(&work_path, "download staging path").await?;
     let mut offset = if options.resume {
         match tokio::fs::metadata(&work_path).await {
             Ok(metadata) => metadata.len().min(total),
@@ -313,9 +337,15 @@ pub(crate) async fn upload_tree(
     options.validated()?;
     check_cancelled(&options)?;
 
-    let root_metadata = tokio::fs::metadata(local_root)
+    let root_metadata = tokio::fs::symlink_metadata(local_root)
         .await
         .with_context(|| format!("failed to stat {}", local_root.display()))?;
+    if root_metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow local symbolic-link root during recursive upload: {}",
+            local_root.display()
+        );
+    }
     if root_metadata.is_file() {
         let bytes = upload_file(&sftp, local_root, remote_root, &options).await?;
         return Ok(TransferSummary {
@@ -385,7 +415,10 @@ pub(crate) async fn download_tree(
     options.validated()?;
     check_cancelled(&options)?;
 
-    let root_metadata = sftp.metadata(remote_root.to_owned()).await?;
+    let root_metadata = sftp.symlink_metadata(remote_root.to_owned()).await?;
+    if root_metadata.is_symlink() {
+        bail!("refusing to follow remote symbolic-link root during recursive download: {remote_root}");
+    }
     if root_metadata.is_regular() {
         let bytes = download_file(&sftp, remote_root, local_root, &options).await?;
         return Ok(TransferSummary {
@@ -398,7 +431,7 @@ pub(crate) async fn download_tree(
         bail!("remote path {remote_root} is not a regular file or directory");
     }
 
-    tokio::fs::create_dir_all(local_root).await?;
+    ensure_local_directory_no_symlinks(local_root, "recursive download root").await?;
     let mut summary = TransferSummary {
         directories: 1,
         ..Default::default()
@@ -408,12 +441,18 @@ pub(crate) async fn download_tree(
 
     while let Some((remote_dir, local_dir)) = stack.pop() {
         check_cancelled(&options)?;
-        for entry in sftp.read_dir(remote_dir).await? {
+        for entry in sftp.read_dir(remote_dir.clone()).await? {
             let file_type = entry.file_type();
-            let remote_path = entry.path();
-            let local_path = local_dir.join(entry.file_name());
+            let name = entry.file_name();
+            validate_remote_entry_name(&name)?;
+            let remote_path = join_remote(&remote_dir, &name);
+            let local_path = local_dir.join(&name);
             if file_type.is_dir() {
-                tokio::fs::create_dir_all(&local_path).await?;
+                ensure_local_directory_no_symlinks(
+                    &local_path,
+                    "recursive download directory",
+                )
+                .await?;
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
             } else if file_type.is_file() {
@@ -442,6 +481,100 @@ pub(crate) async fn download_tree(
         summary.files += 1;
     }
     Ok(summary)
+}
+
+async fn reject_existing_local_symlink(path: &Path, role: &str) -> Result<()> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("refusing to follow symbolic link at {role}: {}", path.display())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect {role} {}", path.display())),
+    }
+}
+
+async fn ensure_local_directory_no_symlinks(path: &Path, role: &str) -> Result<()> {
+    let mut ancestors = path
+        .ancestors()
+        .filter(|candidate| !candidate.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    ancestors.reverse();
+
+    for candidate in ancestors {
+        match tokio::fs::symlink_metadata(candidate).await {
+            Ok(metadata) => {
+                validate_local_directory(candidate, &metadata, role)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match tokio::fs::create_dir(candidate).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = tokio::fs::symlink_metadata(candidate)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "failed to inspect concurrently created {role} {}",
+                                    candidate.display()
+                                )
+                            })?;
+                        validate_local_directory(candidate, &metadata, role)?;
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to create {role} {}", candidate.display())
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {role} {}", candidate.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_directory(path: &Path, metadata: &std::fs::Metadata, role: &str) -> Result<()> {
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow symbolic-link component in {role}: {}",
+            path.display()
+        );
+    }
+    if !metadata.is_dir() {
+        bail!("{role} component is not a directory: {}", path.display());
+    }
+    Ok(())
+}
+
+fn validate_remote_entry_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        bail!("unsafe remote directory entry name: {name:?}");
+    }
+    #[cfg(windows)]
+    if name.contains(':') {
+        bail!("unsafe remote directory entry name on Windows: {name:?}");
+    }
+    Ok(())
+}
+
+async fn remote_symlink_metadata_if_exists(
+    sftp: &SftpSession,
+    path: &str,
+) -> Result<Option<FileAttributes>> {
+    match sftp.symlink_metadata(path.to_owned()).await {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 async fn copy_with_progress<R, W>(
@@ -517,8 +650,11 @@ pub(crate) async fn ensure_remote_dir(sftp: &SftpSession, path: &str) -> Result<
             bail!("remote directory traversal with '..' is not supported: {path}");
         }
         current = join_remote(&current, segment);
-        if sftp.try_exists(current.clone()).await? {
-            if !sftp.metadata(current.clone()).await?.is_dir() {
+        if let Some(metadata) = remote_symlink_metadata_if_exists(sftp, &current).await? {
+            if metadata.is_symlink() {
+                bail!("refusing to follow remote symbolic-link directory component: {current}");
+            }
+            if !metadata.is_dir() {
                 bail!("remote path component is not a directory: {current}");
             }
         } else {
@@ -586,17 +722,37 @@ async fn finish_remote_atomic(sftp: &SftpSession, work_path: &str, final_path: &
 }
 
 async fn finish_local_atomic(work_path: &Path, final_path: &Path) -> Result<()> {
+    if let Some(parent) = final_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        ensure_local_directory_no_symlinks(parent, "atomic download destination parent").await?;
+    }
+    reject_existing_local_symlink(final_path, "atomic download destination").await?;
+
     match tokio::fs::rename(work_path, final_path).await {
         Ok(()) => Ok(()),
-        Err(first_error) => {
-            if tokio::fs::try_exists(final_path).await? {
+        Err(first_error) => match tokio::fs::symlink_metadata(final_path).await {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                bail!(
+                    "refusing to replace symbolic link at atomic download destination: {}",
+                    final_path.display()
+                )
+            }
+            Ok(metadata) if metadata.is_file() => {
                 tokio::fs::remove_file(final_path).await?;
                 tokio::fs::rename(work_path, final_path).await?;
                 Ok(())
-            } else {
-                Err(first_error.into())
             }
-        }
+            Ok(_) => bail!(
+                "atomic download destination is not a regular file: {}",
+                final_path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(first_error.into()),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to inspect atomic download destination {}",
+                    final_path.display()
+                )
+            }),
+        },
     }
 }
 
@@ -619,8 +775,7 @@ async fn preserve_remote_mtime(
         attributes.permissions = Some(local_metadata.permissions().mode());
     }
     if attributes.mtime.is_some() || attributes.permissions.is_some() {
-        sftp.set_metadata(remote_path.to_owned(), attributes)
-            .await?;
+        sftp.set_metadata(remote_path.to_owned(), attributes).await?;
     }
     Ok(())
 }
@@ -677,5 +832,54 @@ mod tests {
         let mut options = TransferOptions::default();
         options.file_concurrency = 0;
         assert!(options.validated().is_err());
+    }
+
+    #[test]
+    fn remote_entry_names_cannot_escape_local_tree() {
+        for unsafe_name in ["", ".", "..", "../escape", "sub/file", r"..\escape"] {
+            assert!(validate_remote_entry_name(unsafe_name).is_err());
+        }
+        assert!(validate_remote_entry_name("normal-file.txt").is_ok());
+    }
+
+    #[tokio::test]
+    async fn creates_missing_local_directory_chain_without_symlinks() {
+        let root = test_temp_path("local-chain");
+        let nested = root.join("one").join("two");
+        ensure_local_directory_no_symlinks(&nested, "test directory")
+            .await
+            .unwrap();
+        assert!(tokio::fs::metadata(&nested).await.unwrap().is_dir());
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_in_local_directory_chain() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_temp_path("local-symlink");
+        let real = root.join("real");
+        tokio::fs::create_dir_all(&real).await.unwrap();
+        let link = root.join("link");
+        symlink(&real, &link).unwrap();
+
+        let result = ensure_local_directory_no_symlinks(
+            &link.join("nested"),
+            "test directory",
+        )
+        .await;
+        assert!(result.is_err());
+
+        let _ = tokio::fs::remove_file(link).await;
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    fn test_temp_path(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("kaduox-{label}-{stamp}"))
     }
 }
