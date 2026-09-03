@@ -12,7 +12,10 @@ mod transfer;
 
 pub use auth::Authentication;
 pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix};
-pub use config::{ConnectionConfig, HostKeyPolicy, JumpHost, resolve_jump_hosts};
+pub use config::{
+    ConnectionConfig, ConnectionConfigSnapshot, ConnectionRouteSnapshot, HostKeyPolicy, JumpHost,
+    resolve_jump_hosts,
+};
 pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
 pub use manager::{ConnectionManager, ConnectionManagerConfig};
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
