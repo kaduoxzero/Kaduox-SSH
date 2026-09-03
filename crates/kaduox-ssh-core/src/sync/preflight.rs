@@ -17,14 +17,26 @@ enum RemoteNodeKind {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PlannedMutation {
-    delete_file: bool,
-    delete_directory: bool,
-    create_directory: bool,
+    delete_file: Option<usize>,
+    delete_directory: Option<usize>,
+    create_directory: Option<usize>,
 }
 
 impl PlannedMutation {
     fn has_delete(self) -> bool {
-        self.delete_file || self.delete_directory
+        self.delete_file.is_some() || self.delete_directory.is_some()
+    }
+
+    fn deletes_file(self) -> bool {
+        self.delete_file.is_some()
+    }
+
+    fn deletes_directory(self) -> bool {
+        self.delete_directory.is_some()
+    }
+
+    fn creates_directory(self) -> bool {
+        self.create_directory.is_some()
     }
 }
 
@@ -55,7 +67,10 @@ pub(super) async fn preflight_atomic_sync(
             .iter()
             .filter(|action| action.kind == SyncActionKind::UploadFile)
         {
-            validate_upload_beneath_fresh_ancestor(&action.path, mutation_for(&mutations, &action.path))?;
+            validate_upload_beneath_fresh_ancestor(
+                &action.path,
+                mutation_for(&mutations, &action.path),
+            )?;
         }
         return Ok(());
     }
@@ -73,41 +88,38 @@ pub(super) async fn preflight_atomic_sync(
 fn collect_planned_mutations<'a>(
     plan: &'a SyncPlan,
 ) -> Result<BTreeMap<&'a str, PlannedMutation>> {
-    let mut mutations = BTreeMap::new();
-    for action in &plan.actions {
+    let mut mutations: BTreeMap<&'a str, PlannedMutation> = BTreeMap::new();
+    for (index, action) in plan.actions.iter().enumerate() {
+        let mutation = mutations.entry(action.path.as_str()).or_default();
         let slot = match action.kind {
             SyncActionKind::UploadFile => continue,
-            SyncActionKind::DeleteRemoteFile => {
-                &mut mutations.entry(action.path.as_str()).or_default().delete_file
-            }
-            SyncActionKind::DeleteRemoteDirectory => {
-                &mut mutations
-                    .entry(action.path.as_str())
-                    .or_default()
-                    .delete_directory
-            }
-            SyncActionKind::CreateRemoteDirectory => {
-                &mut mutations
-                    .entry(action.path.as_str())
-                    .or_default()
-                    .create_directory
-            }
+            SyncActionKind::DeleteRemoteFile => &mut mutation.delete_file,
+            SyncActionKind::DeleteRemoteDirectory => &mut mutation.delete_directory,
+            SyncActionKind::CreateRemoteDirectory => &mut mutation.create_directory,
         };
-        if *slot {
+        if slot.replace(index).is_some() {
             bail!(
                 "sync plan contains duplicate {:?} mutation for {}",
                 action.kind,
                 action.path
             );
         }
-        *slot = true;
     }
 
     for (path, mutation) in &mutations {
-        if mutation.delete_file && mutation.delete_directory {
+        if mutation.deletes_file() && mutation.deletes_directory() {
             bail!(
                 "sync plan contains contradictory file/directory delete mutations for {path}"
             );
+        }
+        if let Some(create_index) = mutation.create_directory {
+            if let Some(delete_index) = mutation.delete_file.or(mutation.delete_directory) {
+                if delete_index >= create_index {
+                    bail!(
+                        "sync plan must delete {path} before recreating it as a directory; delete action #{delete_index}, create action #{create_index}"
+                    );
+                }
+            }
         }
     }
     Ok(mutations)
@@ -161,9 +173,9 @@ async fn preflight_atomic_upload_path(
                 // validated directory because ensure_remote_dir is idempotent.
             }
             Some(RemoteNodeKind::Symlink) | Some(RemoteNodeKind::Other) => {
-                if mutation.delete_file
-                    && !mutation.delete_directory
-                    && mutation.create_directory
+                if mutation.deletes_file()
+                    && !mutation.deletes_directory()
+                    && mutation.creates_directory()
                 {
                     // Generated type-conflict plans delete the non-directory
                     // entry and create a fresh directory before the upload phase.
@@ -209,7 +221,7 @@ fn validate_upload_beneath_fresh_ancestor(
             "atomic sync plan is stale: upload destination {path} will be absent after parent creation but also has a delete mutation"
         );
     }
-    if mutation.create_directory {
+    if mutation.creates_directory() {
         bail!(
             "sync plan cannot create a directory and upload a regular file at the same path: {path}"
         );
@@ -222,7 +234,7 @@ fn validate_final_upload_destination(
     current: Option<RemoteNodeKind>,
     mutation: PlannedMutation,
 ) -> Result<()> {
-    if mutation.create_directory {
+    if mutation.creates_directory() {
         bail!(
             "sync plan cannot create a directory and upload a regular file at the same path: {remote_path}"
         );
@@ -238,9 +250,9 @@ fn validate_final_upload_destination(
             Ok(())
         }
         Some(RemoteNodeKind::Directory) => {
-            if mutation.delete_directory && !mutation.delete_file {
+            if mutation.deletes_directory() && !mutation.deletes_file() {
                 Ok(())
-            } else if mutation.delete_file {
+            } else if mutation.deletes_file() {
                 bail!(
                     "atomic sync plan expects to delete a file at {remote_path}, but the current destination is a directory"
                 )
@@ -249,9 +261,9 @@ fn validate_final_upload_destination(
             }
         }
         Some(RemoteNodeKind::Symlink) | Some(RemoteNodeKind::Other) => {
-            if mutation.delete_file && !mutation.delete_directory {
+            if mutation.deletes_file() && !mutation.deletes_directory() {
                 Ok(())
-            } else if mutation.delete_directory {
+            } else if mutation.deletes_directory() {
                 bail!(
                     "atomic sync plan expects to delete a directory at {remote_path}, but the current destination is not a directory"
                 )
@@ -343,7 +355,11 @@ mod tests {
     use super::*;
     use crate::sync::SyncAction;
 
-    fn mutation(delete_file: bool, delete_directory: bool, create_directory: bool) -> PlannedMutation {
+    fn mutation(
+        delete_file: Option<usize>,
+        delete_directory: Option<usize>,
+        create_directory: Option<usize>,
+    ) -> PlannedMutation {
         PlannedMutation {
             delete_file,
             delete_directory,
@@ -366,7 +382,7 @@ mod tests {
         validate_final_upload_destination(
             "/srv/app.bin",
             Some(RemoteNodeKind::Other),
-            mutation(true, false, false),
+            mutation(Some(0), None, None),
         )
         .unwrap();
     }
@@ -376,14 +392,14 @@ mod tests {
         validate_final_upload_destination(
             "/srv/app",
             Some(RemoteNodeKind::Directory),
-            mutation(false, true, false),
+            mutation(None, Some(0), None),
         )
         .unwrap();
         assert!(
             validate_final_upload_destination(
                 "/srv/app",
                 Some(RemoteNodeKind::Directory),
-                mutation(true, false, false),
+                mutation(Some(0), None, None),
             )
             .is_err()
         );
@@ -401,7 +417,7 @@ mod tests {
             validate_final_upload_destination(
                 "/srv/new.bin",
                 None,
-                mutation(true, false, false),
+                mutation(Some(0), None, None),
             )
             .is_err()
         );
@@ -412,7 +428,7 @@ mod tests {
         assert!(
             validate_upload_beneath_fresh_ancestor(
                 "release",
-                mutation(false, false, true),
+                mutation(None, None, Some(0)),
             )
             .is_err()
         );
@@ -456,16 +472,53 @@ mod tests {
     }
 
     #[test]
-    fn file_to_directory_parent_replacement_is_the_only_non_directory_parent_shape_allowed() {
+    fn delete_must_precede_same_path_directory_recreation() {
+        let safe = SyncPlan {
+            actions: vec![
+                SyncAction {
+                    kind: SyncActionKind::DeleteRemoteFile,
+                    path: "app".to_owned(),
+                    bytes: 0,
+                },
+                SyncAction {
+                    kind: SyncActionKind::CreateRemoteDirectory,
+                    path: "app".to_owned(),
+                    bytes: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        collect_planned_mutations(&safe).unwrap();
+
+        let unsafe_order = SyncPlan {
+            actions: vec![
+                SyncAction {
+                    kind: SyncActionKind::CreateRemoteDirectory,
+                    path: "app".to_owned(),
+                    bytes: 0,
+                },
+                SyncAction {
+                    kind: SyncActionKind::DeleteRemoteFile,
+                    path: "app".to_owned(),
+                    bytes: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(collect_planned_mutations(&unsafe_order).is_err());
+    }
+
+    #[test]
+    fn fresh_ancestor_rejects_stale_delete_but_allows_directory_creation() {
         validate_parent_beneath_fresh_ancestor(
             "app/assets",
-            mutation(false, false, true),
+            mutation(None, None, Some(0)),
         )
         .unwrap();
         assert!(
             validate_parent_beneath_fresh_ancestor(
                 "app/assets",
-                mutation(true, false, true),
+                mutation(Some(0), None, Some(1)),
             )
             .is_err()
         );
