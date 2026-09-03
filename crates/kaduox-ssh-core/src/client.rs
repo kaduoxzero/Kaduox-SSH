@@ -13,6 +13,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::watch;
 
 use crate::auth::{Authentication, authenticate};
+use crate::command::RemoteCommandSpec;
 use crate::config::{ConnectionConfig, JumpHost};
 use crate::forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, start_dynamic_forward,
@@ -117,6 +118,14 @@ impl SshClient {
         &self.config
     }
 
+    pub async fn exec_spec(
+        &self,
+        command: &RemoteCommandSpec,
+        remote_user: &RemoteUser,
+    ) -> Result<CommandOutput> {
+        self.exec(&command.render_posix()?, remote_user).await
+    }
+
     pub async fn exec(&self, command: &str, remote_user: &RemoteUser) -> Result<CommandOutput> {
         let command = command_for_user(command, remote_user);
         let mut channel = self.session.channel_open_session().await?;
@@ -200,7 +209,7 @@ impl SshClient {
                             output.write_all(&data).await?;
                             output.flush().await?;
                         }
-                        ChannelMsg::ExitStatus { exit_status: status } => exit_status = Some(status),
+                        ChannelMsg::ExitStatus { exit_status: status } => exit_status = Some(exit_status),
                         _ => {}
                     }
                 }
