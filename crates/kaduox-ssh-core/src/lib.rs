@@ -14,7 +14,10 @@ pub use auth::Authentication;
 pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix};
 pub use config::{ConnectionConfig, HostKeyPolicy, JumpHost, resolve_jump_hosts};
 pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
-pub use manager::{ConnectionManager, ConnectionManagerConfig};
+pub use manager::{
+    ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
+    ConnectionSnapshot,
+};
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
 pub use transfer::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
