@@ -39,7 +39,7 @@ SFTP itself cannot inherit a `sudo` user context. A later privileged-transfer fe
 - the complete `ConnectionConfig` is equal, including resolved host/user/port, host-key policy and known-hosts path, ProxyCommand/ProxyJump route, identity-file configuration, keepalive/timeout behavior, and agent-forwarding policy; and
 - the authentication source is compatible without retaining secret material.
 
-Private-key requests are keyed by configured key path, agent requests by the agent authentication source, and auto-authentication by its ordered configured identity sources. Password and keyboard-interactive requests are deliberately not eligible for implicit reuse: a newly supplied secret must never be silently ignored because an older authenticated transport already exists.
+Unencrypted private-key requests are keyed by configured key path, agent requests by the agent authentication source, and auto-authentication without a passphrase by its ordered configured identity sources. Any request that supplies a new secret — password, keyboard-interactive response, private-key passphrase, or Auto passphrase — is deliberately not eligible for implicit reuse. The new secret must never be silently ignored because an older authenticated transport already exists.
 
 The same checks apply after concurrent connection races. If another task binds the same name while a candidate transport is authenticating, the losing candidate is closed and the winner is returned only when the configuration and authentication source are compatible.
 
