@@ -11,8 +11,10 @@ mod remote_path;
 mod sync;
 #[path = "transfer.rs"]
 mod transfer_engine;
+mod transfer_download_policy;
+mod transfer_facade;
 pub(crate) mod transfer_policy;
-pub(crate) use transfer_policy as transfer;
+pub(crate) use transfer_facade as transfer;
 
 pub use auth::Authentication;
 pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix};
