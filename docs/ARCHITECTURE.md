@@ -30,6 +30,23 @@ The non-interactive path deliberately uses `-n`; a command must not hang waiting
 
 SFTP itself cannot inherit a `sudo` user context. A later privileged-transfer feature should upload into a writable staging location and then perform a deliberate remote `sudo install/mv` operation instead of pretending SFTP has changed uid.
 
+## Connection-manager reuse contract
+
+`ConnectionManager` may reuse an already authenticated transport, but a logical connection name is not sufficient proof that two connect requests are equivalent.
+
+`ConnectionManager::connect(name, config, authentication)` only reuses an existing `name` when:
+
+- the complete `ConnectionConfig` is equal, including resolved host/user/port, host-key policy and known-hosts path, ProxyCommand/ProxyJump route, identity-file configuration, keepalive/timeout behavior, and agent-forwarding policy; and
+- the authentication source is compatible without retaining secret material.
+
+Unencrypted private-key requests are keyed by configured key path, agent requests by the agent authentication source, and auto-authentication without a passphrase by its ordered configured identity sources. Any request that supplies a new secret — password, keyboard-interactive response, private-key passphrase, or Auto passphrase — is deliberately not eligible for implicit reuse. The new secret must never be silently ignored because an older authenticated transport already exists.
+
+The same checks apply after concurrent connection races. If another task binds the same name while a candidate transport is authenticating, the losing candidate is closed and the winner is returned only when the configuration and authentication source are compatible.
+
+`ConnectionManager::get(name)` is intentionally different: it explicitly leases whatever transport is currently bound to that logical name and performs no new compatibility check because no new connection request is supplied. Frontends should use `connect` for connect/reconnect intents and reserve `get` for deliberate access to an already selected session.
+
+Changing host-key policy, route, login user, authentication source, or any other connection semantics requires removing the existing binding before reconnecting under the same logical name.
+
 ## Host-key policy
 
 The default CLI policy is `accept-new`:

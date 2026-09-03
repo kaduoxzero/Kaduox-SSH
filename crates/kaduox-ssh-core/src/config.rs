@@ -21,7 +21,7 @@ pub enum HostKeyPolicy {
     Insecure,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpHost {
     pub alias: String,
     pub host: String,
@@ -32,7 +32,7 @@ pub struct JumpHost {
     pub known_hosts_file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionConfig {
     pub alias: String,
     pub host: String,
