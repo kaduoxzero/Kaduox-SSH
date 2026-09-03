@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, watch};
 
 use crate::{Authentication, ConnectionConfig, SshClient};
 
@@ -52,6 +52,37 @@ impl ManagedConnection {
     }
 }
 
+struct ConnectSignal {
+    done: watch::Sender<bool>,
+}
+
+struct ConnectLeader<'a> {
+    name: String,
+    signal: Arc<ConnectSignal>,
+    connecting: &'a Mutex<HashMap<String, Arc<ConnectSignal>>>,
+}
+
+impl Drop for ConnectLeader<'_> {
+    fn drop(&mut self) {
+        let mut connecting = self
+            .connecting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if connecting
+            .get(&self.name)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.signal))
+        {
+            self.signal.done.send_replace(true);
+            connecting.remove(&self.name);
+        }
+    }
+}
+
+enum ConnectClaim<'a> {
+    Leader(ConnectLeader<'a>),
+    Wait(watch::Receiver<bool>),
+}
+
 /// Reuses authenticated SSH transports across commands and frontends.
 ///
 /// Callers choose a stable logical name (for example an OpenSSH host alias).
@@ -61,6 +92,7 @@ pub struct ConnectionManager {
     config: ConnectionManagerConfig,
     capacity: Arc<Semaphore>,
     connections: RwLock<HashMap<String, Arc<ManagedConnection>>>,
+    connecting: Mutex<HashMap<String, Arc<ConnectSignal>>>,
 }
 
 impl Default for ConnectionManager {
@@ -75,6 +107,7 @@ impl ConnectionManager {
             capacity: Arc::new(Semaphore::new(config.max_connections)),
             config,
             connections: RwLock::new(HashMap::new()),
+            connecting: Mutex::new(HashMap::new()),
         }
     }
 
@@ -102,6 +135,25 @@ impl ConnectionManager {
         Some(client)
     }
 
+    fn claim_connect(&self, name: &str) -> ConnectClaim<'_> {
+        let mut connecting = self
+            .connecting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(signal) = connecting.get(name) {
+            return ConnectClaim::Wait(signal.done.subscribe());
+        }
+
+        let (done, _receiver) = watch::channel(false);
+        let signal = Arc::new(ConnectSignal { done });
+        connecting.insert(name.to_owned(), Arc::clone(&signal));
+        ConnectClaim::Leader(ConnectLeader {
+            name: name.to_owned(),
+            signal,
+            connecting: &self.connecting,
+        })
+    }
+
     pub async fn connect(
         &self,
         name: impl Into<String>,
@@ -113,42 +165,66 @@ impl ConnectionManager {
             bail!("connection name cannot be empty");
         }
 
-        if let Some(client) = self.get(&name).await {
-            return Ok(client);
-        }
-
-        self.prune_idle().await;
-        let permit = Arc::clone(&self.capacity)
-            .try_acquire_owned()
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "connection manager capacity reached (max {})",
-                    self.config.max_connections
-                )
-            })?;
-
-        // Do not hold the manager lock across DNS, TCP, SSH handshake or auth.
-        let candidate = Arc::new(SshClient::connect(config, authentication).await?);
-        let managed = Arc::new(ManagedConnection::new(Arc::clone(&candidate), permit));
-
-        let existing = {
-            let mut connections = self.connections.write().await;
-            if let Some(existing) = connections.get(&name).cloned() {
-                Some(existing)
-            } else {
-                connections.insert(name, Arc::clone(&managed));
-                None
+        loop {
+            if let Some(client) = self.get(&name).await {
+                return Ok(client);
             }
-        };
 
-        if let Some(existing) = existing {
-            drop(managed);
-            let _ = candidate.close().await;
-            existing.touch();
-            return Ok(Arc::clone(&existing.client));
+            match self.claim_connect(&name) {
+                ConnectClaim::Wait(mut done) => {
+                    if !*done.borrow() {
+                        let _ = done.changed().await;
+                    }
+                    continue;
+                }
+                ConnectClaim::Leader(_leader) => {
+                    // A previous leader may have completed between the optimistic
+                    // lookup above and this caller claiming the single-flight slot.
+                    if let Some(client) = self.get(&name).await {
+                        return Ok(client);
+                    }
+
+                    self.prune_idle().await;
+                    let permit = Arc::clone(&self.capacity)
+                        .try_acquire_owned()
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "connection manager capacity reached (max {})",
+                                self.config.max_connections
+                            )
+                        })?;
+
+                    // Do not hold the manager connection-map lock across DNS, TCP,
+                    // SSH handshake or authentication. The per-name single-flight
+                    // claim only coalesces duplicate setup for this logical name;
+                    // different connection names continue establishing in parallel.
+                    let candidate = Arc::new(
+                        SshClient::connect(config.clone(), authentication.clone()).await?,
+                    );
+                    let managed =
+                        Arc::new(ManagedConnection::new(Arc::clone(&candidate), permit));
+
+                    let existing = {
+                        let mut connections = self.connections.write().await;
+                        if let Some(existing) = connections.get(&name).cloned() {
+                            Some(existing)
+                        } else {
+                            connections.insert(name.clone(), Arc::clone(&managed));
+                            None
+                        }
+                    };
+
+                    if let Some(existing) = existing {
+                        drop(managed);
+                        let _ = candidate.close().await;
+                        existing.touch();
+                        return Ok(Arc::clone(&existing.client));
+                    }
+
+                    return Ok(candidate);
+                }
+            }
         }
-
-        Ok(candidate)
     }
 
     pub async fn remove(&self, name: &str) -> Result<bool> {
@@ -242,5 +318,44 @@ mod tests {
             idle_timeout: Duration::from_secs(1),
         });
         assert_eq!(manager.capacity.available_permits(), 0);
+    }
+
+    #[tokio::test]
+    async fn same_name_connect_claim_is_single_flight_and_cancel_safe() {
+        let manager = ConnectionManager::default();
+        let leader = match manager.claim_connect("prod") {
+            ConnectClaim::Leader(leader) => leader,
+            ConnectClaim::Wait(_) => panic!("first claimant must lead"),
+        };
+        let mut waiter = match manager.claim_connect("prod") {
+            ConnectClaim::Wait(waiter) => waiter,
+            ConnectClaim::Leader(_) => panic!("second claimant must wait"),
+        };
+
+        drop(leader);
+        if !*waiter.borrow() {
+            waiter.changed().await.unwrap();
+        }
+        assert!(*waiter.borrow());
+        assert!(
+            manager
+                .connecting
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+        assert!(matches!(
+            manager.claim_connect("prod"),
+            ConnectClaim::Leader(_)
+        ));
+    }
+
+    #[test]
+    fn different_names_can_claim_connect_in_parallel() {
+        let manager = ConnectionManager::default();
+        let first = manager.claim_connect("prod-a");
+        let second = manager.claim_connect("prod-b");
+        assert!(matches!(first, ConnectClaim::Leader(_)));
+        assert!(matches!(second, ConnectClaim::Leader(_)));
     }
 }
