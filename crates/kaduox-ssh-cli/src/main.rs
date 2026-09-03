@@ -6,10 +6,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec,
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
-    resolve_jump_hosts,
+    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteFileMetadata,
+    RemoteFileType, RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan,
+    TerminalSize, TerminalSpec, TransferCancellation, TransferDirection, TransferEvent,
+    TransferOptions, quote_posix, resolve_jump_hosts,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
@@ -202,6 +202,18 @@ enum Command {
         /// SFTP request timeout in seconds.
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
+    },
+    /// List a remote directory through SFTP without executing a remote shell command.
+    Ls {
+        #[arg(default_value = ".")]
+        remote: String,
+        /// Show type, mode, owner/group, size, and modification time.
+        #[arg(short = 'l', long)]
+        long: bool,
+    },
+    /// Show lstat-style metadata for a remote path through SFTP.
+    Stat {
+        remote: String,
     },
     /// Keep only configured -L/-R/-D forwards alive until Ctrl-C.
     Tunnel,
@@ -466,11 +478,87 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 );
             }
         }
+        Command::Ls { remote, long } => {
+            for entry in ssh.list_remote_directory(&remote).await? {
+                if long {
+                    print_remote_long(&entry.metadata, &entry.name);
+                } else {
+                    println!("{}", entry.name);
+                }
+            }
+        }
+        Command::Stat { remote } => {
+            let stat = ssh.stat_remote_path(&remote).await?;
+            println!("path: {}", stat.path);
+            println!("type: {}", remote_file_type_name(stat.metadata.file_type));
+            println!("mode: {}", format_permissions(stat.metadata.permissions));
+            println!("size: {}", format_optional(stat.metadata.size));
+            println!("uid: {}", format_optional(stat.metadata.uid));
+            println!("user: {}", stat.metadata.user.as_deref().unwrap_or("-"));
+            println!("gid: {}", format_optional(stat.metadata.gid));
+            println!("group: {}", stat.metadata.group.as_deref().unwrap_or("-"));
+            println!("atime: {}", format_optional(stat.metadata.accessed_at));
+            println!("mtime: {}", format_optional(stat.metadata.modified_at));
+            if let Some(target) = stat.symlink_target {
+                println!("symlink-target: {target}");
+            }
+        }
         Command::Tunnel => {
             tokio::signal::ctrl_c().await?;
         }
     }
     Ok(())
+}
+
+fn print_remote_long(metadata: &RemoteFileMetadata, name: &str) {
+    let owner = metadata
+        .user
+        .clone()
+        .or_else(|| metadata.uid.map(|uid| uid.to_string()))
+        .unwrap_or_else(|| "-".to_owned());
+    let group = metadata
+        .group
+        .clone()
+        .or_else(|| metadata.gid.map(|gid| gid.to_string()))
+        .unwrap_or_else(|| "-".to_owned());
+    println!(
+        "{} {} {:>8} {:>8} {:>12} {:>10} {}",
+        remote_file_type_marker(metadata.file_type),
+        format_permissions(metadata.permissions),
+        owner,
+        group,
+        format_optional(metadata.size),
+        format_optional(metadata.modified_at),
+        name
+    );
+}
+
+fn remote_file_type_marker(file_type: RemoteFileType) -> char {
+    match file_type {
+        RemoteFileType::Directory => 'd',
+        RemoteFileType::File => '-',
+        RemoteFileType::Symlink => 'l',
+        RemoteFileType::Other => '?',
+    }
+}
+
+fn remote_file_type_name(file_type: RemoteFileType) -> &'static str {
+    match file_type {
+        RemoteFileType::Directory => "directory",
+        RemoteFileType::File => "file",
+        RemoteFileType::Symlink => "symlink",
+        RemoteFileType::Other => "other",
+    }
+}
+
+fn format_permissions(permissions: Option<u32>) -> String {
+    permissions
+        .map(|mode| format!("{:04o}", mode & 0o7777))
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn format_optional<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_else(|| "-".to_owned())
 }
 
 fn print_sync_plan(plan: &SyncPlan, dry_run: bool) {
@@ -758,5 +846,20 @@ mod tests {
         assert_eq!(parse_mode("0644").unwrap(), 0o644);
         assert_eq!(parse_mode("0o755").unwrap(), 0o755);
         assert!(parse_mode("0999").is_err());
+    }
+
+    #[test]
+    fn formats_remote_permissions_without_file_type_bits() {
+        assert_eq!(format_permissions(Some(0o100644)), "0644");
+        assert_eq!(format_permissions(Some(0o040755)), "0755");
+        assert_eq!(format_permissions(None), "-");
+    }
+
+    #[test]
+    fn maps_remote_file_type_markers() {
+        assert_eq!(remote_file_type_marker(RemoteFileType::Directory), 'd');
+        assert_eq!(remote_file_type_marker(RemoteFileType::File), '-');
+        assert_eq!(remote_file_type_marker(RemoteFileType::Symlink), 'l');
+        assert_eq!(remote_file_type_marker(RemoteFileType::Other), '?');
     }
 }

@@ -7,6 +7,7 @@ mod forward;
 mod handler;
 mod manager;
 mod privileged;
+mod remote_fs;
 mod sync;
 mod transfer;
 
@@ -15,6 +16,7 @@ pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpe
 pub use config::{ConnectionConfig, HostKeyPolicy, JumpHost, resolve_jump_hosts};
 pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
 pub use manager::{ConnectionManager, ConnectionManagerConfig};
+pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
 pub use transfer::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
