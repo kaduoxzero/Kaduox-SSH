@@ -13,7 +13,7 @@ pub enum HostKeyPolicy {
     Insecure,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpHost {
     pub alias: String,
     pub host: String,
@@ -22,7 +22,7 @@ pub struct JumpHost {
     pub identity_files: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionConfig {
     pub alias: String,
     pub host: String,
@@ -184,5 +184,26 @@ mod tests {
         let (host, port) = parse_host_port("[2001:db8::1]:2200").unwrap();
         assert_eq!(host, "2001:db8::1");
         assert_eq!(port, Some(2200));
+    }
+
+    #[test]
+    fn connection_config_equality_covers_transport_semantics() {
+        let mut left = ConnectionConfig::new("server.example", "deploy");
+        let mut right = left.clone();
+        assert_eq!(left, right);
+
+        right.port = 2222;
+        assert_ne!(left, right);
+        right = left.clone();
+        right.host_key_policy = HostKeyPolicy::Strict;
+        assert_ne!(left, right);
+        right = left.clone();
+        right.agent_forwarding = true;
+        assert_ne!(left, right);
+
+        left.proxy_command = Some("nc proxy 22".to_owned());
+        right = left.clone();
+        right.proxy_command = Some("nc other-proxy 22".to_owned());
+        assert_ne!(left, right);
     }
 }
