@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, watch};
 
 use crate::auth::AuthenticationReuseKey;
 use crate::{Authentication, ConnectionConfig, SshClient};
@@ -59,6 +59,37 @@ impl ManagedConnection {
     }
 }
 
+struct ConnectSignal {
+    done: watch::Sender<bool>,
+}
+
+struct ConnectLeader<'a> {
+    name: String,
+    signal: Arc<ConnectSignal>,
+    connecting: &'a Mutex<HashMap<String, Arc<ConnectSignal>>>,
+}
+
+impl Drop for ConnectLeader<'_> {
+    fn drop(&mut self) {
+        let mut connecting = self
+            .connecting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if connecting
+            .get(&self.name)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.signal))
+        {
+            self.signal.done.send_replace(true);
+            connecting.remove(&self.name);
+        }
+    }
+}
+
+enum ConnectClaim<'a> {
+    Leader(ConnectLeader<'a>),
+    Wait(watch::Receiver<bool>),
+}
+
 /// Reuses authenticated SSH transports across commands and frontends.
 ///
 /// Callers choose a stable logical name (for example an OpenSSH host alias).
@@ -69,10 +100,15 @@ impl ManagedConnection {
 /// `ConnectionConfig` and a secret-free authentication-source identity are
 /// compatible. Callers that intentionally want the currently bound transport
 /// regardless of its original connect request can use `get` explicitly.
+///
+/// Concurrent `connect` calls for the same logical name are single-flight: one
+/// caller performs DNS/TCP/SSH/authentication while compatible followers wait.
+/// Different connection names remain fully parallel.
 pub struct ConnectionManager {
     config: ConnectionManagerConfig,
     capacity: Arc<Semaphore>,
     connections: RwLock<HashMap<String, Arc<ManagedConnection>>>,
+    connecting: Mutex<HashMap<String, Arc<ConnectSignal>>>,
 }
 
 impl Default for ConnectionManager {
@@ -87,6 +123,7 @@ impl ConnectionManager {
             capacity: Arc::new(Semaphore::new(config.max_connections)),
             config,
             connections: RwLock::new(HashMap::new()),
+            connecting: Mutex::new(HashMap::new()),
         }
     }
 
@@ -143,6 +180,25 @@ impl ConnectionManager {
         Ok(Some(client))
     }
 
+    fn claim_connect(&self, name: &str) -> ConnectClaim<'_> {
+        let mut connecting = self
+            .connecting
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(signal) = connecting.get(name) {
+            return ConnectClaim::Wait(signal.done.subscribe());
+        }
+
+        let (done, _receiver) = watch::channel(false);
+        let signal = Arc::new(ConnectSignal { done });
+        connecting.insert(name.to_owned(), Arc::clone(&signal));
+        ConnectClaim::Leader(ConnectLeader {
+            name: name.to_owned(),
+            signal,
+            connecting: &self.connecting,
+        })
+    }
+
     pub async fn connect(
         &self,
         name: impl Into<String>,
@@ -155,60 +211,88 @@ impl ConnectionManager {
         }
 
         let authentication_key = authentication.reuse_key();
-        if let Some(client) = self
-            .get_reusable(&name, &config, &authentication_key)
-            .await?
-        {
-            return Ok(client);
-        }
-
-        self.prune_idle().await;
-        let permit = Arc::clone(&self.capacity)
-            .try_acquire_owned()
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "connection manager capacity reached (max {})",
-                    self.config.max_connections
-                )
-            })?;
-
-        // Do not hold the manager lock across DNS, TCP, SSH handshake or auth.
-        let candidate = Arc::new(SshClient::connect(config, authentication).await?);
-        let managed = Arc::new(ManagedConnection::new(
-            Arc::clone(&candidate),
-            authentication_key,
-            permit,
-        ));
-
-        let existing = {
-            let mut connections = self.connections.write().await;
-            if let Some(existing) = connections.get(&name).cloned() {
-                Some(existing)
-            } else {
-                connections.insert(name.clone(), Arc::clone(&managed));
-                None
+        loop {
+            if let Some(client) = self
+                .get_reusable(&name, &config, &authentication_key)
+                .await?
+            {
+                return Ok(client);
             }
-        };
 
-        if let Some(existing) = existing {
-            // A competing connect may have won the name while this candidate
-            // was performing DNS/TCP/SSH/auth. Apply the same compatibility
-            // checks as the fast path before reusing the winner.
-            let compatibility = ensure_reusable(
-                &name,
-                existing.client.config(),
-                candidate.config(),
-                &existing.authentication,
-                &managed.authentication,
-            );
-            drop(managed);
-            let _ = candidate.close().await;
-            compatibility?;
-            existing.touch();
-            return Ok(Arc::clone(&existing.client));
+            match self.claim_connect(&name) {
+                ConnectClaim::Wait(mut done) => {
+                    if !*done.borrow() {
+                        let _ = done.changed().await;
+                    }
+                    // Re-run the compatibility-aware lookup after the leader
+                    // finishes. If it installed an incompatible transport, the
+                    // next loop iteration fails closed instead of reusing it.
+                    continue;
+                }
+                ConnectClaim::Leader(_leader) => {
+                    // Another setup may have completed between the optimistic
+                    // lookup and claiming the per-name leader slot.
+                    if let Some(client) = self
+                        .get_reusable(&name, &config, &authentication_key)
+                        .await?
+                    {
+                        return Ok(client);
+                    }
+
+                    self.prune_idle().await;
+                    let permit = Arc::clone(&self.capacity)
+                        .try_acquire_owned()
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "connection manager capacity reached (max {})",
+                                self.config.max_connections
+                            )
+                        })?;
+
+                    // Do not hold the connection-map lock across DNS, TCP, SSH
+                    // handshake or authentication. The per-name leader guard only
+                    // coalesces duplicate setup for this logical name; different
+                    // names remain parallel. The guard is RAII-managed, so errors
+                    // or cancellation wake followers and remove the in-flight slot.
+                    let candidate = Arc::new(SshClient::connect(config, authentication).await?);
+                    let managed = Arc::new(ManagedConnection::new(
+                        Arc::clone(&candidate),
+                        authentication_key,
+                        permit,
+                    ));
+
+                    let existing = {
+                        let mut connections = self.connections.write().await;
+                        if let Some(existing) = connections.get(&name).cloned() {
+                            Some(existing)
+                        } else {
+                            connections.insert(name.clone(), Arc::clone(&managed));
+                            None
+                        }
+                    };
+
+                    if let Some(existing) = existing {
+                        // This should only be possible through an explicit map
+                        // mutation outside the single-flight path. Preserve the
+                        // original security invariant and validate compatibility.
+                        let compatibility = ensure_reusable(
+                            &name,
+                            existing.client.config(),
+                            candidate.config(),
+                            &existing.authentication,
+                            &managed.authentication,
+                        );
+                        drop(managed);
+                        let _ = candidate.close().await;
+                        compatibility?;
+                        existing.touch();
+                        return Ok(Arc::clone(&existing.client));
+                    }
+
+                    return Ok(candidate);
+                }
+            }
         }
-
-        Ok(candidate)
     }
 
     pub async fn remove(&self, name: &str) -> Result<bool> {
@@ -381,5 +465,44 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn same_name_connect_claim_is_single_flight_and_cancel_safe() {
+        let manager = ConnectionManager::default();
+        let leader = match manager.claim_connect("prod") {
+            ConnectClaim::Leader(leader) => leader,
+            ConnectClaim::Wait(_) => panic!("first claimant must lead"),
+        };
+        let mut waiter = match manager.claim_connect("prod") {
+            ConnectClaim::Wait(waiter) => waiter,
+            ConnectClaim::Leader(_) => panic!("second claimant must wait"),
+        };
+
+        drop(leader);
+        if !*waiter.borrow() {
+            waiter.changed().await.unwrap();
+        }
+        assert!(*waiter.borrow());
+        assert!(
+            manager
+                .connecting
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+        );
+        assert!(matches!(
+            manager.claim_connect("prod"),
+            ConnectClaim::Leader(_)
+        ));
+    }
+
+    #[test]
+    fn different_names_can_claim_connect_in_parallel() {
+        let manager = ConnectionManager::default();
+        let first = manager.claim_connect("prod-a");
+        let second = manager.claim_connect("prod-b");
+        assert!(matches!(first, ConnectClaim::Leader(_)));
+        assert!(matches!(second, ConnectClaim::Leader(_)));
     }
 }
