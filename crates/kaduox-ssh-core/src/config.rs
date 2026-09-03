@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::net::Ipv6Addr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -63,8 +64,7 @@ impl ConnectionConfig {
         username_override: Option<&str>,
         port_override: Option<u16>,
     ) -> Result<Self> {
-        let parsed = russh_config::parse_home(alias)
-            .with_context(|| format!("failed to parse OpenSSH config for {alias}"))?;
+        let parsed = parse_openssh_home_or_default(alias)?;
 
         let mut config = Self::new(
             parsed.host().to_owned(),
@@ -100,6 +100,23 @@ impl ConnectionConfig {
     }
 }
 
+fn parse_openssh_home_or_default(alias: &str) -> Result<russh_config::Config> {
+    match russh_config::parse_home(alias) {
+        Ok(parsed) => Ok(parsed),
+        Err(error) if openssh_config_is_absent(&error) => Ok(russh_config::Config::default(alias)),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to parse OpenSSH config for {alias}")),
+    }
+}
+
+fn openssh_config_is_absent(error: &russh_config::Error) -> bool {
+    match error {
+        russh_config::Error::NoHome => true,
+        russh_config::Error::Io(error) => error.kind() == ErrorKind::NotFound,
+        russh_config::Error::HostNotFound => false,
+    }
+}
+
 pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
     let spec = spec.trim();
     if spec.is_empty() || spec.eq_ignore_ascii_case("none") {
@@ -130,8 +147,7 @@ fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
 
     let (user_override, host_port) = parse_jump_destination(spec)?;
     let (alias, port_override) = parse_host_port(host_port)?;
-    let parsed =
-        russh_config::parse_home(&alias).unwrap_or_else(|_| russh_config::Config::default(&alias));
+    let parsed = parse_openssh_home_or_default(&alias)?;
 
     Ok(JumpHost {
         alias,
@@ -319,5 +335,16 @@ mod tests {
         ] {
             assert!(parse_host_port(value).is_err(), "{value:?}");
         }
+    }
+
+    #[test]
+    fn only_genuinely_absent_openssh_configs_are_defaultable() {
+        let missing = russh_config::Error::Io(std::io::Error::from(ErrorKind::NotFound));
+        let denied = russh_config::Error::Io(std::io::Error::from(ErrorKind::PermissionDenied));
+
+        assert!(openssh_config_is_absent(&missing));
+        assert!(openssh_config_is_absent(&russh_config::Error::NoHome));
+        assert!(!openssh_config_is_absent(&denied));
+        assert!(!openssh_config_is_absent(&russh_config::Error::HostNotFound));
     }
 }
