@@ -14,6 +14,7 @@ use tokio::sync::watch;
 
 use crate::auth::{Authentication, authenticate};
 use crate::config::{ConnectionConfig, JumpHost};
+use crate::diagnostics::ServerHostKeyInfo;
 use crate::forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, start_dynamic_forward,
     start_local_forward, start_remote_forward,
@@ -115,6 +116,10 @@ impl SshClient {
 
     pub fn config(&self) -> &ConnectionConfig {
         &self.config
+    }
+
+    pub async fn server_host_key(&self) -> Option<ServerHostKeyInfo> {
+        self.state.server_host_key().await
     }
 
     pub async fn exec(&self, command: &str, remote_user: &RemoteUser) -> Result<CommandOutput> {
