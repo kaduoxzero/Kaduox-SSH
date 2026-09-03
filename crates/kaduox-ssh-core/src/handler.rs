@@ -9,12 +9,13 @@ use russh::client::{self, ChannelOpenHandle, Msg};
 use russh::keys::PublicKeyOrCertificate;
 use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tokio::time::timeout;
 
 use crate::config::HostKeyPolicy;
 
 const REMOTE_FORWARD_TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_AGENT_FORWARD_CHANNELS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardTarget {
@@ -22,10 +23,21 @@ pub(crate) struct ForwardTarget {
     pub port: u16,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct HandlerState {
     pub(crate) remote_forwards: Arc<RwLock<HashMap<(String, u32), ForwardTarget>>>,
     pub agent_forwarding: bool,
+    agent_forward_capacity: Arc<Semaphore>,
+}
+
+impl Default for HandlerState {
+    fn default() -> Self {
+        Self {
+            remote_forwards: Arc::new(RwLock::new(HashMap::new())),
+            agent_forwarding: false,
+            agent_forward_capacity: Arc::new(Semaphore::new(MAX_AGENT_FORWARD_CHANNELS)),
+        }
+    }
 }
 
 impl HandlerState {
@@ -164,6 +176,15 @@ impl client::Handler for ClientHandler {
             return Ok(());
         }
 
+        // Agent forwarding gives the authenticated remote server access to a
+        // local signing capability. Bound concurrently active forwarded-agent
+        // streams so a remote peer cannot turn -A into an unbounded local-task
+        // and socket/pipe allocation primitive.
+        #[cfg(any(unix, windows))]
+        let Ok(permit) = Arc::clone(&self.state.agent_forward_capacity).try_acquire_owned() else {
+            return Ok(());
+        };
+
         #[cfg(unix)]
         {
             let Some(socket) = std::env::var_os("SSH_AUTH_SOCK") else {
@@ -174,6 +195,7 @@ impl client::Handler for ClientHandler {
             };
             reply.accept().await;
             tokio::spawn(async move {
+                let _permit = permit;
                 let mut remote = channel.into_stream();
                 let _ = copy_bidirectional(&mut agent, &mut remote).await;
             });
@@ -188,6 +210,7 @@ impl client::Handler for ClientHandler {
             };
             reply.accept().await;
             tokio::spawn(async move {
+                let _permit = permit;
                 let mut remote = channel.into_stream();
                 let _ = copy_bidirectional(&mut agent, &mut remote).await;
             });
@@ -248,5 +271,30 @@ mod tests {
             .await;
 
         assert!(state.remote_forward("0.0.0.0", 9000).await.is_none());
+    }
+
+    #[test]
+    fn agent_forward_capacity_is_strictly_bounded() {
+        let state = HandlerState::default();
+        let mut permits = Vec::with_capacity(MAX_AGENT_FORWARD_CHANNELS);
+        for _ in 0..MAX_AGENT_FORWARD_CHANNELS {
+            permits.push(
+                Arc::clone(&state.agent_forward_capacity)
+                    .try_acquire_owned()
+                    .unwrap(),
+            );
+        }
+        assert!(
+            Arc::clone(&state.agent_forward_capacity)
+                .try_acquire_owned()
+                .is_err()
+        );
+
+        permits.pop();
+        assert!(
+            Arc::clone(&state.agent_forward_capacity)
+                .try_acquire_owned()
+                .is_ok()
+        );
     }
 }
