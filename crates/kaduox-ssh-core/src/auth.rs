@@ -112,13 +112,11 @@ async fn authenticate_keyboard_interactive(
                     rounds,
                     prompts.len(),
                     total_prompts,
-                    prompts.iter().any(|prompt| prompt.echo),
                 )?;
 
-                // This authentication variant carries one secret response only.
-                // Never place that secret into an echo-enabled prompt, and honor
-                // Russh's requirement that an empty prompt receives an empty
-                // response rather than duplicating the secret.
+                // This authentication variant carries one configured response.
+                // Russh explicitly requires an empty server prompt to receive an
+                // empty response rather than duplicating the configured secret.
                 let responses = prompts
                     .iter()
                     .map(|prompt| {
@@ -141,7 +139,6 @@ fn validate_keyboard_interactive_request(
     rounds: usize,
     prompt_count: usize,
     previous_total_prompts: usize,
-    has_echo_prompt: bool,
 ) -> Result<usize> {
     if rounds > MAX_KEYBOARD_INTERACTIVE_ROUNDS {
         bail!(
@@ -159,11 +156,6 @@ fn validate_keyboard_interactive_request(
     if total_prompts > MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS {
         bail!(
             "keyboard-interactive authentication exceeded the {MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS}-prompt safety limit"
-        );
-    }
-    if has_echo_prompt {
-        bail!(
-            "keyboard-interactive server requested an echo-enabled response; secret-only authentication refuses to expose the configured secret to visible prompts"
         );
     }
     Ok(total_prompts)
@@ -243,25 +235,16 @@ mod tests {
 
     #[test]
     fn keyboard_interactive_request_limits_are_bounded() {
-        assert_eq!(
-            validate_keyboard_interactive_request(1, 2, 0, false).unwrap(),
-            2
-        );
+        assert_eq!(validate_keyboard_interactive_request(1, 2, 0).unwrap(), 2);
         assert!(
-            validate_keyboard_interactive_request(
-                MAX_KEYBOARD_INTERACTIVE_ROUNDS + 1,
-                0,
-                0,
-                false,
-            )
-            .is_err()
+            validate_keyboard_interactive_request(MAX_KEYBOARD_INTERACTIVE_ROUNDS + 1, 0, 0)
+                .is_err()
         );
         assert!(
             validate_keyboard_interactive_request(
                 1,
                 MAX_KEYBOARD_INTERACTIVE_PROMPTS_PER_ROUND + 1,
                 0,
-                false,
             )
             .is_err()
         );
@@ -270,15 +253,8 @@ mod tests {
                 2,
                 1,
                 MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS,
-                false,
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn keyboard_interactive_echo_prompt_is_rejected() {
-        let error = validate_keyboard_interactive_request(1, 1, 0, true).unwrap_err();
-        assert!(error.to_string().contains("echo-enabled"));
     }
 }
