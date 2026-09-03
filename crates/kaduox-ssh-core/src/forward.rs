@@ -76,6 +76,69 @@ impl Drop for ForwardHandle {
     }
 }
 
+/// Lifetime handle for a server-side TCP forwarding registration (`-R`).
+///
+/// The local route used to dispatch server-initiated `forwarded-tcpip`
+/// channels is removed before an explicit cancellation request is sent to the
+/// server. This makes late channels fail closed even when the remote server is
+/// slow or never acknowledges `cancel-tcpip-forward`.
+pub struct RemoteForwardHandle {
+    session: Arc<client::Handle<ClientHandler>>,
+    state: HandlerState,
+    bind_address: String,
+    bind_port: u16,
+    active: bool,
+}
+
+impl RemoteForwardHandle {
+    pub fn port(&self) -> u16 {
+        self.bind_port
+    }
+
+    pub fn bind_address(&self) -> &str {
+        &self.bind_address
+    }
+
+    /// Remove the local forwarding route and request cancellation from the SSH
+    /// server. The network cancellation request is bounded so shutdown cannot
+    /// wait forever for a non-responsive server.
+    pub async fn close(mut self) -> Result<()> {
+        self.active = false;
+        cancel_remote_forward_registration(
+            &self.session,
+            &self.state,
+            self.bind_address.clone(),
+            self.bind_port,
+        )
+        .await
+    }
+}
+
+impl Drop for RemoteForwardHandle {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+
+        let session = Arc::clone(&self.session);
+        let state = self.state.clone();
+        let bind_address = self.bind_address.clone();
+        let bind_port = self.bind_port;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = cancel_remote_forward_registration(
+                    &session,
+                    &state,
+                    bind_address,
+                    bind_port,
+                )
+                .await;
+            });
+        }
+    }
+}
+
 pub(crate) async fn start_local_forward(
     session: Arc<client::Handle<ClientHandler>>,
     spec: LocalForward,
@@ -281,6 +344,31 @@ pub(crate) async fn start_remote_forward(
     state: &HandlerState,
     spec: RemoteForward,
 ) -> Result<u16> {
+    let (_, actual_port) = register_remote_forward(session, state, spec).await?;
+    Ok(actual_port)
+}
+
+pub(crate) async fn start_remote_forward_managed(
+    session: Arc<client::Handle<ClientHandler>>,
+    state: &HandlerState,
+    spec: RemoteForward,
+) -> Result<RemoteForwardHandle> {
+    let (bind_address, bind_port) =
+        register_remote_forward(Arc::clone(&session), state, spec).await?;
+    Ok(RemoteForwardHandle {
+        session,
+        state: state.clone(),
+        bind_address,
+        bind_port,
+        active: true,
+    })
+}
+
+async fn register_remote_forward(
+    session: Arc<client::Handle<ClientHandler>>,
+    state: &HandlerState,
+    spec: RemoteForward,
+) -> Result<(String, u16)> {
     let allocated = timeout(
         FORWARD_CHANNEL_OPEN_TIMEOUT,
         session.tcpip_forward(spec.bind_address.clone(), u32::from(spec.bind_port)),
@@ -292,9 +380,10 @@ pub(crate) async fn start_remote_forward(
     } else {
         spec.bind_port
     };
+    let bind_address = spec.bind_address;
     state
         .register_remote_forward(
-            spec.bind_address,
+            bind_address.clone(),
             u32::from(actual_port),
             ForwardTarget {
                 host: spec.target_host,
@@ -302,7 +391,29 @@ pub(crate) async fn start_remote_forward(
             },
         )
         .await;
-    Ok(actual_port)
+    Ok((bind_address, actual_port))
+}
+
+async fn cancel_remote_forward_registration(
+    session: &client::Handle<ClientHandler>,
+    state: &HandlerState,
+    bind_address: String,
+    bind_port: u16,
+) -> Result<()> {
+    // Remove local dispatch state first. If the server races with cancellation
+    // or never acknowledges it, any late forwarded-tcpip channel is rejected by
+    // the hardened handler instead of reaching the old local target.
+    state
+        .unregister_remote_forward(&bind_address, u32::from(bind_port))
+        .await;
+
+    timeout(
+        FORWARD_CHANNEL_OPEN_TIMEOUT,
+        session.cancel_tcpip_forward(bind_address, u32::from(bind_port)),
+    )
+    .await
+    .context("remote forwarding cancellation request timed out")??;
+    Ok(())
 }
 
 pub fn loopback(port: u16) -> SocketAddr {
