@@ -54,6 +54,17 @@ impl HandlerState {
             .insert((bind_address, bind_port), target);
     }
 
+    pub async fn unregister_remote_forward(
+        &self,
+        bind_address: &str,
+        bind_port: u32,
+    ) -> Option<ForwardTarget> {
+        self.remote_forwards
+            .write()
+            .await
+            .remove(&(bind_address.to_owned(), bind_port))
+    }
+
     async fn remote_forward(&self, address: &str, port: u32) -> Option<ForwardTarget> {
         let forwards = self.remote_forwards.read().await;
         forwards
@@ -296,5 +307,34 @@ mod tests {
         assert!(state.try_acquire_server_forward_slot().is_none());
         drop(permits.pop());
         assert!(state.try_acquire_server_forward_slot().is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unregister_remote_forward_removes_route() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward(
+                "127.0.0.1".to_owned(),
+                4040,
+                ForwardTarget {
+                    host: "127.0.0.1".to_owned(),
+                    port: 8080,
+                },
+            )
+            .await;
+
+        assert!(state.remote_forward("127.0.0.1", 4040).await.is_some());
+        assert!(
+            state
+                .unregister_remote_forward("127.0.0.1", 4040)
+                .await
+                .is_some()
+        );
+        assert!(state.remote_forward("127.0.0.1", 4040).await.is_none());
     }
 }
