@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -55,7 +55,17 @@ pub(crate) fn join_remote_under_root(root: &str, relative: &str) -> Result<Strin
 
 pub(crate) fn local_path_from_remote_relative(relative: &str) -> Result<PathBuf> {
     validate_remote_relative_path(relative)?;
-    Ok(relative.split('/').collect())
+    let mut path = PathBuf::new();
+    for component in relative.split('/') {
+        let mut native = Path::new(component).components();
+        match (native.next(), native.next()) {
+            (Some(Component::Normal(_)), None) => path.push(component),
+            _ => bail!(
+                "sync path component is not a normal local filename on this platform: {component:?}"
+            ),
+        }
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -68,6 +78,10 @@ mod tests {
         assert_eq!(
             join_remote_under_root("/srv/app", "releases/2026/app.bin").unwrap(),
             "/srv/app/releases/2026/app.bin"
+        );
+        assert_eq!(
+            local_path_from_remote_relative("releases/2026/app.bin").unwrap(),
+            PathBuf::from("releases").join("2026").join("app.bin")
         );
     }
 
@@ -98,5 +112,11 @@ mod tests {
         for name in ["", ".", "..", "a/b", "a\\b", "bad\0name"] {
             assert!(validate_remote_child_name(name).is_err(), "{name:?}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_drive_relative_local_components() {
+        assert!(local_path_from_remote_relative("C:escape").is_err());
     }
 }
