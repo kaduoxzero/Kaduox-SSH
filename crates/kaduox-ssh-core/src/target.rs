@@ -11,8 +11,11 @@ impl ConnectionTarget {
         if value.is_empty() {
             bail!("SSH target cannot be empty");
         }
-        if value.chars().any(char::is_whitespace) {
-            bail!("SSH target cannot contain whitespace");
+        if value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            bail!("SSH target cannot contain whitespace or control characters");
         }
 
         let (username, raw_host) = match value.rsplit_once('@') {
@@ -44,15 +47,25 @@ fn normalize_host(value: &str) -> Result<String> {
         if host.is_empty() {
             bail!("SSH target host cannot be empty");
         }
-        if host.contains(['[', ']']) {
+        if host.contains('[') || host.contains(']') {
             bail!("invalid bracketed SSH target host");
         }
         return Ok(host.to_owned());
     }
 
-    if value.contains(['[', ']']) {
+    if value.contains('[') || value.contains(']') {
         bail!("invalid bracket syntax in SSH target");
     }
+
+    if value.matches(':').count() == 1 {
+        let Some((host, port)) = value.rsplit_once(':') else {
+            return Ok(value.to_owned());
+        };
+        if !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
+            bail!("SSH target does not accept host:port syntax; use -p/--port instead");
+        }
+    }
+
     Ok(value.to_owned())
 }
 
@@ -111,17 +124,15 @@ mod tests {
             "2001:db8::1]",
             "[]",
             "server example",
+            "server\nexample",
+            "server.example:2222",
         ] {
             assert!(ConnectionTarget::parse(target).is_err(), "{target}");
         }
     }
 
     #[test]
-    fn leaves_colons_for_ipv6_and_does_not_parse_ports() {
-        assert_eq!(
-            ConnectionTarget::parse("server.example:2222").unwrap().host,
-            "server.example:2222"
-        );
+    fn leaves_bare_ipv6_unambiguous() {
         assert_eq!(
             ConnectionTarget::parse("2001:db8::1").unwrap().host,
             "2001:db8::1"
