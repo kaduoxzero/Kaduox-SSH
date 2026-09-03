@@ -11,6 +11,10 @@ use russh::keys::load_secret_key;
 
 use crate::handler::ClientHandler;
 
+const MAX_KEYBOARD_INTERACTIVE_ROUNDS: usize = 16;
+const MAX_KEYBOARD_INTERACTIVE_PROMPTS_PER_ROUND: usize = 32;
+const MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS: usize = 64;
+
 #[derive(Debug, Clone)]
 pub enum Authentication {
     Password(String),
@@ -145,13 +149,34 @@ async fn authenticate_keyboard_interactive(
     let mut response = session
         .authenticate_keyboard_interactive_start(username, None::<String>)
         .await?;
+    let mut rounds = 0_usize;
+    let mut total_prompts = 0_usize;
 
     loop {
         match response {
             KeyboardInteractiveAuthResponse::Success => return Ok(true),
             KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
             KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
-                let responses = prompts.iter().map(|_| secret.to_owned()).collect();
+                rounds += 1;
+                total_prompts = validate_keyboard_interactive_request(
+                    rounds,
+                    prompts.len(),
+                    total_prompts,
+                )?;
+
+                // This authentication variant carries one configured response.
+                // Russh explicitly requires an empty server prompt to receive an
+                // empty response rather than duplicating the configured secret.
+                let responses = prompts
+                    .iter()
+                    .map(|prompt| {
+                        if prompt.prompt.is_empty() {
+                            String::new()
+                        } else {
+                            secret.to_owned()
+                        }
+                    })
+                    .collect();
                 response = session
                     .authenticate_keyboard_interactive_respond(responses)
                     .await?;
@@ -160,28 +185,61 @@ async fn authenticate_keyboard_interactive(
     }
 }
 
+fn validate_keyboard_interactive_request(
+    rounds: usize,
+    prompt_count: usize,
+    previous_total_prompts: usize,
+) -> Result<usize> {
+    if rounds > MAX_KEYBOARD_INTERACTIVE_ROUNDS {
+        bail!(
+            "keyboard-interactive authentication exceeded the {MAX_KEYBOARD_INTERACTIVE_ROUNDS}-round safety limit"
+        );
+    }
+    if prompt_count > MAX_KEYBOARD_INTERACTIVE_PROMPTS_PER_ROUND {
+        bail!(
+            "keyboard-interactive authentication returned {prompt_count} prompts in one round; limit is {MAX_KEYBOARD_INTERACTIVE_PROMPTS_PER_ROUND}"
+        );
+    }
+    let total_prompts = previous_total_prompts
+        .checked_add(prompt_count)
+        .context("keyboard-interactive prompt counter overflow")?;
+    if total_prompts > MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS {
+        bail!(
+            "keyboard-interactive authentication exceeded the {MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS}-prompt safety limit"
+        );
+    }
+    Ok(total_prompts)
+}
+
 pub(crate) async fn authenticate_with_agent(
     session: &mut client::Handle<ClientHandler>,
     username: &str,
 ) -> Result<bool> {
     let mut agent = connect_system_agent().await?;
     let identities = agent.request_identities().await?;
+    if identities.is_empty() {
+        return Ok(false);
+    }
+
+    // `server-sig-algs` is a connection property, not an identity property.
+    // Russh may wait for EXT_INFO on the first lookup; resolve it once rather
+    // than repeating the lookup for every identity returned by the agent.
+    let rsa_hash = session.best_supported_rsa_hash().await?.flatten();
 
     for identity in identities {
         // RSA identities are safe to keep compatible here because the private-key
         // operation is delegated to the external agent. Kaduox only negotiates the
         // RSA hash and forwards the signing request; it never handles the RSA
         // private exponent locally.
-        let hash = session.best_supported_rsa_hash().await?.flatten();
         let result = match identity {
             AgentIdentity::PublicKey { key, .. } => {
                 session
-                    .authenticate_publickey_with(username, key, hash, &mut agent)
+                    .authenticate_publickey_with(username, key, rsa_hash, &mut agent)
                     .await?
             }
             AgentIdentity::Certificate { certificate, .. } => {
                 session
-                    .authenticate_certificate_with(username, certificate, hash, &mut agent)
+                    .authenticate_certificate_with(username, certificate, rsa_hash, &mut agent)
                     .await?
             }
         };
@@ -293,5 +351,30 @@ mod tests {
 
         assert!(first.can_reuse_with(&same));
         assert!(!first.can_reuse_with(&reordered));
+    }
+
+    #[test]
+    fn keyboard_interactive_request_limits_are_bounded() {
+        assert_eq!(validate_keyboard_interactive_request(1, 2, 0).unwrap(), 2);
+        assert!(
+            validate_keyboard_interactive_request(MAX_KEYBOARD_INTERACTIVE_ROUNDS + 1, 0, 0)
+                .is_err()
+        );
+        assert!(
+            validate_keyboard_interactive_request(
+                1,
+                MAX_KEYBOARD_INTERACTIVE_PROMPTS_PER_ROUND + 1,
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_keyboard_interactive_request(
+                2,
+                1,
+                MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS,
+            )
+            .is_err()
+        );
     }
 }
