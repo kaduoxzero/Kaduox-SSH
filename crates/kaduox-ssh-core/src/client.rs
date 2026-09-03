@@ -16,11 +16,13 @@ use tokio::time::timeout;
 
 use crate::auth::{Authentication, authenticate};
 use crate::config::{ConnectionConfig, JumpHost};
+use crate::diagnostics::ServerHostKeyInfo;
 use crate::forward::{
-    DynamicForward, ForwardHandle, LocalForward, RemoteForward, start_dynamic_forward,
-    start_local_forward, start_remote_forward,
+    DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle,
+    start_dynamic_forward, start_local_forward, start_remote_forward, start_remote_forward_managed,
 };
 use crate::handler::{ClientHandler, HandlerState};
+use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, list_directory, stat_path};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
@@ -172,6 +174,10 @@ impl SshClient {
 
     pub fn config(&self) -> &ConnectionConfig {
         &self.config
+    }
+
+    pub async fn server_host_key(&self) -> Option<ServerHostKeyInfo> {
+        self.state.server_host_key().await
     }
 
     /// Execute a command and collect its complete output in memory.
@@ -406,6 +412,24 @@ impl SshClient {
         Ok(summary)
     }
 
+    pub async fn list_remote_directory(&self, path: &str) -> Result<Vec<RemoteDirEntry>> {
+        let sftp = self.open_sftp_for_inspection().await?;
+        let result = list_directory(&sftp, path).await;
+        let close_result = sftp.close().await;
+        let entries = result?;
+        close_result?;
+        Ok(entries)
+    }
+
+    pub async fn stat_remote_path(&self, path: &str) -> Result<RemoteFileStat> {
+        let sftp = self.open_sftp_for_inspection().await?;
+        let result = stat_path(&sftp, path).await;
+        let close_result = sftp.close().await;
+        let stat = result?;
+        close_result?;
+        Ok(stat)
+    }
+
     pub async fn local_forward(&self, spec: LocalForward) -> Result<ForwardHandle> {
         start_local_forward(Arc::clone(&self.session), spec).await
     }
@@ -418,6 +442,13 @@ impl SshClient {
         start_remote_forward(Arc::clone(&self.session), &self.state, spec).await
     }
 
+    pub async fn remote_forward_managed(
+        &self,
+        spec: RemoteForward,
+    ) -> Result<RemoteForwardHandle> {
+        start_remote_forward_managed(Arc::clone(&self.session), &self.state, spec).await
+    }
+
     pub async fn close(&self) -> Result<()> {
         self.session
             .disconnect(Disconnect::ByApplication, "", "en")
@@ -426,6 +457,11 @@ impl SshClient {
             let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
         }
         Ok(())
+    }
+
+    async fn open_sftp_for_inspection(&self) -> Result<SftpSession> {
+        let options = TransferOptions::default();
+        self.open_sftp_for_transfer(&options).await
     }
 
     pub(crate) async fn open_sftp_for_transfer(
