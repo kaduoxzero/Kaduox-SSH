@@ -1,0 +1,2 @@
+# Ensure GitHub Linguist counts Rust sources in repository language statistics.
+*.rs linguist-language=Rust linguist-detectable=true
