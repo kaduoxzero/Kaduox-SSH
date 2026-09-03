@@ -26,6 +26,56 @@ pub enum Authentication {
     },
 }
 
+/// Secret-free description of the authentication source used for connection
+/// reuse decisions. Any request that depends on a newly supplied secret is
+/// deliberately non-reusable: a later password/passphrase must never be
+/// silently ignored because a transport with the same logical name exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AuthenticationReuseKey {
+    PrivateKey(PathBuf),
+    Agent,
+    Auto(Vec<PathBuf>),
+    NonReusable,
+}
+
+impl AuthenticationReuseKey {
+    pub(crate) fn can_reuse_with(&self, requested: &Self) -> bool {
+        match (self, requested) {
+            (Self::PrivateKey(existing), Self::PrivateKey(requested)) => existing == requested,
+            (Self::Agent, Self::Agent) => true,
+            (Self::Auto(existing), Self::Auto(requested)) => existing == requested,
+            (Self::NonReusable, _) | (_, Self::NonReusable) => false,
+            _ => false,
+        }
+    }
+}
+
+impl Authentication {
+    pub(crate) fn reuse_key(&self) -> AuthenticationReuseKey {
+        match self {
+            Self::Password(_) | Self::KeyboardInteractive(_) => AuthenticationReuseKey::NonReusable,
+            Self::PrivateKey { path, passphrase } => {
+                if passphrase.is_some() {
+                    AuthenticationReuseKey::NonReusable
+                } else {
+                    AuthenticationReuseKey::PrivateKey(path.clone())
+                }
+            }
+            Self::Agent => AuthenticationReuseKey::Agent,
+            Self::Auto {
+                identity_files,
+                passphrase,
+            } => {
+                if passphrase.is_some() {
+                    AuthenticationReuseKey::NonReusable
+                } else {
+                    AuthenticationReuseKey::Auto(identity_files.clone())
+                }
+            }
+        }
+    }
+}
+
 pub(crate) async fn authenticate(
     session: &mut client::Handle<ClientHandler>,
     username: &str,
@@ -168,4 +218,80 @@ pub(crate) async fn connect_system_agent() -> Result<DynamicAgent> {
 #[cfg(not(any(unix, windows)))]
 pub(crate) async fn connect_system_agent() -> Result<DynamicAgent> {
     anyhow::bail!("SSH agent is not supported on this platform")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_and_keyboard_interactive_are_never_implicitly_reusable() {
+        let password = Authentication::Password("do-not-store-me".to_owned()).reuse_key();
+        let keyboard =
+            Authentication::KeyboardInteractive("do-not-store-me-either".to_owned()).reuse_key();
+        assert_eq!(password, AuthenticationReuseKey::NonReusable);
+        assert_eq!(keyboard, AuthenticationReuseKey::NonReusable);
+        assert!(!password.can_reuse_with(&AuthenticationReuseKey::NonReusable));
+    }
+
+    #[test]
+    fn unencrypted_private_key_reuse_uses_only_the_configured_path() {
+        let first = Authentication::PrivateKey {
+            path: PathBuf::from("/keys/deploy"),
+            passphrase: None,
+        }
+        .reuse_key();
+        let same = Authentication::PrivateKey {
+            path: PathBuf::from("/keys/deploy"),
+            passphrase: None,
+        }
+        .reuse_key();
+        let different = Authentication::PrivateKey {
+            path: PathBuf::from("/keys/admin"),
+            passphrase: None,
+        }
+        .reuse_key();
+
+        assert!(first.can_reuse_with(&same));
+        assert!(!first.can_reuse_with(&different));
+    }
+
+    #[test]
+    fn passphrase_dependent_key_requests_are_never_implicitly_reusable() {
+        let private_key = Authentication::PrivateKey {
+            path: PathBuf::from("/keys/deploy"),
+            passphrase: Some("first-secret".to_owned()),
+        }
+        .reuse_key();
+        let auto = Authentication::Auto {
+            identity_files: vec![PathBuf::from("id_a")],
+            passphrase: Some("second-secret".to_owned()),
+        }
+        .reuse_key();
+
+        assert_eq!(private_key, AuthenticationReuseKey::NonReusable);
+        assert_eq!(auto, AuthenticationReuseKey::NonReusable);
+    }
+
+    #[test]
+    fn auto_reuse_requires_the_same_ordered_identity_sources() {
+        let first = Authentication::Auto {
+            identity_files: vec![PathBuf::from("id_a"), PathBuf::from("id_b")],
+            passphrase: None,
+        }
+        .reuse_key();
+        let same = Authentication::Auto {
+            identity_files: vec![PathBuf::from("id_a"), PathBuf::from("id_b")],
+            passphrase: None,
+        }
+        .reuse_key();
+        let reordered = Authentication::Auto {
+            identity_files: vec![PathBuf::from("id_b"), PathBuf::from("id_a")],
+            passphrase: None,
+        }
+        .reuse_key();
+
+        assert!(first.can_reuse_with(&same));
+        assert!(!first.can_reuse_with(&reordered));
+    }
 }
