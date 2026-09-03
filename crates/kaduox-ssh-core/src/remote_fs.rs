@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, FileType as SftpFileType};
 
@@ -45,17 +45,18 @@ pub(crate) async fn list_directory(
         .read_dir(path)
         .await
         .with_context(|| format!("failed to list remote directory {path}"))?;
-    let mut entries = Vec::new();
+    let mut entries = Vec::with_capacity(directory.len());
 
     for entry in directory {
         let name = entry.file_name();
         if name == "." || name == ".." {
             continue;
         }
+        validate_remote_entry_name(&name)?;
         let file_type = map_file_type(entry.file_type());
         entries.push(RemoteDirEntry {
+            path: join_remote_child(path, &name),
             name,
-            path: entry.path(),
             metadata: map_metadata(entry.metadata(), file_type),
         });
     }
@@ -89,6 +90,26 @@ pub(crate) async fn stat_path(sftp: &SftpSession, path: &str) -> Result<RemoteFi
         metadata: map_metadata(attrs, file_type),
         symlink_target,
     })
+}
+
+fn validate_remote_entry_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." {
+        bail!("remote directory returned an invalid entry name");
+    }
+    if name.contains('/') || name.contains('\0') {
+        bail!("remote directory returned a path-bearing entry name: {name:?}");
+    }
+    Ok(())
+}
+
+fn join_remote_child(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        format!("/{name}")
+    } else if parent.ends_with('/') {
+        format!("{parent}{name}")
+    } else {
+        format!("{parent}/{name}")
+    }
 }
 
 fn map_metadata(attrs: FileAttributes, file_type: RemoteFileType) -> RemoteFileMetadata {
@@ -143,5 +164,20 @@ mod tests {
         assert_eq!(metadata.permissions, Some(0o100640));
         assert_eq!(metadata.modified_at, Some(22));
         assert_eq!(metadata.user.as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn rejects_path_bearing_directory_entry_names() {
+        for name in ["", ".", "..", "../escape", "nested/file", "bad\0name"] {
+            assert!(validate_remote_entry_name(name).is_err(), "{name:?}");
+        }
+        assert!(validate_remote_entry_name("normal file.txt").is_ok());
+    }
+
+    #[test]
+    fn reconstructs_remote_child_paths_from_parent_and_name() {
+        assert_eq!(join_remote_child("/", "etc"), "/etc");
+        assert_eq!(join_remote_child("/var/log", "syslog"), "/var/log/syslog");
+        assert_eq!(join_remote_child("relative/", "file"), "relative/file");
     }
 }
