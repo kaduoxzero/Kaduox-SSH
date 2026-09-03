@@ -45,7 +45,10 @@ pub(crate) async fn list_directory(
         .read_dir(path)
         .await
         .with_context(|| format!("failed to list remote directory {path}"))?;
-    let mut entries = Vec::with_capacity(directory.len());
+    // `ReadDir` is only required to be iterable by the russh-sftp API. Avoid
+    // relying on an ExactSizeIterator-style `len()` contract that is not part
+    // of the public abstraction.
+    let mut entries = Vec::new();
 
     for entry in directory {
         let name = entry.file_name();
