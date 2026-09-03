@@ -28,7 +28,9 @@ pub use config::{
     resolve_jump_hosts,
 };
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
-pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
+pub use forward::{
+    DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,
+};
 pub use manager::{
     ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
     ConnectionSnapshot,
