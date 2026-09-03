@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use russh::Channel;
@@ -9,8 +10,11 @@ use russh::keys::PublicKeyOrCertificate;
 use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 
 use crate::config::HostKeyPolicy;
+
+const REMOTE_FORWARD_TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardTarget {
@@ -130,7 +134,15 @@ impl client::Handler for ClientHandler {
             return Ok(());
         };
 
-        let Ok(mut local) = TcpStream::connect((target.host.as_str(), target.port)).await else {
+        // The SSH server controls when forwarded-tcpip requests arrive. Bound
+        // local DNS/TCP setup so one unreachable target cannot stall the client
+        // handler indefinitely before the channel is accepted or rejected.
+        let local = timeout(
+            REMOTE_FORWARD_TARGET_CONNECT_TIMEOUT,
+            TcpStream::connect((target.host.as_str(), target.port)),
+        )
+        .await;
+        let Ok(Ok(mut local)) = local else {
             return Ok(());
         };
 
