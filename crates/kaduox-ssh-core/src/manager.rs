@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,10 +25,29 @@ impl Default for ConnectionManagerConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionSnapshot {
+    pub name: String,
+    pub idle_for: Duration,
+    pub in_use: bool,
+    /// Number of explicit `ConnectionLease` handles currently alive.
+    pub active_leases: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConnectionManagerSnapshot {
+    pub total_connections: usize,
+    pub in_use_connections: usize,
+    pub active_leases: usize,
+    pub max_connections: usize,
+    pub available_capacity: usize,
+}
+
 struct ManagedConnection {
     client: Arc<SshClient>,
     authentication: AuthenticationReuseKey,
     last_used: Mutex<Instant>,
+    active_leases: AtomicUsize,
     _capacity_permit: OwnedSemaphorePermit,
 }
 
@@ -40,6 +61,7 @@ impl ManagedConnection {
             client,
             authentication,
             last_used: Mutex::new(Instant::now()),
+            active_leases: AtomicUsize::new(0),
             _capacity_permit: capacity_permit,
         }
     }
@@ -56,6 +78,91 @@ impl ManagedConnection {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .elapsed()
+    }
+
+    fn active_leases(&self) -> usize {
+        self.active_leases.load(Ordering::Acquire)
+    }
+
+    fn acquire_lease(&self) {
+        let result = self.active_leases.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| current.checked_add(1),
+        );
+        assert!(result.is_ok(), "connection lease counter overflow");
+        self.touch();
+    }
+
+    fn release_lease(&self) {
+        let result = self.active_leases.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| current.checked_sub(1),
+        );
+        debug_assert!(result.is_ok(), "connection lease counter underflow");
+        self.touch();
+    }
+}
+
+/// Explicit usage lease for a managed authenticated SSH connection.
+///
+/// Long-lived shells, forwarding sessions, TUI/GUI tabs, and background agent
+/// operations should prefer leases over retaining an untracked client handle.
+/// While a lease exists, idle pruning cannot evict the managed connection even
+/// when a child task only owns a lower-level transport/channel handle.
+pub struct ConnectionLease {
+    managed: Arc<ManagedConnection>,
+}
+
+impl ConnectionLease {
+    fn new(managed: Arc<ManagedConnection>) -> Self {
+        managed.acquire_lease();
+        Self { managed }
+    }
+
+    /// Borrow the authenticated client without creating another ownership edge.
+    pub fn client(&self) -> &SshClient {
+        &self.managed.client
+    }
+
+    /// Clone the authenticated client for APIs that still require `Arc<SshClient>`.
+    ///
+    /// The cloned client remains protected by the manager's legacy ownership
+    /// check even if it outlives this explicit lease.
+    pub fn client_arc(&self) -> Arc<SshClient> {
+        Arc::clone(&self.managed.client)
+    }
+}
+
+impl Clone for ConnectionLease {
+    fn clone(&self) -> Self {
+        self.managed.acquire_lease();
+        Self {
+            managed: Arc::clone(&self.managed),
+        }
+    }
+}
+
+impl Deref for ConnectionLease {
+    type Target = SshClient;
+
+    fn deref(&self) -> &Self::Target {
+        self.client()
+    }
+}
+
+impl AsRef<SshClient> for ConnectionLease {
+    fn as_ref(&self) -> &SshClient {
+        self.client()
+    }
+}
+
+impl Drop for ConnectionLease {
+    fn drop(&mut self) {
+        // Refresh last_used after decrementing so idle timing begins when the
+        // long-lived operation actually releases its lease.
+        self.managed.release_lease();
     }
 }
 
@@ -96,14 +203,15 @@ enum ConnectClaim<'a> {
 /// A connection name maps to one authenticated transport; individual exec,
 /// shell, SFTP and forwarding operations still open independent SSH channels.
 ///
-/// `connect` only reuses an existing name when both the complete
-/// `ConnectionConfig` and a secret-free authentication-source identity are
-/// compatible. Callers that intentionally want the currently bound transport
-/// regardless of its original connect request can use `get` explicitly.
+/// `connect` and `connect_lease` only reuse an existing name when both the
+/// complete `ConnectionConfig` and a secret-free authentication-source identity
+/// are compatible. Callers that intentionally want the currently bound
+/// transport regardless of its original connect request can use `get` or
+/// `get_lease` explicitly.
 ///
-/// Concurrent `connect` calls for the same logical name are single-flight: one
-/// caller performs DNS/TCP/SSH/authentication while compatible followers wait.
-/// Different connection names remain fully parallel.
+/// Concurrent compatible connects for the same logical name are single-flight:
+/// one caller performs DNS/TCP/SSH/authentication while followers wait. Different
+/// connection names remain fully parallel.
 pub struct ConnectionManager {
     config: ConnectionManagerConfig,
     capacity: Arc<Semaphore>,
@@ -139,30 +247,74 @@ impl ConnectionManager {
         self.connections.read().await.is_empty()
     }
 
-    /// Explicitly leases the transport currently bound to `name`.
+    /// Return a stable, non-sensitive view of all managed connections.
+    pub async fn connection_snapshots(&self) -> Vec<ConnectionSnapshot> {
+        let connections = self.connections.read().await;
+        let mut snapshots = connections
+            .iter()
+            .map(|(name, managed)| ConnectionSnapshot {
+                name: name.clone(),
+                idle_for: managed.idle_for(),
+                in_use: managed_is_in_use(managed),
+                active_leases: managed.active_leases(),
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.name.cmp(&right.name));
+        snapshots
+    }
+
+    /// Return aggregate connection-pool capacity and lease state.
+    pub async fn snapshot(&self) -> ConnectionManagerSnapshot {
+        let connections = self.connections.read().await;
+        let total_connections = connections.len();
+        let in_use_connections = connections
+            .values()
+            .filter(|managed| managed_is_in_use(managed))
+            .count();
+        let active_leases = connections.values().fold(0_usize, |total, managed| {
+            total.saturating_add(managed.active_leases())
+        });
+        ConnectionManagerSnapshot {
+            total_connections,
+            in_use_connections,
+            active_leases,
+            max_connections: self.config.max_connections,
+            available_capacity: self.capacity.available_permits(),
+        }
+    }
+
+    /// Explicitly lease whatever transport is currently bound to `name`.
     ///
-    /// Unlike `connect`, this lookup intentionally does not compare a new
-    /// connection or authentication request because no such request is
-    /// supplied. Use `connect` when configuration compatibility must be
-    /// enforced.
+    /// Unlike `connect`, this intentionally does not compare a new connection or
+    /// authentication request because no such request is supplied.
     pub async fn get(&self, name: &str) -> Option<Arc<SshClient>> {
-        // Clone the client while the read lock is held. `prune_idle` takes the
-        // write lock before inspecting Arc ownership, so it cannot evict a
-        // connection in the gap between lookup and handing the client out.
+        let managed = self.get_managed(name).await?;
+        Some(Arc::clone(&managed.client))
+    }
+
+    /// Acquire an explicit usage lease for whatever transport is currently bound
+    /// to `name`.
+    pub async fn get_lease(&self, name: &str) -> Option<ConnectionLease> {
+        self.get_managed(name).await.map(ConnectionLease::new)
+    }
+
+    async fn get_managed(&self, name: &str) -> Option<Arc<ManagedConnection>> {
+        // Clone the managed wrapper while the read lock is held. `prune_idle`
+        // requires the manager to be its sole wrapper owner before eviction, so
+        // the lookup-to-handoff gap is protected even before a raw client clone
+        // or explicit lease is created.
         let connections = self.connections.read().await;
         let managed = connections.get(name)?;
         managed.touch();
-        let client = Arc::clone(&managed.client);
-        drop(connections);
-        Some(client)
+        Some(Arc::clone(managed))
     }
 
-    async fn get_reusable(
+    async fn get_reusable_managed(
         &self,
         name: &str,
         config: &ConnectionConfig,
         authentication: &AuthenticationReuseKey,
-    ) -> Result<Option<Arc<SshClient>>> {
+    ) -> Result<Option<Arc<ManagedConnection>>> {
         let connections = self.connections.read().await;
         let Some(managed) = connections.get(name) else {
             return Ok(None);
@@ -175,9 +327,7 @@ impl ConnectionManager {
             authentication,
         )?;
         managed.touch();
-        let client = Arc::clone(&managed.client);
-        drop(connections);
-        Ok(Some(client))
+        Ok(Some(Arc::clone(managed)))
     }
 
     fn claim_connect(&self, name: &str) -> ConnectClaim<'_> {
@@ -205,18 +355,43 @@ impl ConnectionManager {
         config: ConnectionConfig,
         authentication: Authentication,
     ) -> Result<Arc<SshClient>> {
-        let name = name.into();
+        let managed = self
+            .connect_managed(name.into(), config, authentication)
+            .await?;
+        Ok(Arc::clone(&managed.client))
+    }
+
+    /// Connect or compatibly reuse a named SSH transport and return an explicit
+    /// usage lease for long-lived frontend/background work.
+    pub async fn connect_lease(
+        &self,
+        name: impl Into<String>,
+        config: ConnectionConfig,
+        authentication: Authentication,
+    ) -> Result<ConnectionLease> {
+        let managed = self
+            .connect_managed(name.into(), config, authentication)
+            .await?;
+        Ok(ConnectionLease::new(managed))
+    }
+
+    async fn connect_managed(
+        &self,
+        name: String,
+        config: ConnectionConfig,
+        authentication: Authentication,
+    ) -> Result<Arc<ManagedConnection>> {
         if name.is_empty() {
             bail!("connection name cannot be empty");
         }
 
         let authentication_key = authentication.reuse_key();
         loop {
-            if let Some(client) = self
-                .get_reusable(&name, &config, &authentication_key)
+            if let Some(managed) = self
+                .get_reusable_managed(&name, &config, &authentication_key)
                 .await?
             {
-                return Ok(client);
+                return Ok(managed);
             }
 
             match self.claim_connect(&name) {
@@ -225,18 +400,19 @@ impl ConnectionManager {
                         let _ = done.changed().await;
                     }
                     // Re-run the compatibility-aware lookup after the leader
-                    // finishes. If it installed an incompatible transport, the
-                    // next loop iteration fails closed instead of reusing it.
+                    // finishes. An incompatible winner fails closed on the next
+                    // iteration instead of being leased merely because the name
+                    // matches.
                     continue;
                 }
                 ConnectClaim::Leader(_leader) => {
                     // Another setup may have completed between the optimistic
                     // lookup and claiming the per-name leader slot.
-                    if let Some(client) = self
-                        .get_reusable(&name, &config, &authentication_key)
+                    if let Some(managed) = self
+                        .get_reusable_managed(&name, &config, &authentication_key)
                         .await?
                     {
-                        return Ok(client);
+                        return Ok(managed);
                     }
 
                     self.prune_idle().await;
@@ -249,11 +425,10 @@ impl ConnectionManager {
                             )
                         })?;
 
-                    // Do not hold the connection-map lock across DNS, TCP, SSH
-                    // handshake or authentication. The per-name leader guard only
-                    // coalesces duplicate setup for this logical name; different
-                    // names remain parallel. The guard is RAII-managed, so errors
-                    // or cancellation wake followers and remove the in-flight slot.
+                    // No connection-map lock is held across DNS/TCP/SSH/auth.
+                    // The leader guard only serializes setup for this logical
+                    // name; different names remain parallel. RAII cleanup wakes
+                    // followers on success, error, or future cancellation.
                     let candidate = Arc::new(SshClient::connect(config, authentication).await?);
                     let managed = Arc::new(ManagedConnection::new(
                         Arc::clone(&candidate),
@@ -272,9 +447,6 @@ impl ConnectionManager {
                     };
 
                     if let Some(existing) = existing {
-                        // This should only be possible through an explicit map
-                        // mutation outside the single-flight path. Preserve the
-                        // original security invariant and validate compatibility.
                         let compatibility = ensure_reusable(
                             &name,
                             existing.client.config(),
@@ -286,10 +458,14 @@ impl ConnectionManager {
                         let _ = candidate.close().await;
                         compatibility?;
                         existing.touch();
-                        return Ok(Arc::clone(&existing.client));
+                        return Ok(existing);
                     }
 
-                    return Ok(candidate);
+                    // The managed wrapper is the canonical owner returned to
+                    // callers. Drop the temporary candidate clone so raw-client
+                    // ownership accounting remains accurate for idle pruning.
+                    drop(candidate);
+                    return Ok(managed);
                 }
             }
         }
@@ -304,24 +480,26 @@ impl ConnectionManager {
         Ok(false)
     }
 
-    /// Evicts connections that have exceeded the idle timeout and are not
-    /// currently leased by a caller.
+    /// Evicts connections that have exceeded the idle timeout and have no live
+    /// wrapper handoff, explicit lease, or legacy raw-client owner.
     ///
-    /// Idle eviction is intentionally ownership-aware. It never force-closes
-    /// an evicted transport: child channel/forwarding tasks may still hold
-    /// transport handles even after the caller releases its `Arc<SshClient>`.
-    /// Explicit `remove` and `close_all` remain the force-disconnect APIs.
+    /// Idle eviction is intentionally non-destructive. Dropping manager ownership
+    /// does not send SSH disconnect because child channel/forwarding tasks can
+    /// still own lower-level transport handles. `remove` and `close_all` remain
+    /// the explicit force-disconnect APIs.
     pub async fn prune_idle(&self) -> usize {
         let removed: Vec<Arc<ManagedConnection>> = {
-            // Holding the write lock makes the ownership check atomic with
-            // removal relative to `get`, which takes the read lock and clones
-            // the client before releasing it.
             let mut connections = self.connections.write().await;
             let expired: Vec<String> = connections
                 .iter()
                 .filter_map(|(name, managed)| {
+                    let manager_is_only_wrapper_owner = Arc::strong_count(managed) == 1;
                     let manager_is_only_client_owner = Arc::strong_count(&managed.client) == 1;
-                    (manager_is_only_client_owner && managed.idle_for() >= self.config.idle_timeout)
+                    let no_explicit_leases = managed.active_leases() == 0;
+                    (manager_is_only_wrapper_owner
+                        && manager_is_only_client_owner
+                        && no_explicit_leases
+                        && managed.idle_for() >= self.config.idle_timeout)
                         .then(|| name.clone())
                 })
                 .collect();
@@ -333,9 +511,6 @@ impl ConnectionManager {
         };
 
         let count = removed.len();
-        // Dropping the manager's ownership is enough for idle eviction. Do not
-        // send SSH disconnect here: a forwarding/channel task may still own a
-        // lower-level transport handle. Explicit removal is allowed to close.
         drop(removed);
         count
     }
@@ -361,6 +536,12 @@ impl ConnectionManager {
     }
 }
 
+fn managed_is_in_use(managed: &Arc<ManagedConnection>) -> bool {
+    managed.active_leases() != 0
+        || Arc::strong_count(managed) > 1
+        || Arc::strong_count(&managed.client) > 1
+}
+
 fn ensure_reusable(
     name: &str,
     existing_config: &ConnectionConfig,
@@ -375,7 +556,7 @@ fn ensure_reusable(
     }
     if !existing_authentication.can_reuse_with(requested_authentication) {
         bail!(
-            "connection name '{name}' is already bound to a different or non-reusable authentication source; use get() to lease it intentionally or remove it before reauthenticating"
+            "connection name '{name}' is already bound to a different or non-reusable authentication source; use get()/get_lease() to lease it intentionally or remove it before reauthenticating"
         );
     }
     Ok(())
@@ -388,10 +569,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn empty_manager_has_zero_connections() {
+    async fn empty_manager_has_zero_connections_and_safe_snapshot() {
         let manager = ConnectionManager::default();
         assert!(manager.is_empty().await);
         assert_eq!(manager.len().await, 0);
+        assert!(manager.connection_snapshots().await.is_empty());
+
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.total_connections, 0);
+        assert_eq!(snapshot.in_use_connections, 0);
+        assert_eq!(snapshot.active_leases, 0);
+        assert_eq!(snapshot.max_connections, 64);
+        assert_eq!(snapshot.available_capacity, 64);
     }
 
     #[test]
@@ -402,12 +591,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_capacity_is_strictly_bounded() {
+    async fn zero_capacity_is_strictly_bounded_and_observable() {
         let manager = ConnectionManager::new(ConnectionManagerConfig {
             max_connections: 0,
             idle_timeout: Duration::from_secs(1),
         });
         assert_eq!(manager.capacity.available_permits(), 0);
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.active_leases, 0);
+        assert_eq!(snapshot.max_connections, 0);
+        assert_eq!(snapshot.available_capacity, 0);
     }
 
     #[test]
