@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec,
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
-    resolve_jump_hosts,
+    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, HostKeyVerification,
+    LocalForward, RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan,
+    TerminalSize, TerminalSpec, TransferCancellation, TransferDirection, TransferEvent,
+    TransferOptions, quote_posix, resolve_jump_hosts,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
@@ -203,6 +203,8 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
     },
+    /// Connect and authenticate, then report connection and host-key diagnostics.
+    Probe,
     /// Keep only configured -L/-R/-D forwards alive until Ctrl-C.
     Tunnel,
 }
@@ -243,14 +245,86 @@ async fn main() -> Result<()> {
     }
     config.agent_forwarding = cli.forward_agent;
 
+    if matches!(&cli.command, Command::Probe)
+        && (!cli.local_forward.is_empty()
+            || !cli.remote_forward.is_empty()
+            || !cli.dynamic_forward.is_empty())
+    {
+        bail!("probe does not start port forwards; remove -L/-R/-D options");
+    }
+
     let authentication = resolve_authentication(&cli, &config)?;
+    let connect_started = Instant::now();
     let ssh = SshClient::connect(config, authentication).await?;
+    let connect_elapsed = connect_started.elapsed();
+
+    if matches!(&cli.command, Command::Probe) {
+        print_probe(&ssh, connect_elapsed).await?;
+        ssh.close().await?;
+        return Ok(());
+    }
+
     let _forward_handles = setup_forwards(&ssh, &cli).await?;
     let result = run_command(&ssh, cli.command).await;
     let close_result = ssh.close().await;
     result?;
     close_result?;
     Ok(())
+}
+
+async fn print_probe(ssh: &SshClient, elapsed: Duration) -> Result<()> {
+    let config = ssh.config();
+    println!("endpoint: {}", format_endpoint(&config.host, config.port));
+    println!("user: {}", config.username);
+    println!("route: {}", connection_route(config));
+    println!("host-key-policy: {}", host_key_policy_name(config.host_key_policy));
+    println!("connect-auth-ms: {}", elapsed.as_millis());
+
+    let host_key = ssh
+        .server_host_key()
+        .await
+        .context("server host key diagnostics are unavailable after a successful connection")?;
+    println!("host-key-algorithm: {}", host_key.algorithm);
+    println!("host-key-fingerprint: {}", host_key.fingerprint_sha256);
+    println!(
+        "host-key-verification: {}",
+        host_key_verification_name(host_key.verification)
+    );
+    Ok(())
+}
+
+fn connection_route(config: &ConnectionConfig) -> String {
+    if config.proxy_command.is_some() {
+        "proxy-command".to_owned()
+    } else if config.jump_hosts.is_empty() {
+        "direct".to_owned()
+    } else {
+        format!("proxy-jump ({} hop(s))", config.jump_hosts.len())
+    }
+}
+
+fn host_key_policy_name(policy: HostKeyPolicy) -> &'static str {
+    match policy {
+        HostKeyPolicy::Strict => "strict",
+        HostKeyPolicy::AcceptNew => "accept-new",
+        HostKeyPolicy::Insecure => "insecure",
+    }
+}
+
+fn host_key_verification_name(verification: HostKeyVerification) -> &'static str {
+    match verification {
+        HostKeyVerification::Known => "known-hosts",
+        HostKeyVerification::Learned => "accept-new-learned",
+        HostKeyVerification::Insecure => "insecure-unverified",
+    }
+}
+
+fn format_endpoint(host: &str, port: u16) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authentication> {
@@ -466,6 +540,7 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 );
             }
         }
+        Command::Probe => {}
         Command::Tunnel => {
             tokio::signal::ctrl_c().await?;
         }
@@ -758,5 +833,21 @@ mod tests {
         assert_eq!(parse_mode("0644").unwrap(), 0o644);
         assert_eq!(parse_mode("0o755").unwrap(), 0o755);
         assert!(parse_mode("0999").is_err());
+    }
+
+    #[test]
+    fn parses_probe_subcommand() {
+        let cli = Cli::try_parse_from(["kssh", "server.example", "probe"]).unwrap();
+        assert!(matches!(cli.command, Command::Probe));
+    }
+
+    #[test]
+    fn formats_probe_endpoints_and_verification() {
+        assert_eq!(format_endpoint("2001:db8::1", 22), "[2001:db8::1]:22");
+        assert_eq!(format_endpoint("server.example", 2222), "server.example:2222");
+        assert_eq!(
+            host_key_verification_name(HostKeyVerification::Learned),
+            "accept-new-learned"
+        );
     }
 }
