@@ -234,7 +234,7 @@ sudo cmp "$WORK/privileged.conf" /etc/kaduox-ci-integration.conf
 mode="$(stat -c '%a' /etc/kaduox-ci-integration.conf)"
 [[ "$mode" == '640' ]] || fail "privileged upload mode is $mode"
 
-echo '[integration] sync dry-run, apply, preserve, delete'
+echo '[integration] sync dry-run, apply, atomic preflight, preserve, delete'
 mkdir -p "$WORK/sync-local/nested"
 printf 'alpha\n' >"$WORK/sync-local/a.txt"
 printf 'beta\n' >"$WORK/sync-local/nested/b.txt"
@@ -244,6 +244,34 @@ run_kssh exec -- test ! -e "/home/$TEST_USER/sync" || fail 'dry-run mutated remo
 run_kssh sync "$WORK/sync-local" "/home/$TEST_USER/sync"
 run_kssh exec -- grep -qx alpha "/home/$TEST_USER/sync/a.txt"
 run_kssh exec -- grep -qx beta "/home/$TEST_USER/sync/nested/b.txt"
+
+echo '[integration] atomic sync update fails before delete/mkdir mutation'
+run_kssh exec -- sh -lc "printf preflight-stale\\n > /home/$TEST_USER/sync/preflight-stale.txt"
+printf 'alpha-updated\n' >"$WORK/sync-local/a.txt"
+mkdir -p "$WORK/sync-local/preflight-dir"
+if run_kssh sync "$WORK/sync-local" "/home/$TEST_USER/sync" --delete >"$WORK/atomic-sync-preflight.log" 2>&1; then
+  fail 'atomic sync unexpectedly replaced an existing regular file'
+fi
+grep -q -- '--no-atomic' "$WORK/atomic-sync-preflight.log" || {
+  cat "$WORK/atomic-sync-preflight.log" >&2
+  fail 'atomic sync preflight did not explain the explicit non-atomic fallback'
+}
+run_kssh exec -- test -e "/home/$TEST_USER/sync/preflight-stale.txt" || fail 'atomic sync preflight executed delete before rejecting overwrite'
+run_kssh exec -- test ! -e "/home/$TEST_USER/sync/preflight-dir" || fail 'atomic sync preflight created a directory before rejecting overwrite'
+run_kssh exec -- grep -qx alpha "/home/$TEST_USER/sync/a.txt" || fail 'atomic sync preflight modified the occupied destination'
+
+run_kssh sync "$WORK/sync-local" "/home/$TEST_USER/sync" --delete --no-atomic
+run_kssh exec -- test ! -e "/home/$TEST_USER/sync/preflight-stale.txt" || fail 'explicit non-atomic sync did not apply planned delete'
+run_kssh exec -- test -d "/home/$TEST_USER/sync/preflight-dir" || fail 'explicit non-atomic sync did not create planned directory'
+run_kssh exec -- grep -qx alpha-updated "/home/$TEST_USER/sync/a.txt" || fail 'explicit non-atomic sync did not replace existing file'
+
+echo '[integration] atomic sync permits same-path type-conflict delete then upload'
+run_kssh exec -- mkdir "/home/$TEST_USER/sync/conflict"
+printf 'conflict-replacement\n' >"$WORK/sync-local/conflict"
+run_kssh sync "$WORK/sync-local" "/home/$TEST_USER/sync" --delete
+run_kssh exec -- test -f "/home/$TEST_USER/sync/conflict" || fail 'atomic type-conflict replacement did not produce a regular file'
+run_kssh exec -- grep -qx conflict-replacement "/home/$TEST_USER/sync/conflict" || fail 'atomic type-conflict replacement content mismatch'
+
 run_kssh exec -- sh -lc "printf stale\\n > /home/$TEST_USER/sync/stale.txt"
 run_kssh sync "$WORK/sync-local" "/home/$TEST_USER/sync" --size-only
 run_kssh exec -- test -e "/home/$TEST_USER/sync/stale.txt" || fail 'non-delete sync removed remote-only file'
