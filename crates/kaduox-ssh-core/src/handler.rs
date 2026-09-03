@@ -13,6 +13,7 @@ use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::time::timeout;
 
 use crate::config::HostKeyPolicy;
+use crate::diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 
 const REMOTE_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AGENT_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,6 +28,7 @@ pub(crate) struct ForwardTarget {
 #[derive(Clone)]
 pub(crate) struct HandlerState {
     pub(crate) remote_forwards: Arc<RwLock<HashMap<(String, u32), ForwardTarget>>>,
+    server_host_key: Arc<RwLock<Option<ServerHostKeyInfo>>>,
     pub agent_forwarding: bool,
     server_forward_slots: Arc<Semaphore>,
 }
@@ -35,6 +37,7 @@ impl Default for HandlerState {
     fn default() -> Self {
         Self {
             remote_forwards: Arc::new(RwLock::new(HashMap::new())),
+            server_host_key: Arc::new(RwLock::new(None)),
             agent_forwarding: false,
             server_forward_slots: Arc::new(Semaphore::new(MAX_SERVER_INITIATED_FORWARD_CHANNELS)),
         }
@@ -52,6 +55,35 @@ impl HandlerState {
             .write()
             .await
             .insert((bind_address, bind_port), target);
+    }
+
+    pub async fn unregister_remote_forward(
+        &self,
+        bind_address: &str,
+        bind_port: u32,
+    ) -> Option<ForwardTarget> {
+        self.remote_forwards
+            .write()
+            .await
+            .remove(&(bind_address.to_owned(), bind_port))
+    }
+
+    pub(crate) async fn server_host_key(&self) -> Option<ServerHostKeyInfo> {
+        self.server_host_key.read().await.clone()
+    }
+
+    async fn record_server_host_key(
+        &self,
+        server_public_key: &PublicKeyOrCertificate,
+        verification: HostKeyVerification,
+    ) {
+        let public_key = server_public_key.public_key();
+        let info = ServerHostKeyInfo {
+            algorithm: public_key.algorithm().as_str().to_owned(),
+            fingerprint_sha256: public_key.fingerprint(Default::default()).to_string(),
+            verification,
+        };
+        *self.server_host_key.write().await = Some(info);
     }
 
     async fn remote_forward(&self, address: &str, port: u32) -> Option<ForwardTarget> {
@@ -96,6 +128,9 @@ impl client::Handler for ClientHandler {
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         if self.host_key_policy == HostKeyPolicy::Insecure {
+            self.state
+                .record_server_host_key(server_public_key, HostKeyVerification::Insecure)
+                .await;
             return Ok(true);
         }
 
@@ -112,6 +147,9 @@ impl client::Handler for ClientHandler {
         };
 
         if known {
+            self.state
+                .record_server_host_key(server_public_key, HostKeyVerification::Known)
+                .await;
             return Ok(true);
         }
         if self.host_key_policy == HostKeyPolicy::Strict {
@@ -128,6 +166,9 @@ impl client::Handler for ClientHandler {
         } else {
             russh::keys::known_hosts::learn_known_hosts(&self.host, self.port, &public_key)?;
         }
+        self.state
+            .record_server_host_key(server_public_key, HostKeyVerification::Learned)
+            .await;
         Ok(true)
     }
 
@@ -284,6 +325,30 @@ mod tests {
         let target = state.remote_forward("192.0.2.10", 2200).await.unwrap();
         assert_eq!(target.host, "db.internal");
         assert_eq!(target.port, 5432);
+    }
+
+    #[tokio::test]
+    async fn unregister_remote_forward_removes_route() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward(
+                "127.0.0.1".to_owned(),
+                4040,
+                ForwardTarget {
+                    host: "127.0.0.1".to_owned(),
+                    port: 8080,
+                },
+            )
+            .await;
+
+        assert!(state.remote_forward("127.0.0.1", 4040).await.is_some());
+        assert!(
+            state
+                .unregister_remote_forward("127.0.0.1", 4040)
+                .await
+                .is_some()
+        );
+        assert!(state.remote_forward("127.0.0.1", 4040).await.is_none());
     }
 
     #[test]
