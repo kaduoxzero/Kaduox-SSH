@@ -1,3 +1,5 @@
+mod preflight;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use russh_sftp::client::SftpSession;
 use tokio::task::JoinSet;
 
+use self::preflight::preflight_atomic_sync;
 use crate::client::SshClient;
 use crate::remote_path::{
     join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
@@ -113,6 +116,9 @@ impl SshClient {
         }
 
         let sftp = Arc::new(self.open_sftp_for_transfer(&options.transfer).await?);
+        if options.transfer.atomic {
+            preflight_atomic_sync(&sftp, remote_root, plan).await?;
+        }
         ensure_remote_dir(&sftp, remote_root).await?;
         let mut summary = TransferSummary::default();
 
@@ -408,12 +414,12 @@ fn build_push_plan(
         .len()
         .checked_add(delete_directories.len())
         .context("sync delete action count overflow")?;
-    let entries_to_delete = u64::try_from(delete_count)
-        .context("sync delete action count exceeds u64")?;
+    let entries_to_delete =
+        u64::try_from(delete_count).context("sync delete action count exceeds u64")?;
     let directories_to_create = u64::try_from(create_directories.len())
         .context("sync directory action count exceeds u64")?;
-    let files_to_upload = u64::try_from(uploads.len())
-        .context("sync upload action count exceeds u64")?;
+    let files_to_upload =
+        u64::try_from(uploads.len()).context("sync upload action count exceeds u64")?;
     let bytes_to_upload = uploads.iter().try_fold(0_u64, |total, action| {
         total
             .checked_add(action.bytes)
