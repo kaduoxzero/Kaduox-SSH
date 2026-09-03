@@ -12,6 +12,7 @@ use tokio::time::timeout;
 use crate::handler::{ClientHandler, ForwardTarget, HandlerState};
 
 const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const FORWARD_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct LocalForward {
@@ -59,15 +60,17 @@ pub(crate) async fn start_local_forward(
             let host = spec.target_host.clone();
             let port = spec.target_port;
             tokio::spawn(async move {
-                let Ok(channel) = session
-                    .channel_open_direct_tcpip(
+                let channel = timeout(
+                    FORWARD_CHANNEL_OPEN_TIMEOUT,
+                    session.channel_open_direct_tcpip(
                         host,
                         u32::from(port),
                         peer.ip().to_string(),
                         u32::from(peer.port()),
-                    )
-                    .await
-                else {
+                    ),
+                )
+                .await;
+                let Ok(Ok(channel)) = channel else {
                     return;
                 };
                 let mut remote = channel.into_stream();
@@ -112,24 +115,34 @@ async fn handle_socks5(
 ) -> Result<()> {
     let target = negotiate_socks5_with_timeout(&mut local, SOCKS5_HANDSHAKE_TIMEOUT).await?;
 
-    match session
-        .channel_open_direct_tcpip(
+    let channel = timeout(
+        FORWARD_CHANNEL_OPEN_TIMEOUT,
+        session.channel_open_direct_tcpip(
             target.host,
             u32::from(target.port),
             peer.ip().to_string(),
             u32::from(peer.port()),
-        )
-        .await
-    {
-        Ok(channel) => {
+        ),
+    )
+    .await;
+
+    match channel {
+        Ok(Ok(channel)) => {
             local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
             let mut remote = channel.into_stream();
             copy_bidirectional(&mut local, &mut remote).await?;
             Ok(())
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
             Err(error.into())
+        }
+        Err(_) => {
+            let _ = local.write_all(&[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            bail!(
+                "SOCKS5 SSH channel open exceeded the {}-second timeout",
+                FORWARD_CHANNEL_OPEN_TIMEOUT.as_secs()
+            )
         }
     }
 }
