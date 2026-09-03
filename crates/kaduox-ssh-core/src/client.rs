@@ -3,6 +3,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use russh::client;
@@ -11,6 +12,7 @@ use russh_sftp::client::{Config as SftpConfig, SftpSession};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::watch;
+use tokio::time::timeout;
 
 use crate::auth::{Authentication, authenticate};
 use crate::config::{ConnectionConfig, JumpHost};
@@ -22,6 +24,8 @@ use crate::handler::{ClientHandler, HandlerState};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
+
+const PROXY_EXPANSION_UNSAFE_CHARS: &str = "'`\"$\\;&<>|(){}";
 
 #[derive(Debug, Clone, Default)]
 pub enum RemoteUser {
@@ -69,6 +73,7 @@ pub struct SshClient {
 
 impl SshClient {
     pub async fn connect(config: ConnectionConfig, authentication: Authentication) -> Result<Self> {
+        config.validate_timeouts()?;
         let state = HandlerState {
             agent_forwarding: config.agent_forwarding,
             ..Default::default()
@@ -80,24 +85,54 @@ impl SshClient {
             let stream = ProxyCommandStream::spawn(proxy_command, &config)?;
             let handler = handler_for(&config, state.clone());
             (
-                client::connect_stream(ssh_config, stream, handler)
-                    .await
-                    .context("SSH handshake through ProxyCommand failed")?,
+                timeout(
+                    config.connect_timeout,
+                    client::connect_stream(ssh_config, stream, handler),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "SSH handshake through ProxyCommand timed out after {} seconds",
+                        config.connect_timeout.as_secs()
+                    )
+                })?
+                .context("SSH handshake through ProxyCommand failed")?,
                 Vec::new(),
             )
         } else {
             let handler = handler_for(&config, state.clone());
             (
-                client::connect(ssh_config, (config.host.as_str(), config.port), handler)
-                    .await
-                    .with_context(|| {
-                        format!("failed to connect to {}:{}", config.host, config.port)
-                    })?,
+                timeout(
+                    config.connect_timeout,
+                    client::connect(ssh_config, (config.host.as_str(), config.port), handler),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "SSH connection to {}:{} timed out after {} seconds",
+                        config.host,
+                        config.port,
+                        config.connect_timeout.as_secs()
+                    )
+                })?
+                .with_context(|| format!("failed to connect to {}:{}", config.host, config.port))?,
                 Vec::new(),
             )
         };
 
-        if !authenticate(&mut session, &config.username, &authentication).await? {
+        let authenticated = timeout(
+            config.authentication_timeout,
+            authenticate(&mut session, &config.username, &authentication),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "SSH authentication for user {} timed out after {} seconds",
+                config.username,
+                config.authentication_timeout.as_secs()
+            )
+        })??;
+        if !authenticated {
             bail!("SSH authentication failed for user {}", config.username);
         }
 
@@ -119,11 +154,26 @@ impl SshClient {
 
     pub async fn exec(&self, command: &str, remote_user: &RemoteUser) -> Result<CommandOutput> {
         let command = command_for_user(command, remote_user);
-        let mut channel = self.session.channel_open_session().await?;
+        let mut channel = timeout(
+            self.config.channel_open_timeout,
+            self.session.channel_open_session(),
+        )
+        .await
+        .context("SSH exec session channel-open timed out")??;
         if self.config.agent_forwarding {
-            channel.agent_forward(true).await?;
+            timeout(
+                self.config.channel_request_timeout,
+                channel.agent_forward(true),
+            )
+            .await
+            .context("SSH agent-forward request timed out")??;
         }
-        channel.exec(true, command).await?;
+        timeout(
+            self.config.channel_request_timeout,
+            channel.exec(true, command),
+        )
+        .await
+        .context("SSH exec request timed out")??;
 
         let mut output = CommandOutput::default();
         while let Some(message) = channel.wait().await {
@@ -149,7 +199,12 @@ impl SshClient {
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
-        let mut channel = self.session.channel_open_session().await?;
+        let mut channel = timeout(
+            self.config.channel_open_timeout,
+            self.session.channel_open_session(),
+        )
+        .await
+        .context("SSH shell session channel-open timed out")??;
         channel
             .request_pty(
                 false,
@@ -162,12 +217,31 @@ impl SshClient {
             )
             .await?;
         if self.config.agent_forwarding {
-            channel.agent_forward(true).await?;
+            timeout(
+                self.config.channel_request_timeout,
+                channel.agent_forward(true),
+            )
+            .await
+            .context("SSH shell agent-forward request timed out")??;
         }
 
         match remote_user {
-            RemoteUser::Current => channel.request_shell(true).await?,
-            RemoteUser::Sudo(user) => channel.exec(true, sudo_login_shell(user)).await?,
+            RemoteUser::Current => {
+                timeout(
+                    self.config.channel_request_timeout,
+                    channel.request_shell(true),
+                )
+                .await
+                .context("SSH shell request timed out")??;
+            }
+            RemoteUser::Sudo(user) => {
+                timeout(
+                    self.config.channel_request_timeout,
+                    channel.exec(true, sudo_login_shell(user)),
+                )
+                .await
+                .context("SSH sudo shell exec request timed out")??;
+            }
         }
 
         let mut buffer = vec![0_u8; 16 * 1024];
@@ -300,14 +374,31 @@ impl SshClient {
         options: &TransferOptions,
     ) -> Result<SftpSession> {
         options.validated()?;
-        let channel = self.session.channel_open_session().await?;
-        channel.request_subsystem(true, "sftp").await?;
+        let channel = timeout(
+            self.config.channel_open_timeout,
+            self.session.channel_open_session(),
+        )
+        .await
+        .context("SFTP session channel-open timed out")??;
+        timeout(
+            self.config.channel_request_timeout,
+            channel.request_subsystem(true, "sftp"),
+        )
+        .await
+        .context("SFTP subsystem request timed out")??;
         let config = SftpConfig {
             max_packet_len: options.sftp_packet_size,
             max_concurrent_writes: options.sftp_write_concurrency,
             request_timeout_secs: options.request_timeout_secs,
         };
-        Ok(SftpSession::new_with_config(channel.into_stream(), config).await?)
+        let initialization_timeout = Duration::from_secs(options.request_timeout_secs);
+        timeout(
+            initialization_timeout,
+            SftpSession::new_with_config(channel.into_stream(), config),
+        )
+        .await
+        .context("SFTP protocol initialization timed out")?
+        .map_err(Into::into)
     }
 }
 
@@ -328,6 +419,7 @@ async fn wait_for_resize(
 
 fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
     Arc::new(client::Config {
+        connection_timeout: Some(config.connect_timeout),
         inactivity_timeout: config.inactivity_timeout,
         keepalive_interval: config.keepalive_interval,
         keepalive_max: 3,
@@ -337,8 +429,9 @@ fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
     })
 }
 
-fn jump_ssh_config() -> Arc<client::Config> {
+fn jump_ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
     Arc::new(client::Config {
+        connection_timeout: Some(config.connect_timeout),
         nodelay: true,
         preferred: hardened_preferred(),
         ..Default::default()
@@ -381,25 +474,59 @@ async fn connect_via_jumps(
 
     for jump in &config.jump_hosts {
         let mut next = if let Some(previous) = current.take() {
-            let channel = previous
-                .channel_open_direct_tcpip(jump.host.clone(), u32::from(jump.port), "127.0.0.1", 0)
-                .await
-                .with_context(|| format!("failed to open tunnel to jump host {}", jump.alias))?;
-            keepalive.push(Arc::new(previous));
-            client::connect_stream(
-                jump_ssh_config(),
-                channel.into_stream(),
-                jump_handler(jump, config),
+            let channel = timeout(
+                config.channel_open_timeout,
+                previous.channel_open_direct_tcpip(
+                    jump.host.clone(),
+                    u32::from(jump.port),
+                    "127.0.0.1",
+                    0,
+                ),
             )
             .await
+            .with_context(|| {
+                format!(
+                    "timed out after {} seconds opening tunnel to jump host {}",
+                    config.channel_open_timeout.as_secs(),
+                    jump.alias
+                )
+            })?
+            .with_context(|| format!("failed to open tunnel to jump host {}", jump.alias))?;
+            keepalive.push(Arc::new(previous));
+            timeout(
+                config.connect_timeout,
+                client::connect_stream(
+                    jump_ssh_config(config),
+                    channel.into_stream(),
+                    jump_handler(jump),
+                ),
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "SSH handshake for jump host {} timed out after {} seconds",
+                    jump.alias,
+                    config.connect_timeout.as_secs()
+                )
+            })?
             .with_context(|| format!("SSH handshake failed for jump host {}", jump.alias))?
         } else {
-            client::connect(
-                jump_ssh_config(),
-                (jump.host.as_str(), jump.port),
-                jump_handler(jump, config),
+            timeout(
+                config.connect_timeout,
+                client::connect(
+                    jump_ssh_config(config),
+                    (jump.host.as_str(), jump.port),
+                    jump_handler(jump),
+                ),
             )
             .await
+            .with_context(|| {
+                format!(
+                    "connection to jump host {} timed out after {} seconds",
+                    jump.alias,
+                    config.connect_timeout.as_secs()
+                )
+            })?
             .with_context(|| format!("failed to connect to jump host {}", jump.alias))?
         };
 
@@ -407,35 +534,69 @@ async fn connect_via_jumps(
             identity_files: jump.identity_files.clone(),
             passphrase: None,
         };
-        if !authenticate(&mut next, &jump.username, &jump_auth).await? {
+        let authenticated = timeout(
+            config.authentication_timeout,
+            authenticate(&mut next, &jump.username, &jump_auth),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "authentication for jump host {} timed out after {} seconds",
+                jump.alias,
+                config.authentication_timeout.as_secs()
+            )
+        })??;
+        if !authenticated {
             bail!("authentication failed for jump host {}", jump.alias);
         }
         current = Some(next);
     }
 
     let last = current.context("ProxyJump chain is empty")?;
-    let channel = last
-        .channel_open_direct_tcpip(config.host.clone(), u32::from(config.port), "127.0.0.1", 0)
-        .await
-        .context("failed to open final ProxyJump tunnel")?;
-    keepalive.push(Arc::new(last));
-
-    let final_session = client::connect_stream(
-        final_ssh_config,
-        channel.into_stream(),
-        handler_for(config, final_state.clone()),
+    let channel = timeout(
+        config.channel_open_timeout,
+        last.channel_open_direct_tcpip(
+            config.host.clone(),
+            u32::from(config.port),
+            "127.0.0.1",
+            0,
+        ),
     )
     .await
+    .with_context(|| {
+        format!(
+            "final ProxyJump tunnel timed out after {} seconds",
+            config.channel_open_timeout.as_secs()
+        )
+    })?
+    .context("failed to open final ProxyJump tunnel")?;
+    keepalive.push(Arc::new(last));
+
+    let final_session = timeout(
+        config.connect_timeout,
+        client::connect_stream(
+            final_ssh_config,
+            channel.into_stream(),
+            handler_for(config, final_state.clone()),
+        ),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "final SSH handshake through ProxyJump timed out after {} seconds",
+            config.connect_timeout.as_secs()
+        )
+    })?
     .context("final SSH handshake through ProxyJump failed")?;
     Ok((final_session, keepalive))
 }
 
-fn jump_handler(jump: &JumpHost, primary: &ConnectionConfig) -> ClientHandler {
+fn jump_handler(jump: &JumpHost) -> ClientHandler {
     ClientHandler {
         host: jump.host.clone(),
         port: jump.port,
-        host_key_policy: primary.host_key_policy,
-        known_hosts_file: primary.known_hosts_file.clone(),
+        host_key_policy: jump.host_key_policy,
+        known_hosts_file: jump.known_hosts_file.clone(),
         state: HandlerState::default(),
     }
 }
@@ -479,7 +640,7 @@ impl ProxyCommandStream {
         if template.eq_ignore_ascii_case("none") {
             bail!("ProxyCommand is disabled by configuration");
         }
-        let expanded = expand_proxy_command(template, config);
+        let expanded = expand_proxy_command(template, config)?;
         let mut command = platform_shell(&expanded);
         let mut child = command
             .stdin(std::process::Stdio::piped())
@@ -529,7 +690,7 @@ impl AsyncWrite for ProxyCommandStream {
     }
 }
 
-fn expand_proxy_command(template: &str, config: &ConnectionConfig) -> String {
+fn expand_proxy_command(template: &str, config: &ConnectionConfig) -> Result<String> {
     let mut output = String::with_capacity(template.len() + 32);
     let mut chars = template.chars();
     while let Some(ch) = chars.next() {
@@ -539,10 +700,19 @@ fn expand_proxy_command(template: &str, config: &ConnectionConfig) -> String {
         }
         match chars.next() {
             Some('%') => output.push('%'),
-            Some('h') => output.push_str(&config.host),
+            Some('h') => {
+                validate_proxy_expansion_value("host", &config.host)?;
+                output.push_str(&config.host);
+            }
             Some('p') => output.push_str(&config.port.to_string()),
-            Some('r') => output.push_str(&config.username),
-            Some('n') => output.push_str(&config.alias),
+            Some('r') => {
+                validate_proxy_expansion_value("username", &config.username)?;
+                output.push_str(&config.username);
+            }
+            Some('n') => {
+                validate_proxy_expansion_value("host alias", &config.alias)?;
+                output.push_str(&config.alias);
+            }
             Some(other) => {
                 output.push('%');
                 output.push(other);
@@ -550,7 +720,21 @@ fn expand_proxy_command(template: &str, config: &ConnectionConfig) -> String {
             None => output.push('%'),
         }
     }
-    output
+    Ok(output)
+}
+
+fn validate_proxy_expansion_value(label: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("ProxyCommand {label} expansion value must not be empty");
+    }
+    if value.chars().any(|ch| {
+        ch.is_control() || ch.is_whitespace() || PROXY_EXPANSION_UNSAFE_CHARS.contains(ch)
+    }) {
+        bail!(
+            "refusing unsafe ProxyCommand {label} expansion value containing whitespace, control characters, or shell-active metacharacters"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -589,8 +773,22 @@ mod tests {
         config.alias = "prod".into();
         config.port = 2200;
         assert_eq!(
-            expand_proxy_command("nc %h %p # %r %n %%", &config),
+            expand_proxy_command("nc %h %p # %r %n %%", &config).unwrap(),
             "nc real.example 2200 # deploy prod %"
         );
+    }
+
+    #[test]
+    fn proxy_expansion_rejects_shell_active_host_and_user_values() {
+        let mut config = ConnectionConfig::new("real.example;touch-pwned", "deploy");
+        assert!(expand_proxy_command("nc %h %p", &config).is_err());
+
+        config.host = "real.example".into();
+        config.username = "deploy$(id)".into();
+        assert!(expand_proxy_command("proxy --user %r %h", &config).is_err());
+
+        config.username = "deploy".into();
+        config.alias = "prod|cat".into();
+        assert!(expand_proxy_command("proxy %n", &config).is_err());
     }
 }

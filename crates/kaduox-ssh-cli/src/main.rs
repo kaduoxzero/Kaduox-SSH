@@ -216,22 +216,13 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let mut config = ConnectionConfig::from_openssh(&cli.host, cli.user.as_deref(), cli.port)
-        .unwrap_or_else(|_| {
-            ConnectionConfig::new(
-                cli.host.clone(),
-                cli.user.clone().unwrap_or_else(default_username),
-            )
-        });
+    let mut config = ConnectionConfig::from_openssh(&cli.host, cli.user.as_deref(), cli.port)?;
 
     if let Some(port) = cli.port {
         config.port = port;
     }
     if let Some(user) = &cli.user {
         config.username = user.clone();
-    }
-    if let Some(mode) = cli.host_key {
-        config.host_key_policy = mode.into();
     }
     if let Some(jump) = &cli.jump {
         config.jump_hosts = resolve_jump_hosts(jump)?;
@@ -240,6 +231,13 @@ async fn main() -> Result<()> {
     if let Some(proxy_command) = &cli.proxy_command {
         config.proxy_command = Some(proxy_command.clone());
         config.jump_hosts.clear();
+    }
+    if let Some(mode) = cli.host_key {
+        let policy: HostKeyPolicy = mode.into();
+        config.host_key_policy = policy;
+        for jump in &mut config.jump_hosts {
+            jump.host_key_policy = policy;
+        }
     }
     config.agent_forwarding = cli.forward_agent;
 
@@ -718,12 +716,6 @@ fn split_fields(value: &str) -> Result<Vec<String>> {
     }
     fields.push(current);
     Ok(fields)
-}
-
-fn default_username() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "root".to_owned())
 }
 
 struct RawModeGuard;

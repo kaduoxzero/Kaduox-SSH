@@ -7,7 +7,7 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 ## 当前能力
 
 - SSH 远程连接、命令执行与交互式 PTY Shell
-- 自动解析 OpenSSH `~/.ssh/config`
+- 对受支持的 Host 级指令解析 OpenSSH `~/.ssh/config`，对当前无法安全保持语义的结构化指令采用 fail-closed
 - ProxyJump 链与 ProxyCommand 传输
 - 密码、keyboard-interactive、Ed25519/ECDSA 私钥、OpenSSH Agent、Pageant/Windows Agent 认证
 - 本地 RSA 私钥签名因安全策略禁用，但仍支持通过外部 SSH Agent 使用 RSA 认证
@@ -50,6 +50,20 @@ SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 
 - 当前会在密钥交换阶段拒绝仅提供 RSA 主机密钥的服务器。在 Russh 0.63.1 中，RSA 主机签名验证所需 feature 与受影响的本地 RSA signer 依赖耦合，因此 Kaduox-SSH 选择明确 fail-closed，而不是宣告支持一个无法安全验证的算法。服务器应提供 Ed25519 或 ECDSA 主机密钥。
 
 真实 OpenSSH 集成测试会持续验证：直接 RSA 私钥被拒绝、通过 Agent 的 RSA 用户认证仍可工作，以及面对仅提供 RSA 主机密钥的 `sshd` 时会在协商早期失败。在该安全公告获得可接受的上游修复并且完整安全测试继续保持绿色之前，不应重新启用 Russh 的 `rsa` feature。
+
+## OpenSSH 配置兼容性
+
+Kaduox-SSH 会从 `~/.ssh/config` 解析常见的 Host 级配置，例如 `HostName`、`User`、`Port`、`IdentityFile`、`UserKnownHostsFile`、`ProxyCommand` 和 `ProxyJump`。
+
+当当前解析器无法安全保留 OpenSSH 原始语义时，配置解析会刻意采用 fail-closed：
+
+- `~/.ssh/config` 不存在属于正常情况，会回退到直接/默认连接配置。
+- 已存在配置文件的读取错误或解析错误会直接返回给调用方，不会静默转换成直连。
+- 当前拒绝 `Match` block，因为 `russh-config 0.58.0` 无法正确计算其条件，否则 block 内的配置可能错误泄漏到无关的 `Host`。
+- 当前拒绝 `Include`，而不是假装被包含的配置文件已经完成解析。
+- 上游解析器只以布尔值暴露 `StrictHostKeyChecking`，因此除 `no` 外的 OpenSSH 精确策略会丢失。需要精确行为时，请使用 Kaduox-SSH 显式的 `--host-key strict`、`--host-key accept-new` 或 `--host-key insecure`。
+
+长期目标是实现无损的 OpenSSH 兼容配置解析，包括 `Include` 和正确计算的 `Match` 语义。在完整实现并经过协议测试之前，不支持的结构化配置会明确失败，而不是猜测其含义。
 
 ## 架构
 
@@ -157,6 +171,7 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 以下功能在能够完整实现并作为独立安全边界验证前，会保持禁用或暂不实现：
 
 - 完整 OpenSSH host certificate / `@cert-authority` 语义，包括 CA 签名、principals、critical options、主机 pattern 匹配、有效期和吊销行为
+- 无损 OpenSSH `Include` / `Match` 配置语义
 - 加密的持久凭据存储及其密钥管理模型
 - 通过本地 daemon/IPC 实现跨进程 ControlMaster 风格连接复用
 - 显式符号链接传输/同步策略
