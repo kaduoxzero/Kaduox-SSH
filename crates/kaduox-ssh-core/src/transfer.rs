@@ -10,6 +10,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 
+use crate::remote_path::{
+    join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
+};
+
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
 const DEFAULT_FILE_CONCURRENCY: usize = 4;
 const DEFAULT_SFTP_WRITE_CONCURRENCY: usize = 16;
@@ -372,16 +376,33 @@ pub(crate) async fn upload_tree(
         while let Some(entry) = entries.next_entry().await? {
             let file_type = entry.file_type().await?;
             let local_path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            let remote_path = join_remote(&remote_dir, &file_name);
+            if file_type.is_symlink() {
+                summary.skipped += 1;
+                continue;
+            }
+            if !file_type.is_dir() && !file_type.is_file() {
+                summary.skipped += 1;
+                continue;
+            }
+            let file_name = entry.file_name().into_string().map_err(|_| {
+                anyhow::anyhow!(
+                    "local transfer paths must be valid UTF-8: {}",
+                    local_path.display()
+                )
+            })?;
+            validate_remote_child_name(&file_name).with_context(|| {
+                format!(
+                    "local filename cannot be mapped safely to a remote transfer path: {}",
+                    local_path.display()
+                )
+            })?;
+            let remote_path = join_remote_under_root(&remote_dir, &file_name)?;
             if file_type.is_dir() {
                 ensure_remote_dir(&sftp, &remote_path).await?;
                 summary.directories += 1;
                 stack.push((local_path, remote_path));
-            } else if file_type.is_file() {
+            } else {
                 files.push((local_path, remote_path));
-            } else if file_type.is_symlink() {
-                summary.skipped += 1;
             }
         }
     }
@@ -443,10 +464,24 @@ pub(crate) async fn download_tree(
         check_cancelled(&options)?;
         for entry in sftp.read_dir(remote_dir.clone()).await? {
             let file_type = entry.file_type();
+            if file_type.is_symlink() {
+                summary.skipped += 1;
+                continue;
+            }
+            if !file_type.is_dir() && !file_type.is_file() {
+                summary.skipped += 1;
+                continue;
+            }
             let name = entry.file_name();
-            validate_remote_entry_name(&name)?;
-            let remote_path = join_remote(&remote_dir, &name);
-            let local_path = local_dir.join(&name);
+            if name == "." || name == ".." {
+                continue;
+            }
+            validate_remote_child_name(&name).with_context(|| {
+                format!("unsafe SFTP directory entry returned while downloading {remote_dir}")
+            })?;
+            let remote_path = join_remote_under_root(&remote_dir, &name)?;
+            let local_relative = local_path_from_remote_relative(&name)?;
+            let local_path = local_dir.join(local_relative);
             if file_type.is_dir() {
                 ensure_local_directory_no_symlinks(
                     &local_path,
@@ -455,10 +490,8 @@ pub(crate) async fn download_tree(
                 .await?;
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
-            } else if file_type.is_file() {
+            } else {
                 files.push((remote_path, local_path));
-            } else if file_type.is_symlink() {
-                summary.skipped += 1;
             }
         }
     }
@@ -546,22 +579,6 @@ fn validate_local_directory(path: &Path, metadata: &std::fs::Metadata, role: &st
     }
     if !metadata.is_dir() {
         bail!("{role} component is not a directory: {}", path.display());
-    }
-    Ok(())
-}
-
-fn validate_remote_entry_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-    {
-        bail!("unsafe remote directory entry name: {name:?}");
-    }
-    #[cfg(windows)]
-    if name.contains(':') {
-        bail!("unsafe remote directory entry name on Windows: {name:?}");
     }
     Ok(())
 }
@@ -836,10 +853,10 @@ mod tests {
 
     #[test]
     fn remote_entry_names_cannot_escape_local_tree() {
-        for unsafe_name in ["", ".", "..", "../escape", "sub/file", r"..\escape"] {
-            assert!(validate_remote_entry_name(unsafe_name).is_err());
+        for unsafe_name in ["", ".", "..", "../escape", "sub/file", r"..\escape", "bad\0name"] {
+            assert!(validate_remote_child_name(unsafe_name).is_err());
         }
-        assert!(validate_remote_entry_name("normal-file.txt").is_ok());
+        assert!(validate_remote_child_name("normal-file.txt").is_ok());
     }
 
     #[tokio::test]
