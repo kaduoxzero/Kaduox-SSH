@@ -6,10 +6,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec,
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
-    resolve_jump_hosts,
+    Authentication, ConnectionConfig, ConnectionTarget, DynamicForward, HostKeyPolicy, LocalForward,
+    RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize,
+    TerminalSpec, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
+    quote_posix, resolve_jump_hosts,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
     about = "High-performance SSH client built in Rust"
 )]
 struct Cli {
-    /// Host alias, hostname, or IP. ~/.ssh/config is resolved automatically.
+    /// Host alias, hostname, IP, or user@host. ~/.ssh/config is resolved automatically.
     host: String,
 
     /// Override SSH port.
@@ -216,11 +216,13 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let mut config = ConnectionConfig::from_openssh(&cli.host, cli.user.as_deref(), cli.port)
+    let target = ConnectionTarget::parse(&cli.host)?;
+    let target_user = effective_username(cli.user.as_deref(), &target);
+    let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)
         .unwrap_or_else(|_| {
             ConnectionConfig::new(
-                cli.host.clone(),
-                cli.user.clone().unwrap_or_else(default_username),
+                target.host.clone(),
+                target_user.map(ToOwned::to_owned).unwrap_or_else(default_username),
             )
         });
 
@@ -251,6 +253,13 @@ async fn main() -> Result<()> {
     result?;
     close_result?;
     Ok(())
+}
+
+fn effective_username<'a>(
+    override_user: Option<&'a str>,
+    target: &'a ConnectionTarget,
+) -> Option<&'a str> {
+    override_user.or(target.username.as_deref())
 }
 
 fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authentication> {
@@ -758,5 +767,12 @@ mod tests {
         assert_eq!(parse_mode("0644").unwrap(), 0o644);
         assert_eq!(parse_mode("0o755").unwrap(), 0o755);
         assert!(parse_mode("0999").is_err());
+    }
+
+    #[test]
+    fn explicit_user_overrides_target_user() {
+        let target = ConnectionTarget::parse("deploy@server.example").unwrap();
+        assert_eq!(effective_username(None, &target), Some("deploy"));
+        assert_eq!(effective_username(Some("root"), &target), Some("root"));
     }
 }
