@@ -8,6 +8,7 @@ mod handler;
 mod manager;
 mod privileged;
 mod sync;
+mod target;
 mod transfer;
 
 pub use auth::Authentication;
@@ -16,6 +17,7 @@ pub use config::{ConnectionConfig, HostKeyPolicy, JumpHost, resolve_jump_hosts};
 pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
 pub use manager::{ConnectionManager, ConnectionManagerConfig};
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
+pub use target::ConnectionTarget;
 pub use transfer::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
 };
