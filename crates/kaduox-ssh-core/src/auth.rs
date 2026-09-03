@@ -27,9 +27,9 @@ pub enum Authentication {
 }
 
 /// Secret-free description of the authentication source used for connection
-/// reuse decisions. Password and keyboard-interactive requests are deliberately
-/// non-reusable: a later secret must never be silently ignored because a
-/// transport with the same logical name already exists.
+/// reuse decisions. Any request that depends on a newly supplied secret is
+/// deliberately non-reusable: a later password/passphrase must never be
+/// silently ignored because a transport with the same logical name exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthenticationReuseKey {
     PrivateKey(PathBuf),
@@ -54,10 +54,23 @@ impl Authentication {
     pub(crate) fn reuse_key(&self) -> AuthenticationReuseKey {
         match self {
             Self::Password(_) | Self::KeyboardInteractive(_) => AuthenticationReuseKey::NonReusable,
-            Self::PrivateKey { path, .. } => AuthenticationReuseKey::PrivateKey(path.clone()),
+            Self::PrivateKey { path, passphrase } => {
+                if passphrase.is_some() {
+                    AuthenticationReuseKey::NonReusable
+                } else {
+                    AuthenticationReuseKey::PrivateKey(path.clone())
+                }
+            }
             Self::Agent => AuthenticationReuseKey::Agent,
-            Self::Auto { identity_files, .. } => {
-                AuthenticationReuseKey::Auto(identity_files.clone())
+            Self::Auto {
+                identity_files,
+                passphrase,
+            } => {
+                if passphrase.is_some() {
+                    AuthenticationReuseKey::NonReusable
+                } else {
+                    AuthenticationReuseKey::Auto(identity_files.clone())
+                }
             }
         }
     }
@@ -222,15 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn private_key_reuse_uses_path_without_passphrase_material() {
+    fn unencrypted_private_key_reuse_uses_only_the_configured_path() {
         let first = Authentication::PrivateKey {
             path: PathBuf::from("/keys/deploy"),
-            passphrase: Some("first-secret".to_owned()),
+            passphrase: None,
         }
         .reuse_key();
-        let second = Authentication::PrivateKey {
+        let same = Authentication::PrivateKey {
             path: PathBuf::from("/keys/deploy"),
-            passphrase: Some("second-secret".to_owned()),
+            passphrase: None,
         }
         .reuse_key();
         let different = Authentication::PrivateKey {
@@ -239,19 +252,32 @@ mod tests {
         }
         .reuse_key();
 
-        assert!(first.can_reuse_with(&second));
+        assert!(first.can_reuse_with(&same));
         assert!(!first.can_reuse_with(&different));
-        assert_eq!(
-            format!("{first:?}"),
-            "PrivateKey(\"/keys/deploy\")"
-        );
     }
 
     #[test]
-    fn auto_reuse_requires_the_same_configured_identity_sources() {
+    fn passphrase_dependent_key_requests_are_never_implicitly_reusable() {
+        let private_key = Authentication::PrivateKey {
+            path: PathBuf::from("/keys/deploy"),
+            passphrase: Some("first-secret".to_owned()),
+        }
+        .reuse_key();
+        let auto = Authentication::Auto {
+            identity_files: vec![PathBuf::from("id_a")],
+            passphrase: Some("second-secret".to_owned()),
+        }
+        .reuse_key();
+
+        assert_eq!(private_key, AuthenticationReuseKey::NonReusable);
+        assert_eq!(auto, AuthenticationReuseKey::NonReusable);
+    }
+
+    #[test]
+    fn auto_reuse_requires_the_same_ordered_identity_sources() {
         let first = Authentication::Auto {
             identity_files: vec![PathBuf::from("id_a"), PathBuf::from("id_b")],
-            passphrase: Some("secret".to_owned()),
+            passphrase: None,
         }
         .reuse_key();
         let same = Authentication::Auto {
