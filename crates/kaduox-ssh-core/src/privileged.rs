@@ -51,7 +51,10 @@ impl SshClient {
 
         let mut staging_options = options;
         staging_options.resume = false;
-        staging_options.atomic = false;
+        // Privileged /tmp staging must be fail-closed too. The transfer policy
+        // creates an exclusive temporary object and only renames it into this
+        // unique staging name when the destination is still absent.
+        staging_options.atomic = true;
 
         let bytes = self
             .upload_with_options(local_path, &staging_path, staging_options)

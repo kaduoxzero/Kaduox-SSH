@@ -148,6 +148,8 @@ kssh server.example.com sync ./dist /srv/www/dist --size-only --jobs 8
 
 文件传输使用有界缓冲区，大文件底层请求流水线交给 `russh-sftp`；Kaduox-SSH 负责更高层策略，包括稳定断点文件、原子最终替换、目录并发、进度、取消和特权暂存。SFTP session 的本地参数可以配置，但最终仍受远端服务器协商出的限制约束。
 
+文件传输调参采用 fail-closed 资源预算：文件并发最多 128、SFTP pipelined write 最多 128、packet size 范围为 4 KiB–4 MiB，并且估算的 `file_concurrency × write_concurrency × packet_size` 总写窗口不得超过 512 MiB。默认仍为 4 个文件、16 个流水线写请求和 256 KiB packet，对应约 16 MiB 的估算在途写窗口。
+
 同步会先扫描本地和远端目录树，在进行任何修改之前构建带类型的 action plan。CLI 会在执行前打印计划。默认保留仅存在于远端的内容；只有显式提供 `--delete` 时才允许删除以及文件/目录类型冲突替换。`--dry-run` 永远不会修改远端目录树。
 
 递归传输和同步扫描目前会跳过符号链接，而不是跟随它们。这样可以避免意外遍历到请求目录树之外；显式 symlink 策略会作为独立安全边界设计。

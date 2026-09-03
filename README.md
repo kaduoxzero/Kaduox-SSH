@@ -148,6 +148,8 @@ By default host keys use `accept-new`: unknown keys are written to the normal Op
 
 Transfers use bounded buffers and leave large-file request pipelining to `russh-sftp`, while Kaduox-SSH controls higher-level policy such as stable resume files, atomic finalization, directory concurrency, progress, cancellation, and privileged staging. SFTP session limits are configurable locally and are still constrained by limits negotiated with the remote server.
 
+Transfer tuning is fail-closed rather than unbounded: file concurrency is limited to 128, pipelined SFTP writes to 128, packet size to 4 KiB–4 MiB, and the estimated `file_concurrency × write_concurrency × packet_size` window must stay at or below 512 MiB. Defaults remain 4 files, 16 pipelined writes, and 256 KiB packets, for an estimated 16 MiB in-flight write window.
+
 Synchronization scans both local and remote directory trees and builds a typed action plan before mutation. The CLI prints the plan before applying it. Remote-only entries are preserved by default; deletion and file/directory conflict replacement are only permitted when `--delete` is explicitly supplied. `--dry-run` never mutates the remote tree.
 
 Symbolic links encountered during recursive transfer or synchronization scans are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy is intentionally separate.

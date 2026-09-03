@@ -15,6 +15,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
+const PROGRESS_QUEUE_CAPACITY: usize = 256;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "kssh",
@@ -516,7 +518,7 @@ impl TransferUi {
         packet_size: u32,
         request_timeout: u64,
     ) -> Self {
-        let (progress_tx, progress_rx) = mpsc::unbounded_channel();
+        let (progress_tx, progress_rx) = mpsc::channel(PROGRESS_QUEUE_CAPACITY);
         let cancellation = TransferCancellation::default();
         let cancellation_for_signal = cancellation.clone();
         let progress_task = tokio::spawn(report_transfer_progress(progress_rx));
@@ -550,7 +552,7 @@ impl Drop for TransferUi {
     }
 }
 
-async fn report_transfer_progress(mut receiver: mpsc::UnboundedReceiver<TransferEvent>) {
+async fn report_transfer_progress(mut receiver: mpsc::Receiver<TransferEvent>) {
     let mut last_bucket = HashMap::<String, u64>::new();
     while let Some(event) = receiver.recv().await {
         if event.completed {
@@ -752,5 +754,10 @@ mod tests {
         assert_eq!(parse_mode("0644").unwrap(), 0o644);
         assert_eq!(parse_mode("0o755").unwrap(), 0o755);
         assert!(parse_mode("0999").is_err());
+    }
+
+    #[test]
+    fn progress_queue_capacity_is_bounded() {
+        assert!(PROGRESS_QUEUE_CAPACITY > 0);
     }
 }

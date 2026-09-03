@@ -1,0 +1,75 @@
+# Atomic remote uploads / 远端原子上传
+
+## English
+
+Kaduox-SSH treats `TransferOptions::atomic = true` as a security contract, not as a best-effort overwrite switch.
+
+### Fresh atomic upload
+
+A fresh atomic upload:
+
+1. verifies the final remote destination does not already exist;
+2. creates a unique sibling staging path;
+3. opens that staging path with SFTP v3 `CREATE | EXCLUDE | WRITE` (`SSH_FXF_CREAT | SSH_FXF_EXCL | SSH_FXF_WRITE`);
+4. writes and closes the staging file;
+5. verifies the final destination is still absent; and
+6. renames the staging file to the final path.
+
+A staging-name collision fails closed. Kaduox-SSH never truncates or follows a pre-created staging object in fresh atomic mode.
+
+### Resume mode
+
+`--resume` intentionally uses the stable `<destination>.kaduox.part` name so an interrupted transfer can be continued. Before reopening it, Kaduox-SSH uses lstat-style metadata and accepts only a regular file. A symbolic link or other file type is rejected, and a partial file larger than the local source is rejected instead of being treated as complete.
+
+If the stable partial file is absent, it is created with `CREATE | EXCLUDE | WRITE`. If it already exists and passed validation, it is reopened without `CREATE` or `TRUNCATE`.
+
+Because SFTP v3 does not provide a portable no-follow file-open operation, resume mode still has a metadata/open TOCTOU boundary. Use resumable staging only in remote directories whose write access is trusted.
+
+### Existing destination
+
+The current `russh-sftp 2.4.0` high-level API exposes ordinary SFTP v3 `RENAME`, but not OpenSSH `posix-rename@openssh.com`. SFTP v3 rename does not provide portable atomic overwrite semantics for an already-existing destination.
+
+Therefore `atomic = true` fails when the final remote path already exists. Kaduox-SSH does **not** implement overwrite by deleting the final path and renaming afterward, because that introduces a visible missing-file window and can lose the previous file if the process or server fails between operations.
+
+When replacing an existing remote file is required, the caller must explicitly select non-atomic destination writes (`atomic = false`; CLI: `--no-atomic`) until an overwrite-atomic rename capability is available and verified.
+
+### Privileged uploads
+
+Privileged uploads stage through SFTP as the normal SSH login user before invoking `sudo`. This internal `/tmp` staging step always forces the fail-closed atomic policy, regardless of a caller's destination overwrite preference, so an attacker-precreated temporary path is never opened with ordinary create/truncate semantics.
+
+## 简体中文
+
+Kaduox-SSH 将 `TransferOptions::atomic = true` 视为安全契约，而不是“尽量原子”的覆盖开关。
+
+### 全新原子上传
+
+全新 atomic 上传会：
+
+1. 确认最终远端目标当前不存在；
+2. 生成同目录唯一 staging 路径；
+3. 使用 SFTP v3 `CREATE | EXCLUDE | WRITE` 独占创建 staging 文件；
+4. 完成写入并关闭 staging 文件；
+5. 再次确认最终目标仍不存在；
+6. 将 staging 文件 rename 到最终路径。
+
+如果 staging 名称发生碰撞，会直接 fail-closed。全新 atomic 模式不会截断或跟随攻击者预创建的 staging 对象。
+
+### 断点续传
+
+`--resume` 为了能够恢复中断传输，会有意使用稳定的 `<destination>.kaduox.part`。重新打开前使用 lstat 风格元数据检查，仅允许普通文件；符号链接和其他文件类型都会被拒绝。若 partial 文件比本地源文件还大，也会直接拒绝，而不会误判为上传完成。
+
+稳定 partial 不存在时使用 `CREATE | EXCLUDE | WRITE` 独占创建；若已存在且通过检查，则重新打开时不再使用 `CREATE` 或 `TRUNCATE`。
+
+SFTP v3 没有可移植的 no-follow open，因此 resume 仍存在“检查元数据 -> 打开文件”的 TOCTOU 边界。稳定 resume staging 应只用于写权限可信的远端目录。
+
+### 最终目标已经存在
+
+当前 `russh-sftp 2.4.0` 高层 API 提供普通 SFTP v3 `RENAME`，但没有 OpenSSH `posix-rename@openssh.com`。SFTP v3 普通 rename 无法提供可移植的“覆盖已存在目标且保持强原子性”语义。
+
+因此 `atomic = true` 遇到已经存在的远端最终路径会直接失败。Kaduox-SSH 不再采用“先删除 final，再 rename staging”的方式，因为这种实现会产生 final 暂时不存在的窗口，而且如果中间崩溃会丢失旧目标文件。
+
+确实需要覆盖已有远端文件时，在获得并验证 overwrite-atomic rename 能力之前，调用方必须显式选择非原子写入（`atomic = false`；CLI 为 `--no-atomic`）。
+
+### 特权上传
+
+特权上传仍先由普通 SSH 登录用户通过 SFTP 暂存，再执行 `sudo` 安装。内部 `/tmp` staging 无论调用方最终覆盖策略如何，都会强制使用 fail-closed atomic policy，因此不会用普通 create/truncate 语义打开攻击者预创建的临时路径。
