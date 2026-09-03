@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec,
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
+    Authentication, ConnectionConfig, ConnectionTarget, DynamicForward, HostKeyPolicy,
+    HostKeyVerification, LocalForward, RemoteCommandSpec, RemoteFileMetadata, RemoteFileType,
+    RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize,
+    TerminalSpec, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
     resolve_jump_hosts,
 };
 use tokio::sync::{mpsc, watch};
@@ -24,7 +25,7 @@ const PROGRESS_QUEUE_CAPACITY: usize = 256;
     about = "High-performance SSH client built in Rust"
 )]
 struct Cli {
-    /// Host alias, hostname, or IP. ~/.ssh/config is resolved automatically.
+    /// Host alias, hostname, IP, or user@host. ~/.ssh/config is resolved automatically.
     host: String,
 
     /// Override SSH port.
@@ -111,6 +112,12 @@ enum Command {
     Exec {
         #[arg(long)]
         as_user: Option<String>,
+        /// Change to this remote directory before starting the command.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Set one remote environment variable as NAME=VALUE. Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        environment: Vec<String>,
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
@@ -207,6 +214,26 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
     },
+    /// Show the effective connection configuration without opening a network connection.
+    Inspect {
+        /// Show path-level details such as configured identity and known_hosts files.
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Connect and authenticate, then report connection and host-key diagnostics.
+    Probe,
+    /// List a remote directory through SFTP without executing a remote shell command.
+    Ls {
+        #[arg(default_value = ".")]
+        remote: String,
+        /// Show type, mode, owner/group, size, and modification time.
+        #[arg(short = 'l', long)]
+        long: bool,
+    },
+    /// Show lstat-style metadata for a remote path through SFTP.
+    Stat {
+        remote: String,
+    },
     /// Keep only configured -L/-R/-D forwards alive until Ctrl-C.
     Tunnel,
 }
@@ -220,7 +247,9 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let mut config = ConnectionConfig::from_openssh(&cli.host, cli.user.as_deref(), cli.port)?;
+    let target = ConnectionTarget::parse(&cli.host)?;
+    let target_user = effective_username(cli.user.as_deref(), &target);
+    let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?;
 
     if let Some(port) = cli.port {
         config.port = port;
@@ -245,14 +274,215 @@ async fn main() -> Result<()> {
     }
     config.agent_forwarding = cli.forward_agent;
 
+    if let Command::Inspect { verbose } = &cli.command {
+        inspect_connection(&config, &cli, *verbose)?;
+        return Ok(());
+    }
+
+    if matches!(&cli.command, Command::Probe)
+        && (!cli.local_forward.is_empty()
+            || !cli.remote_forward.is_empty()
+            || !cli.dynamic_forward.is_empty())
+    {
+        bail!("probe does not start port forwards; remove -L/-R/-D options");
+    }
+
     let authentication = resolve_authentication(&cli, &config)?;
+    let connect_started = Instant::now();
     let ssh = SshClient::connect(config, authentication).await?;
-    let _forward_handles = setup_forwards(&ssh, &cli).await?;
+    let connect_elapsed = connect_started.elapsed();
+
+    if matches!(&cli.command, Command::Probe) {
+        print_probe(&ssh, connect_elapsed).await?;
+        ssh.close().await?;
+        return Ok(());
+    }
+
+    let forward_handles = setup_forwards(&ssh, &cli).await?;
     let result = run_command(&ssh, cli.command).await;
+    let forward_close_result = forward_handles.close().await;
     let close_result = ssh.close().await;
     result?;
+    forward_close_result?;
     close_result?;
     Ok(())
+}
+
+fn effective_username<'a>(
+    override_user: Option<&'a str>,
+    target: &'a ConnectionTarget,
+) -> Option<&'a str> {
+    override_user.or(target.username.as_deref())
+}
+
+fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Result<()> {
+    let snapshot = config.snapshot();
+    println!("alias: {}", snapshot.alias);
+    println!("endpoint: {}", format_endpoint(&snapshot.host, snapshot.port));
+    println!("user: {}", snapshot.username);
+    println!(
+        "host-key-policy: {}",
+        host_key_policy_name(snapshot.host_key_policy)
+    );
+    println!("authentication: {}", authentication_mode(cli));
+    println!(
+        "agent-forwarding: {}",
+        if snapshot.agent_forwarding {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
+    match &snapshot.route {
+        kaduox_ssh_core::ConnectionRouteSnapshot::ProxyCommand => {
+            println!("route: proxy-command (configured; command redacted)");
+        }
+        kaduox_ssh_core::ConnectionRouteSnapshot::Direct => println!("route: direct"),
+        kaduox_ssh_core::ConnectionRouteSnapshot::ProxyJump(hops) => {
+            println!("route: proxy-jump ({} hop(s))", hops.len());
+            for (index, hop) in hops.iter().enumerate() {
+                println!(
+                    "  hop {}: {}@{}",
+                    index + 1,
+                    hop.username,
+                    format_endpoint(&hop.host, hop.port)
+                );
+                if verbose && !hop.identity_files.is_empty() {
+                    for identity in &hop.identity_files {
+                        println!("    identity: {}", identity.display());
+                    }
+                }
+            }
+        }
+    }
+
+    if verbose {
+        match &snapshot.known_hosts_file {
+            Some(path) => println!("known-hosts: {}", path.display()),
+            None => println!("known-hosts: default OpenSSH path"),
+        }
+        if snapshot.identity_files.is_empty() {
+            println!("identity-files: none explicitly configured");
+        } else {
+            println!("identity-files:");
+            for identity in &snapshot.identity_files {
+                println!("  {}", identity.display());
+            }
+        }
+    } else {
+        println!("identity-files: {} configured", snapshot.identity_files.len());
+    }
+
+    if let Some(interval) = snapshot.keepalive_interval {
+        println!("keepalive: {}s", interval.as_secs());
+    } else {
+        println!("keepalive: disabled");
+    }
+    if let Some(timeout) = snapshot.inactivity_timeout {
+        println!("inactivity-timeout: {}s", timeout.as_secs());
+    } else {
+        println!("inactivity-timeout: disabled");
+    }
+
+    if cli.local_forward.is_empty() && cli.remote_forward.is_empty() && cli.dynamic_forward.is_empty()
+    {
+        println!("forwards: none");
+        return Ok(());
+    }
+
+    println!("forwards:");
+    for raw in &cli.local_forward {
+        let spec = parse_local_forward(raw)?;
+        println!(
+            "  local: {} -> {}",
+            spec.bind,
+            format_endpoint(&spec.target_host, spec.target_port)
+        );
+    }
+    for raw in &cli.remote_forward {
+        let spec = parse_remote_forward(raw)?;
+        println!(
+            "  remote: {} -> {}",
+            format_endpoint(&spec.bind_address, spec.bind_port),
+            format_endpoint(&spec.target_host, spec.target_port)
+        );
+    }
+    for raw in &cli.dynamic_forward {
+        let spec = parse_dynamic_forward(raw)?;
+        println!("  dynamic: {} (SOCKS5)", spec.bind);
+    }
+    Ok(())
+}
+
+fn authentication_mode(cli: &Cli) -> &'static str {
+    if cli.password {
+        "password (secret not requested by inspect)"
+    } else if cli.keyboard_interactive {
+        "keyboard-interactive (secret not requested by inspect)"
+    } else if cli.identity.is_some() {
+        "explicit identity file"
+    } else {
+        "auto (SSH agent, then configured/default identities)"
+    }
+}
+
+async fn print_probe(ssh: &SshClient, elapsed: Duration) -> Result<()> {
+    let config = ssh.config();
+    println!("endpoint: {}", format_endpoint(&config.host, config.port));
+    println!("user: {}", config.username);
+    println!("route: {}", connection_route(config));
+    println!(
+        "host-key-policy: {}",
+        host_key_policy_name(config.host_key_policy)
+    );
+    println!("connect-auth-ms: {}", elapsed.as_millis());
+
+    let host_key = ssh
+        .server_host_key()
+        .await
+        .context("server host key diagnostics are unavailable after a successful connection")?;
+    println!("host-key-algorithm: {}", host_key.algorithm);
+    println!("host-key-fingerprint: {}", host_key.fingerprint_sha256);
+    println!(
+        "host-key-verification: {}",
+        host_key_verification_name(host_key.verification)
+    );
+    Ok(())
+}
+
+fn connection_route(config: &ConnectionConfig) -> String {
+    if config.proxy_command.is_some() {
+        "proxy-command".to_owned()
+    } else if config.jump_hosts.is_empty() {
+        "direct".to_owned()
+    } else {
+        format!("proxy-jump ({} hop(s))", config.jump_hosts.len())
+    }
+}
+
+fn host_key_policy_name(policy: HostKeyPolicy) -> &'static str {
+    match policy {
+        HostKeyPolicy::Strict => "strict",
+        HostKeyPolicy::AcceptNew => "accept-new",
+        HostKeyPolicy::Insecure => "insecure",
+    }
+}
+
+fn host_key_verification_name(verification: HostKeyVerification) -> &'static str {
+    match verification {
+        HostKeyVerification::Known => "known-hosts",
+        HostKeyVerification::Learned => "accept-new-learned",
+        HostKeyVerification::Insecure => "insecure-unverified",
+    }
+}
+
+fn format_endpoint(host: &str, port: u16) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authentication> {
@@ -283,23 +513,51 @@ fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authen
     })
 }
 
-async fn setup_forwards(ssh: &SshClient, cli: &Cli) -> Result<Vec<kaduox_ssh_core::ForwardHandle>> {
-    let mut handles = Vec::new();
+struct ActiveForwards {
+    local: Vec<kaduox_ssh_core::ForwardHandle>,
+    remote: Vec<kaduox_ssh_core::RemoteForwardHandle>,
+}
+
+impl ActiveForwards {
+    async fn close(self) -> Result<()> {
+        for handle in self.local {
+            handle.close().await;
+        }
+
+        let mut first_error = None;
+        for handle in self.remote {
+            if let Err(error) = handle.close().await {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+async fn setup_forwards(ssh: &SshClient, cli: &Cli) -> Result<ActiveForwards> {
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
     for raw in &cli.local_forward {
-        handles.push(ssh.local_forward(parse_local_forward(raw)?).await?);
+        local.push(ssh.local_forward(parse_local_forward(raw)?).await?);
     }
     for raw in &cli.dynamic_forward {
-        handles.push(ssh.dynamic_forward(parse_dynamic_forward(raw)?).await?);
+        local.push(ssh.dynamic_forward(parse_dynamic_forward(raw)?).await?);
     }
     for raw in &cli.remote_forward {
         let spec = parse_remote_forward(raw)?;
         let requested = spec.bind_port;
-        let port = ssh.remote_forward(spec).await?;
+        let handle = ssh.remote_forward_managed(spec).await?;
         if requested == 0 {
-            eprintln!("remote forward allocated port {port}");
+            eprintln!("remote forward allocated port {}", handle.port());
         }
+        remote.push(handle);
     }
-    Ok(handles)
+    Ok(ActiveForwards { local, remote })
 }
 
 async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
@@ -336,12 +594,26 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 }
             }
         }
-        Command::Exec { as_user, command } => {
-            let command = command
+        Command::Exec {
+            as_user,
+            cwd,
+            environment,
+            command,
+        } => {
+            let (program, arguments) = command
+                .split_first()
+                .context("remote command requires a program")?;
+            let environment = environment
                 .iter()
-                .map(|argument| quote_posix(argument))
-                .collect::<Vec<_>>()
-                .join(" ");
+                .map(|value| parse_remote_environment(value))
+                .collect::<Result<Vec<_>>>()?;
+            let command = RemoteCommandSpec {
+                program: program.clone(),
+                arguments: arguments.to_vec(),
+                environment,
+                working_directory: cwd,
+            }
+            .render_posix()?;
             let remote_user = remote_user(as_user);
             let mut stdout = tokio::io::stdout();
             let mut stderr = tokio::io::stderr();
@@ -488,11 +760,100 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 );
             }
         }
+        Command::Ls { remote, long } => {
+            for entry in ssh.list_remote_directory(&remote).await? {
+                if long {
+                    print_remote_long(&entry.metadata, &entry.name);
+                } else {
+                    println!("{}", entry.name);
+                }
+            }
+        }
+        Command::Stat { remote } => {
+            let stat = ssh.stat_remote_path(&remote).await?;
+            println!("path: {}", stat.path);
+            println!("type: {}", remote_file_type_name(stat.metadata.file_type));
+            println!("mode: {}", format_permissions(stat.metadata.permissions));
+            println!("size: {}", format_optional(stat.metadata.size));
+            println!("uid: {}", format_optional(stat.metadata.uid));
+            println!("user: {}", stat.metadata.user.as_deref().unwrap_or("-"));
+            println!("gid: {}", format_optional(stat.metadata.gid));
+            println!("group: {}", stat.metadata.group.as_deref().unwrap_or("-"));
+            println!("atime: {}", format_optional(stat.metadata.accessed_at));
+            println!("mtime: {}", format_optional(stat.metadata.modified_at));
+            if let Some(target) = stat.symlink_target {
+                println!("symlink-target: {target}");
+            }
+        }
+        Command::Inspect { .. } | Command::Probe => {}
         Command::Tunnel => {
             tokio::signal::ctrl_c().await?;
         }
     }
     Ok(())
+}
+
+fn parse_remote_environment(value: &str) -> Result<(String, String)> {
+    let (name, value) = value
+        .split_once('=')
+        .context("--env must use NAME=VALUE syntax")?;
+    if name.is_empty() {
+        bail!("--env variable name cannot be empty");
+    }
+    Ok((name.to_owned(), value.to_owned()))
+}
+
+fn print_remote_long(metadata: &RemoteFileMetadata, name: &str) {
+    let owner = metadata
+        .user
+        .clone()
+        .or_else(|| metadata.uid.map(|uid| uid.to_string()))
+        .unwrap_or_else(|| "-".to_owned());
+    let group = metadata
+        .group
+        .clone()
+        .or_else(|| metadata.gid.map(|gid| gid.to_string()))
+        .unwrap_or_else(|| "-".to_owned());
+    println!(
+        "{} {} {:>8} {:>8} {:>12} {:>10} {}",
+        remote_file_type_marker(metadata.file_type),
+        format_permissions(metadata.permissions),
+        owner,
+        group,
+        format_optional(metadata.size),
+        format_optional(metadata.modified_at),
+        name
+    );
+}
+
+fn remote_file_type_marker(file_type: RemoteFileType) -> char {
+    match file_type {
+        RemoteFileType::Directory => 'd',
+        RemoteFileType::File => '-',
+        RemoteFileType::Symlink => 'l',
+        RemoteFileType::Other => '?',
+    }
+}
+
+fn remote_file_type_name(file_type: RemoteFileType) -> &'static str {
+    match file_type {
+        RemoteFileType::Directory => "directory",
+        RemoteFileType::File => "file",
+        RemoteFileType::Symlink => "symlink",
+        RemoteFileType::Other => "other",
+    }
+}
+
+fn format_permissions(permissions: Option<u32>) -> String {
+    permissions
+        .map(|mode| format!("{:04o}", mode & 0o7777))
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn format_optional<T: std::fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_owned())
 }
 
 fn print_sync_plan(plan: &SyncPlan, dry_run: bool) {
@@ -779,5 +1140,88 @@ mod tests {
     #[test]
     fn progress_queue_capacity_is_bounded() {
         assert!(PROGRESS_QUEUE_CAPACITY > 0);
+    }
+
+    #[test]
+    fn explicit_user_overrides_target_user() {
+        let target = ConnectionTarget::parse("deploy@server.example").unwrap();
+        assert_eq!(effective_username(None, &target), Some("deploy"));
+        assert_eq!(effective_username(Some("root"), &target), Some("root"));
+    }
+
+    #[test]
+    fn parses_connection_inspect_subcommand() {
+        let cli = Cli::try_parse_from(["kssh", "example.com", "inspect", "--verbose"]).unwrap();
+        assert!(matches!(cli.command, Command::Inspect { verbose: true }));
+    }
+
+    #[test]
+    fn parses_probe_subcommand() {
+        let cli = Cli::try_parse_from(["kssh", "server.example", "probe"]).unwrap();
+        assert!(matches!(cli.command, Command::Probe));
+    }
+
+    #[test]
+    fn formats_endpoints_and_probe_verification() {
+        assert_eq!(format_endpoint("2001:db8::1", 22), "[2001:db8::1]:22");
+        assert_eq!(format_endpoint("server.example", 2222), "server.example:2222");
+        assert_eq!(
+            host_key_verification_name(HostKeyVerification::Learned),
+            "accept-new-learned"
+        );
+    }
+
+    #[test]
+    fn parses_remote_environment_assignment() {
+        assert_eq!(
+            parse_remote_environment("APP_ENV=production").unwrap(),
+            ("APP_ENV".to_owned(), "production".to_owned())
+        );
+        assert_eq!(
+            parse_remote_environment("EMPTY=").unwrap(),
+            ("EMPTY".to_owned(), String::new())
+        );
+        assert!(parse_remote_environment("MISSING_VALUE").is_err());
+        assert!(parse_remote_environment("=value").is_err());
+    }
+
+    #[test]
+    fn parses_exec_cwd_and_environment_options() {
+        let cli = Cli::try_parse_from([
+            "kssh",
+            "server.example",
+            "exec",
+            "--cwd",
+            "/srv/app",
+            "--env",
+            "APP_ENV=prod",
+            "printf",
+            "%s",
+            "ok",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Exec {
+                cwd: Some(ref cwd),
+                ref environment,
+                ..
+            } if cwd == "/srv/app" && environment == &["APP_ENV=prod"]
+        ));
+    }
+
+    #[test]
+    fn formats_remote_permissions_without_file_type_bits() {
+        assert_eq!(format_permissions(Some(0o100644)), "0644");
+        assert_eq!(format_permissions(Some(0o040755)), "0755");
+        assert_eq!(format_permissions(None), "-");
+    }
+
+    #[test]
+    fn maps_remote_file_type_markers() {
+        assert_eq!(remote_file_type_marker(RemoteFileType::Directory), 'd');
+        assert_eq!(remote_file_type_marker(RemoteFileType::File), '-');
+        assert_eq!(remote_file_type_marker(RemoteFileType::Symlink), 'l');
+        assert_eq!(remote_file_type_marker(RemoteFileType::Other), '?');
     }
 }
