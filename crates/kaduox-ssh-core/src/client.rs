@@ -19,6 +19,7 @@ use crate::forward::{
     start_local_forward, start_remote_forward,
 };
 use crate::handler::{ClientHandler, HandlerState};
+use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, list_directory, stat_path};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
@@ -273,6 +274,24 @@ impl SshClient {
         Ok(summary)
     }
 
+    pub async fn list_remote_directory(&self, path: &str) -> Result<Vec<RemoteDirEntry>> {
+        let sftp = self.open_sftp_readonly().await?;
+        let result = list_directory(&sftp, path).await;
+        let close_result = sftp.close().await;
+        let entries = result?;
+        close_result?;
+        Ok(entries)
+    }
+
+    pub async fn stat_remote_path(&self, path: &str) -> Result<RemoteFileStat> {
+        let sftp = self.open_sftp_readonly().await?;
+        let result = stat_path(&sftp, path).await;
+        let close_result = sftp.close().await;
+        let stat = result?;
+        close_result?;
+        Ok(stat)
+    }
+
     pub async fn local_forward(&self, spec: LocalForward) -> Result<ForwardHandle> {
         start_local_forward(Arc::clone(&self.session), spec).await
     }
@@ -293,6 +312,12 @@ impl SshClient {
             let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
         }
         Ok(())
+    }
+
+    async fn open_sftp_readonly(&self) -> Result<SftpSession> {
+        let channel = self.session.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        Ok(SftpSession::new(channel.into_stream()).await?)
     }
 
     pub(crate) async fn open_sftp_for_transfer(
