@@ -23,7 +23,10 @@ pub(crate) use transfer_facade as transfer;
 pub use auth::Authentication;
 pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix};
 pub use command::RemoteCommandSpec;
-pub use config::{ConnectionConfig, HostKeyPolicy, JumpHost, resolve_jump_hosts};
+pub use config::{
+    ConnectionConfig, ConnectionConfigSnapshot, ConnectionRouteSnapshot, HostKeyPolicy, JumpHost,
+    resolve_jump_hosts,
+};
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{DynamicForward, ForwardHandle, LocalForward, RemoteForward, loopback};
 pub use manager::{
