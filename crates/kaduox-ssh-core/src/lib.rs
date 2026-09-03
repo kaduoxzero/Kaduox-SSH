@@ -7,6 +7,7 @@ mod forward;
 mod handler;
 mod manager;
 mod privileged;
+mod remote_path;
 mod sync;
 mod transfer;
 
