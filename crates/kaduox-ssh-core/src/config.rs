@@ -127,17 +127,8 @@ fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
     if spec.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
         bail!("ProxyJump hop contains whitespace or control characters: {spec:?}");
     }
-    if spec.matches('@').count() > 1 {
-        bail!("ProxyJump hop contains more than one '@': {spec:?}");
-    }
 
-    let (user_override, host_port) = match spec.split_once('@') {
-        Some(("", _)) => bail!("ProxyJump user cannot be empty"),
-        Some((_, "")) => bail!("ProxyJump host cannot be empty"),
-        Some((user, host_port)) => (Some(user), host_port),
-        None => (None, spec),
-    };
-
+    let (user_override, host_port) = parse_jump_destination(spec)?;
     let (alias, port_override) = parse_host_port(host_port)?;
     let parsed =
         russh_config::parse_home(&alias).unwrap_or_else(|_| russh_config::Config::default(&alias));
@@ -151,6 +142,33 @@ fn resolve_jump_host(spec: &str) -> Result<JumpHost> {
             .unwrap_or_else(|| parsed.user()),
         identity_files: parsed.host_config.identity_file.unwrap_or_default(),
     })
+}
+
+fn parse_jump_destination(spec: &str) -> Result<(Option<&str>, &str)> {
+    let destination = if let Some(uri) = spec.strip_prefix("ssh://") {
+        if uri.is_empty() {
+            bail!("ProxyJump SSH URI is missing a destination");
+        }
+        if uri.contains('/') || uri.contains('?') || uri.contains('#') {
+            bail!("ProxyJump SSH URI cannot contain a path, query, or fragment");
+        }
+        uri
+    } else if spec.contains("://") {
+        bail!("ProxyJump URI must use the ssh:// scheme");
+    } else {
+        spec
+    };
+
+    if destination.matches('@').count() > 1 {
+        bail!("ProxyJump destination contains more than one '@': {spec:?}");
+    }
+
+    match destination.split_once('@') {
+        Some(("", _)) => bail!("ProxyJump user cannot be empty"),
+        Some((_, "")) => bail!("ProxyJump host cannot be empty"),
+        Some((user, host_port)) => Ok((Some(user), host_port)),
+        None => Ok((None, destination)),
+    }
 }
 
 fn parse_host_port(value: &str) -> Result<(String, Option<u16>)> {
@@ -245,6 +263,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_openssh_proxyjump_ssh_uri() {
+        let (user, host_port) =
+            parse_jump_destination("ssh://deploy@[2001:db8::1]:2222").unwrap();
+        assert_eq!(user, Some("deploy"));
+        let (host, port) = parse_host_port(host_port).unwrap();
+        assert_eq!(host, "2001:db8::1");
+        assert_eq!(port, Some(2222));
+    }
+
+    #[test]
     fn none_disables_proxy_jump_at_the_shared_parser_boundary() {
         assert!(resolve_jump_hosts("none").unwrap().is_empty());
         assert!(resolve_jump_hosts("NONE").unwrap().is_empty());
@@ -261,6 +289,19 @@ mod tests {
     fn malformed_jump_user_host_forms_are_rejected() {
         for spec in ["@host", "user@", "a@b@host", "user name@host"] {
             assert!(resolve_jump_hosts(spec).is_err(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_jump_uri_forms_are_rejected() {
+        for spec in [
+            "ssh://",
+            "http://host",
+            "ssh://user@host/path",
+            "ssh://host?query",
+            "ssh://host#fragment",
+        ] {
+            assert!(parse_jump_destination(spec).is_err(), "{spec:?}");
         }
     }
 
