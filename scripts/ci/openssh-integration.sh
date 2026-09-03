@@ -29,6 +29,7 @@ cleanup() {
     ssh-agent -k >/dev/null 2>&1 || true
   fi
   sudo rm -f /etc/sudoers.d/kaduox-ci /etc/kaduox-ci-integration.conf
+  sudo rm -rf /etc/kaduox-ci-tree
   sudo userdel -r "$TEST_USER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -233,6 +234,23 @@ run_kssh upload "$WORK/privileged.conf" /etc/kaduox-ci-integration.conf --as-use
 sudo cmp "$WORK/privileged.conf" /etc/kaduox-ci-integration.conf
 mode="$(stat -c '%a' /etc/kaduox-ci-integration.conf)"
 [[ "$mode" == '640' ]] || fail "privileged upload mode is $mode"
+
+echo '[integration] privileged recursive staged upload'
+mkdir -p "$WORK/privileged-tree/nested"
+printf 'tree-root\n' >"$WORK/privileged-tree/root.txt"
+printf 'tree-nested\n' >"$WORK/privileged-tree/nested/child.txt"
+sudo install -d -m 0755 /etc/kaduox-ci-tree
+printf 'stale\n' | sudo tee /etc/kaduox-ci-tree/stale.txt >/dev/null
+run_kssh upload "$WORK/privileged-tree" /etc/kaduox-ci-tree -r --as-user root --mode 0640 --dir-mode 0750 --jobs 2
+sudo cmp "$WORK/privileged-tree/root.txt" /etc/kaduox-ci-tree/root.txt
+sudo cmp "$WORK/privileged-tree/nested/child.txt" /etc/kaduox-ci-tree/nested/child.txt
+[[ ! -e /etc/kaduox-ci-tree/stale.txt ]] || fail 'privileged recursive upload did not replace stale destination content'
+root_mode="$(stat -c '%a' /etc/kaduox-ci-tree)"
+nested_mode="$(stat -c '%a' /etc/kaduox-ci-tree/nested)"
+file_mode="$(stat -c '%a' /etc/kaduox-ci-tree/nested/child.txt)"
+[[ "$root_mode" == '750' ]] || fail "privileged recursive root mode is $root_mode"
+[[ "$nested_mode" == '750' ]] || fail "privileged recursive nested mode is $nested_mode"
+[[ "$file_mode" == '640' ]] || fail "privileged recursive file mode is $file_mode"
 
 echo '[integration] sync dry-run, apply, preserve, delete'
 mkdir -p "$WORK/sync-local/nested"
