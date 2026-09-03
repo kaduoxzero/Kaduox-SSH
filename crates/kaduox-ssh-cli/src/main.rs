@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteForward,
-    RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec,
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, quote_posix,
+    Authentication, ConnectionConfig, DynamicForward, HostKeyPolicy, LocalForward, RemoteCommandSpec,
+    RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize,
+    TerminalSpec, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
     resolve_jump_hosts,
 };
 use tokio::io::AsyncWriteExt;
@@ -110,6 +110,12 @@ enum Command {
     Exec {
         #[arg(long)]
         as_user: Option<String>,
+        /// Change to this remote directory before starting the command.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Set one remote environment variable as NAME=VALUE. Repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        environment: Vec<String>,
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
@@ -334,12 +340,26 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 }
             }
         }
-        Command::Exec { as_user, command } => {
-            let command = command
+        Command::Exec {
+            as_user,
+            cwd,
+            environment,
+            command,
+        } => {
+            let (program, arguments) = command
+                .split_first()
+                .context("remote command requires a program")?;
+            let environment = environment
                 .iter()
-                .map(|argument| quote_posix(argument))
-                .collect::<Vec<_>>()
-                .join(" ");
+                .map(|value| parse_remote_environment(value))
+                .collect::<Result<Vec<_>>>()?;
+            let command = RemoteCommandSpec {
+                program: program.clone(),
+                arguments: arguments.to_vec(),
+                environment,
+                working_directory: cwd,
+            }
+            .render_posix()?;
             let output = ssh.exec(&command, &remote_user(as_user)).await?;
             tokio::io::stdout().write_all(&output.stdout).await?;
             tokio::io::stderr().write_all(&output.stderr).await?;
@@ -471,6 +491,16 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_remote_environment(value: &str) -> Result<(String, String)> {
+    let (name, value) = value
+        .split_once('=')
+        .context("--env must use NAME=VALUE syntax")?;
+    if name.is_empty() {
+        bail!("--env variable name cannot be empty");
+    }
+    Ok((name.to_owned(), value.to_owned()))
 }
 
 fn print_sync_plan(plan: &SyncPlan, dry_run: bool) {
@@ -758,5 +788,44 @@ mod tests {
         assert_eq!(parse_mode("0644").unwrap(), 0o644);
         assert_eq!(parse_mode("0o755").unwrap(), 0o755);
         assert!(parse_mode("0999").is_err());
+    }
+
+    #[test]
+    fn parses_remote_environment_assignment() {
+        assert_eq!(
+            parse_remote_environment("APP_ENV=production").unwrap(),
+            ("APP_ENV".to_owned(), "production".to_owned())
+        );
+        assert_eq!(
+            parse_remote_environment("EMPTY=").unwrap(),
+            ("EMPTY".to_owned(), String::new())
+        );
+        assert!(parse_remote_environment("MISSING_VALUE").is_err());
+        assert!(parse_remote_environment("=value").is_err());
+    }
+
+    #[test]
+    fn parses_exec_cwd_and_environment_options() {
+        let cli = Cli::try_parse_from([
+            "kssh",
+            "server.example",
+            "exec",
+            "--cwd",
+            "/srv/app",
+            "--env",
+            "APP_ENV=prod",
+            "printf",
+            "%s",
+            "ok",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Exec {
+                cwd: Some(ref cwd),
+                ref environment,
+                ..
+            } if cwd == "/srv/app" && environment == &["APP_ENV=prod"]
+        ));
     }
 }
