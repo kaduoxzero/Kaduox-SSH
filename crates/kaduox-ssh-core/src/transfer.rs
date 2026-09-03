@@ -10,6 +10,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 
+use crate::remote_path::{
+    join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
+};
+
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
 const DEFAULT_FILE_CONCURRENCY: usize = 4;
 const DEFAULT_SFTP_WRITE_CONCURRENCY: usize = 16;
@@ -342,16 +346,33 @@ pub(crate) async fn upload_tree(
         while let Some(entry) = entries.next_entry().await? {
             let file_type = entry.file_type().await?;
             let local_path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            let remote_path = join_remote(&remote_dir, &file_name);
+            if file_type.is_symlink() {
+                summary.skipped += 1;
+                continue;
+            }
+            if !file_type.is_dir() && !file_type.is_file() {
+                summary.skipped += 1;
+                continue;
+            }
+            let file_name = entry.file_name().into_string().map_err(|_| {
+                anyhow::anyhow!(
+                    "local transfer paths must be valid UTF-8: {}",
+                    local_path.display()
+                )
+            })?;
+            validate_remote_child_name(&file_name).with_context(|| {
+                format!(
+                    "local filename cannot be mapped safely to a remote transfer path: {}",
+                    local_path.display()
+                )
+            })?;
+            let remote_path = join_remote_under_root(&remote_dir, &file_name)?;
             if file_type.is_dir() {
                 ensure_remote_dir(&sftp, &remote_path).await?;
                 summary.directories += 1;
                 stack.push((local_path, remote_path));
-            } else if file_type.is_file() {
+            } else {
                 files.push((local_path, remote_path));
-            } else if file_type.is_symlink() {
-                summary.skipped += 1;
             }
         }
     }
@@ -408,18 +429,32 @@ pub(crate) async fn download_tree(
 
     while let Some((remote_dir, local_dir)) = stack.pop() {
         check_cancelled(&options)?;
-        for entry in sftp.read_dir(remote_dir).await? {
+        for entry in sftp.read_dir(remote_dir.clone()).await? {
             let file_type = entry.file_type();
-            let remote_path = entry.path();
-            let local_path = local_dir.join(entry.file_name());
+            if file_type.is_symlink() {
+                summary.skipped += 1;
+                continue;
+            }
+            if !file_type.is_dir() && !file_type.is_file() {
+                summary.skipped += 1;
+                continue;
+            }
+            let file_name = entry.file_name();
+            if file_name == "." || file_name == ".." {
+                continue;
+            }
+            validate_remote_child_name(&file_name).with_context(|| {
+                format!("unsafe SFTP directory entry returned while downloading {remote_dir}")
+            })?;
+            let remote_path = join_remote_under_root(&remote_dir, &file_name)?;
+            let local_relative = local_path_from_remote_relative(&file_name)?;
+            let local_path = local_dir.join(local_relative);
             if file_type.is_dir() {
                 tokio::fs::create_dir_all(&local_path).await?;
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
-            } else if file_type.is_file() {
+            } else {
                 files.push((remote_path, local_path));
-            } else if file_type.is_symlink() {
-                summary.skipped += 1;
             }
         }
     }
