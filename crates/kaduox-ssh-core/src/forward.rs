@@ -36,13 +36,43 @@ pub struct DynamicForward {
     pub bind: SocketAddr,
 }
 
+/// Lifetime handle for a local TCP or dynamic SOCKS listener.
+///
+/// Dropping the handle stops accepting new connections. Existing forwarded
+/// streams are independent tasks and are allowed to finish naturally.
 pub struct ForwardHandle {
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+    bound_addr: SocketAddr,
+}
+
+impl ForwardHandle {
+    /// Actual socket address bound by the operating system.
+    ///
+    /// This is particularly useful when the requested bind port was `0`, in
+    /// which case the OS selects an ephemeral port.
+    pub fn bound_addr(&self) -> SocketAddr {
+        self.bound_addr
+    }
+
+    pub fn bound_port(&self) -> u16 {
+        self.bound_addr.port()
+    }
+
+    /// Stop the listener and wait until its accept task has terminated.
+    /// Existing already-accepted forwarding streams are not force-closed.
+    pub async fn close(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl Drop for ForwardHandle {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -53,6 +83,9 @@ pub(crate) async fn start_local_forward(
     let listener = TcpListener::bind(spec.bind)
         .await
         .with_context(|| format!("failed to bind local forward {}", spec.bind))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("failed to read local forward listener address")?;
     let slots = Arc::new(Semaphore::new(MAX_ACTIVE_FORWARD_CONNECTIONS));
     let task = tokio::spawn(async move {
         loop {
@@ -88,7 +121,10 @@ pub(crate) async fn start_local_forward(
             });
         }
     });
-    Ok(ForwardHandle { task })
+    Ok(ForwardHandle {
+        task: Some(task),
+        bound_addr,
+    })
 }
 
 pub(crate) async fn start_dynamic_forward(
@@ -98,6 +134,9 @@ pub(crate) async fn start_dynamic_forward(
     let listener = TcpListener::bind(spec.bind)
         .await
         .with_context(|| format!("failed to bind SOCKS5 forward {}", spec.bind))?;
+    let bound_addr = listener
+        .local_addr()
+        .context("failed to read SOCKS5 listener address")?;
     let slots = Arc::new(Semaphore::new(MAX_ACTIVE_FORWARD_CONNECTIONS));
     let task = tokio::spawn(async move {
         loop {
@@ -115,7 +154,10 @@ pub(crate) async fn start_dynamic_forward(
             });
         }
     });
-    Ok(ForwardHandle { task })
+    Ok(ForwardHandle {
+        task: Some(task),
+        bound_addr,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +319,33 @@ mod tests {
         assert!(MAX_ACTIVE_FORWARD_CONNECTIONS > 0);
         assert!(!FORWARD_CHANNEL_OPEN_TIMEOUT.is_zero());
         assert!(!SOCKS_HANDSHAKE_TIMEOUT.is_zero());
+    }
+
+    #[tokio::test]
+    async fn forward_handle_reports_actual_binding_and_closes_explicitly() {
+        let bound_addr = loopback(43123);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let handle = ForwardHandle {
+            task: Some(task),
+            bound_addr,
+        };
+
+        assert_eq!(handle.bound_addr(), bound_addr);
+        assert_eq!(handle.bound_port(), 43123);
+        handle.close().await;
+    }
+
+    #[tokio::test]
+    async fn dropping_forward_handle_aborts_listener_task() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let abort = task.abort_handle();
+        let handle = ForwardHandle {
+            task: Some(task),
+            bound_addr: loopback(1),
+        };
+        drop(handle);
+        tokio::task::yield_now().await;
+        assert!(abort.is_finished());
     }
 
     #[tokio::test]
