@@ -59,7 +59,7 @@ pub struct TransferOptions {
     pub sftp_packet_size: u32,
     pub request_timeout_secs: u64,
     pub cancellation: TransferCancellation,
-    pub progress: Option<mpsc::UnboundedSender<TransferEvent>>,
+    pub progress: Option<mpsc::Sender<TransferEvent>>,
 }
 
 impl Default for TransferOptions {
@@ -630,15 +630,18 @@ fn emit_progress(
     total_bytes: Option<u64>,
     completed: bool,
 ) {
-    if let Some(sender) = &options.progress {
-        let _ = sender.send(TransferEvent {
-            direction,
-            path: path.to_owned(),
-            bytes_transferred,
-            total_bytes,
-            completed,
-        });
-    }
+    let Some(sender) = &options.progress else {
+        return;
+    };
+    // Progress is advisory. A slow observer must never grow memory without
+    // bound or apply backpressure to SFTP data transfer slots.
+    let _ = sender.try_send(TransferEvent {
+        direction,
+        path: path.to_owned(),
+        bytes_transferred,
+        total_bytes,
+        completed,
+    });
 }
 
 fn check_cancelled(options: &TransferOptions) -> Result<()> {
@@ -857,6 +860,47 @@ mod tests {
             assert!(validate_remote_child_name(unsafe_name).is_err());
         }
         assert!(validate_remote_child_name("normal-file.txt").is_ok());
+    }
+
+    #[tokio::test]
+    async fn bounded_progress_never_blocks_when_queue_is_full() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut options = TransferOptions::default();
+        options.progress = Some(sender);
+
+        emit_progress(
+            &options,
+            TransferDirection::Upload,
+            "file",
+            1,
+            Some(3),
+            false,
+        );
+        emit_progress(
+            &options,
+            TransferDirection::Upload,
+            "file",
+            3,
+            Some(3),
+            true,
+        );
+
+        let first = receiver.recv().await.unwrap();
+        assert_eq!(first.bytes_transferred, 1);
+        assert!(!first.completed);
+        assert!(receiver.try_recv().is_err());
+
+        emit_progress(
+            &options,
+            TransferDirection::Upload,
+            "file",
+            3,
+            Some(3),
+            true,
+        );
+        let completed = receiver.recv().await.unwrap();
+        assert!(completed.completed);
+        assert_eq!(completed.bytes_transferred, 3);
     }
 
     #[tokio::test]
