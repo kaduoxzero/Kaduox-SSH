@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use russh_sftp::client::{SftpSession, error::Error as SftpError};
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::remote_path::{
@@ -19,6 +19,10 @@ const DEFAULT_FILE_CONCURRENCY: usize = 4;
 const DEFAULT_SFTP_WRITE_CONCURRENCY: usize = 16;
 const DEFAULT_SFTP_PACKET_SIZE: u32 = 256 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+const MAX_FILE_CONCURRENCY: usize = 128;
+const MAX_SFTP_WRITE_CONCURRENCY: usize = 128;
+const MAX_SFTP_PACKET_SIZE: u32 = 4 * 1024 * 1024;
+const MAX_ESTIMATED_IN_FLIGHT_WRITE_BYTES: u128 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferDirection {
@@ -82,14 +86,32 @@ impl TransferOptions {
         if self.file_concurrency == 0 {
             bail!("file concurrency must be greater than zero");
         }
+        if self.file_concurrency > MAX_FILE_CONCURRENCY {
+            bail!("file concurrency must be <= {MAX_FILE_CONCURRENCY}");
+        }
         if self.sftp_write_concurrency == 0 {
             bail!("SFTP write concurrency must be greater than zero");
+        }
+        if self.sftp_write_concurrency > MAX_SFTP_WRITE_CONCURRENCY {
+            bail!("SFTP write concurrency must be <= {MAX_SFTP_WRITE_CONCURRENCY}");
         }
         if self.sftp_packet_size < 4096 {
             bail!("SFTP packet size must be at least 4096 bytes");
         }
+        if self.sftp_packet_size > MAX_SFTP_PACKET_SIZE {
+            bail!("SFTP packet size must be <= {MAX_SFTP_PACKET_SIZE} bytes");
+        }
         if self.request_timeout_secs == 0 {
             bail!("SFTP request timeout must be greater than zero");
+        }
+
+        let estimated_in_flight = self.file_concurrency as u128
+            * self.sftp_write_concurrency as u128
+            * u128::from(self.sftp_packet_size);
+        if estimated_in_flight > MAX_ESTIMATED_IN_FLIGHT_WRITE_BYTES {
+            bail!(
+                "transfer concurrency/window settings estimate {estimated_in_flight} in-flight write bytes, exceeding the {MAX_ESTIMATED_IN_FLIGHT_WRITE_BYTES}-byte safety budget"
+            );
         }
         Ok(())
     }
@@ -368,12 +390,13 @@ pub(crate) async fn upload_tree(
         ..Default::default()
     };
     let mut stack = vec![(local_root.to_path_buf(), remote_root.to_owned())];
-    let mut files = Vec::new();
+    let mut tasks = JoinSet::new();
 
     while let Some((local_dir, remote_dir)) = stack.pop() {
         check_cancelled(&options)?;
         let mut entries = tokio::fs::read_dir(&local_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
+            check_cancelled(&options)?;
             let file_type = entry.file_type().await?;
             let local_path = entry.path();
             if file_type.is_symlink() {
@@ -402,27 +425,20 @@ pub(crate) async fn upload_tree(
                 summary.directories += 1;
                 stack.push((local_path, remote_path));
             } else {
-                files.push((local_path, remote_path));
+                if tasks.len() >= options.file_concurrency {
+                    collect_next_transfer(&mut tasks, &mut summary).await?;
+                }
+                let sftp = Arc::clone(&sftp);
+                let options = options.clone();
+                tasks.spawn(async move {
+                    upload_file(&sftp, &local_path, &remote_path, &options).await
+                });
             }
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(options.file_concurrency));
-    let mut tasks = JoinSet::new();
-    for (local_path, remote_path) in files {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let sftp = Arc::clone(&sftp);
-        let options = options.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            let bytes = upload_file(&sftp, &local_path, &remote_path, &options).await?;
-            Ok::<u64, anyhow::Error>(bytes)
-        });
-    }
-
-    while let Some(result) = tasks.join_next().await {
-        summary.bytes += result??;
-        summary.files += 1;
+    while !tasks.is_empty() {
+        collect_next_transfer(&mut tasks, &mut summary).await?;
     }
     Ok(summary)
 }
@@ -458,11 +474,12 @@ pub(crate) async fn download_tree(
         ..Default::default()
     };
     let mut stack = vec![(remote_root.to_owned(), local_root.to_path_buf())];
-    let mut files = Vec::new();
+    let mut tasks = JoinSet::new();
 
     while let Some((remote_dir, local_dir)) = stack.pop() {
         check_cancelled(&options)?;
         for entry in sftp.read_dir(remote_dir.clone()).await? {
+            check_cancelled(&options)?;
             let file_type = entry.file_type();
             if file_type.is_symlink() {
                 summary.skipped += 1;
@@ -491,29 +508,35 @@ pub(crate) async fn download_tree(
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
             } else {
-                files.push((remote_path, local_path));
+                if tasks.len() >= options.file_concurrency {
+                    collect_next_transfer(&mut tasks, &mut summary).await?;
+                }
+                let sftp = Arc::clone(&sftp);
+                let options = options.clone();
+                tasks.spawn(async move {
+                    download_file(&sftp, &remote_path, &local_path, &options).await
+                });
             }
         }
     }
 
-    let semaphore = Arc::new(Semaphore::new(options.file_concurrency));
-    let mut tasks = JoinSet::new();
-    for (remote_path, local_path) in files {
-        let permit = semaphore.clone().acquire_owned().await?;
-        let sftp = Arc::clone(&sftp);
-        let options = options.clone();
-        tasks.spawn(async move {
-            let _permit = permit;
-            let bytes = download_file(&sftp, &remote_path, &local_path, &options).await?;
-            Ok::<u64, anyhow::Error>(bytes)
-        });
-    }
-
-    while let Some(result) = tasks.join_next().await {
-        summary.bytes += result??;
-        summary.files += 1;
+    while !tasks.is_empty() {
+        collect_next_transfer(&mut tasks, &mut summary).await?;
     }
     Ok(summary)
+}
+
+async fn collect_next_transfer(
+    tasks: &mut JoinSet<Result<u64>>,
+    summary: &mut TransferSummary,
+) -> Result<()> {
+    let bytes = tasks
+        .join_next()
+        .await
+        .context("recursive transfer task set unexpectedly empty")??;
+    summary.bytes += bytes;
+    summary.files += 1;
+    Ok(())
 }
 
 async fn reject_existing_local_symlink(path: &Path, role: &str) -> Result<()> {
@@ -848,9 +871,27 @@ mod tests {
     }
 
     #[test]
-    fn validates_concurrency() {
+    fn validates_concurrency_and_resource_budget() {
         let mut options = TransferOptions::default();
+        assert!(options.validated().is_ok());
+
         options.file_concurrency = 0;
+        assert!(options.validated().is_err());
+        options.file_concurrency = MAX_FILE_CONCURRENCY + 1;
+        assert!(options.validated().is_err());
+
+        options = TransferOptions::default();
+        options.sftp_write_concurrency = MAX_SFTP_WRITE_CONCURRENCY + 1;
+        assert!(options.validated().is_err());
+
+        options = TransferOptions::default();
+        options.sftp_packet_size = MAX_SFTP_PACKET_SIZE + 1;
+        assert!(options.validated().is_err());
+
+        options = TransferOptions::default();
+        options.file_concurrency = MAX_FILE_CONCURRENCY;
+        options.sftp_write_concurrency = MAX_SFTP_WRITE_CONCURRENCY;
+        options.sftp_packet_size = MAX_SFTP_PACKET_SIZE;
         assert!(options.validated().is_err());
     }
 
