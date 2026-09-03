@@ -25,7 +25,7 @@ use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
 
-const PROXY_EXPANSION_UNSAFE_CHARS: &str = "'`\"$\\;&<>|(){}";
+const PROXY_EXPANSION_SAFE_PUNCTUATION: &str = "._:@+-[]";
 
 #[derive(Debug, Clone, Default)]
 pub enum RemoteUser {
@@ -727,11 +727,11 @@ fn validate_proxy_expansion_value(label: &str, value: &str) -> Result<()> {
     if value.is_empty() {
         bail!("ProxyCommand {label} expansion value must not be empty");
     }
-    if value.chars().any(|ch| {
-        ch.is_control() || ch.is_whitespace() || PROXY_EXPANSION_UNSAFE_CHARS.contains(ch)
+    if !value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || PROXY_EXPANSION_SAFE_PUNCTUATION.contains(ch)
     }) {
         bail!(
-            "refusing unsafe ProxyCommand {label} expansion value containing whitespace, control characters, or shell-active metacharacters"
+            "refusing unsafe ProxyCommand {label} expansion value outside the portable shell-token grammar [A-Za-z0-9._:@+-[]]"
         );
     }
     Ok(())
@@ -779,7 +779,54 @@ mod tests {
     }
 
     #[test]
-    fn proxy_expansion_rejects_shell_active_host_and_user_values() {
+    fn proxy_expansion_accepts_portable_ipv4_ipv6_user_and_alias_tokens() {
+        for value in [
+            "real.example",
+            "127.0.0.1",
+            "2001:db8::1",
+            "[2001:db8::1]",
+            "deploy-user_01",
+            "prod+blue@example",
+        ] {
+            validate_proxy_expansion_value("test", value).unwrap();
+        }
+    }
+
+    #[test]
+    fn proxy_expansion_rejects_posix_and_windows_shell_syntax() {
+        for value in [
+            "real example",
+            "real.example;id",
+            "deploy$(id)",
+            "prod|cat",
+            "x&whoami",
+            "x<in",
+            "x>out",
+            "x#comment",
+            "x*",
+            "x?",
+            "x`id`",
+            "x'y",
+            "x\"y",
+            "x\\y",
+            "x(y)",
+            "x{y}",
+            "x^whoami",
+            "%PATH%",
+            "x!VAR!",
+            "x=y",
+            "example/path",
+            "例子.example",
+        ] {
+            assert!(
+                validate_proxy_expansion_value("test", value).is_err(),
+                "value should be rejected: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_expansion_rejects_shell_active_host_user_and_alias_values() {
         let mut config = ConnectionConfig::new("real.example;touch-pwned", "deploy");
         assert!(expand_proxy_command("nc %h %p", &config).is_err());
 
@@ -788,7 +835,7 @@ mod tests {
         assert!(expand_proxy_command("proxy --user %r %h", &config).is_err());
 
         config.username = "deploy".into();
-        config.alias = "prod|cat".into();
+        config.alias = "%PATH%".into();
         assert!(expand_proxy_command("proxy %n", &config).is_err());
     }
 }
