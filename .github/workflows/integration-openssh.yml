@@ -43,3 +43,5 @@ jobs:
         run: cargo build --workspace --locked
       - name: Run real OpenSSH integration suite
         run: bash scripts/ci/openssh-integration.sh
+      - name: Run typed command integration suite
+        run: bash scripts/ci/openssh-command-spec-integration.sh
