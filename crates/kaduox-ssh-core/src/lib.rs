@@ -11,7 +11,7 @@ mod remote_path;
 mod sync;
 #[path = "transfer.rs"]
 mod transfer_engine;
-mod transfer_policy;
+pub(crate) mod transfer_policy;
 pub(crate) use transfer_policy as transfer;
 
 pub use auth::Authentication;
