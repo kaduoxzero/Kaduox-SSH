@@ -187,18 +187,8 @@ async fn download_file_atomic(
 
     if options.resume && offset == total && total != 0 {
         preserve_local_mtime(&work_path, remote_metadata.mtime).await?;
-        let result = finish_local_atomic(&work_path, local_path).await;
-        if result.is_err() && !options.resume {
-            let _ = tokio::fs::remove_file(&work_path).await;
-        }
-        result?;
-        emit_progress(
-            options,
-            remote_path,
-            total,
-            Some(total),
-            true,
-        );
+        finish_local_atomic(&work_path, local_path).await?;
+        emit_progress(options, remote_path, total, Some(total), true);
         return Ok(0);
     }
 
@@ -214,7 +204,7 @@ async fn download_file_atomic(
     }
 
     emit_progress(options, remote_path, offset, Some(total), false);
-    let copy_result = copy_with_progress(
+    let copied = match copy_with_progress(
         &mut remote,
         &mut local,
         remote_path,
@@ -222,17 +212,18 @@ async fn download_file_atomic(
         total,
         options,
     )
-    .await;
-
-    if let Err(error) = copy_result {
-        drop(local);
-        drop(remote);
-        if !options.resume {
-            let _ = tokio::fs::remove_file(&work_path).await;
+    .await
+    {
+        Ok(copied) => copied,
+        Err(error) => {
+            drop(local);
+            drop(remote);
+            if !options.resume {
+                let _ = tokio::fs::remove_file(&work_path).await;
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
-    let copied = copy_result?;
+    };
 
     local.flush().await?;
     local.sync_all().await?;
@@ -405,7 +396,7 @@ async fn finish_local_atomic(work_path: &Path, final_path: &Path) -> Result<()> 
     Ok(())
 }
 
-async fn preflight_local_directory(path: &Path, role: &str) -> Result<bool> {
+async fn preflight_local_directory(path: &Path, role: &str) -> Result<()> {
     let mut ancestors = path
         .ancestors()
         .filter(|candidate| !candidate.as_os_str().is_empty())
@@ -415,14 +406,14 @@ async fn preflight_local_directory(path: &Path, role: &str) -> Result<bool> {
     for candidate in ancestors {
         match tokio::fs::symlink_metadata(candidate).await {
             Ok(metadata) => validate_local_directory(candidate, &metadata, role)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
                 return Err(error)
                     .with_context(|| format!("failed to inspect {role} {}", candidate.display()));
             }
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 async fn ensure_local_directory_no_links(path: &Path, role: &str) -> Result<()> {
@@ -442,13 +433,17 @@ async fn ensure_local_directory_no_links(path: &Path, role: &str) -> Result<()> 
                         let metadata = tokio::fs::symlink_metadata(candidate)
                             .await
                             .with_context(|| {
-                                format!("failed to inspect concurrently created {role} {}", candidate.display())
+                                format!(
+                                    "failed to inspect concurrently created {role} {}",
+                                    candidate.display()
+                                )
                             })?;
                         validate_local_directory(candidate, &metadata, role)?;
                     }
                     Err(error) => {
-                        return Err(error)
-                            .with_context(|| format!("failed to create {role} {}", candidate.display()));
+                        return Err(error).with_context(|| {
+                            format!("failed to create {role} {}", candidate.display())
+                        });
                     }
                 }
             }
@@ -511,7 +506,10 @@ fn unique_local_staging_path(path: &Path) -> PathBuf {
     let serial = LOCAL_STAGING_SERIAL.fetch_add(1, Ordering::Relaxed);
     append_local_suffix(
         path,
-        &format!(".kaduox.part.{:x}.{stamp:x}.{serial:x}", std::process::id()),
+        &format!(
+            ".kaduox.part.{:x}.{stamp:x}.{serial:x}",
+            std::process::id()
+        ),
     )
 }
 
@@ -622,7 +620,10 @@ mod tests {
     #[test]
     fn local_staging_paths_separate_resume_and_fresh_modes() {
         let final_path = PathBuf::from("target.bin");
-        assert_eq!(stable_local_staging_path(&final_path), PathBuf::from("target.bin.kaduox.part"));
+        assert_eq!(
+            stable_local_staging_path(&final_path),
+            PathBuf::from("target.bin.kaduox.part")
+        );
         let first = unique_local_staging_path(&final_path);
         let second = unique_local_staging_path(&final_path);
         assert_ne!(first, second);
