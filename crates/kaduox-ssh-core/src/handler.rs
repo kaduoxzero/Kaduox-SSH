@@ -11,6 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
 use crate::config::HostKeyPolicy;
+use crate::diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardTarget {
@@ -21,6 +22,7 @@ pub(crate) struct ForwardTarget {
 #[derive(Clone, Default)]
 pub(crate) struct HandlerState {
     pub(crate) remote_forwards: Arc<RwLock<HashMap<(String, u32), ForwardTarget>>>,
+    pub(crate) server_host_key: Arc<RwLock<Option<ServerHostKeyInfo>>>,
     pub agent_forwarding: bool,
 }
 
@@ -35,6 +37,24 @@ impl HandlerState {
             .write()
             .await
             .insert((bind_address, bind_port), target);
+    }
+
+    pub(crate) async fn server_host_key(&self) -> Option<ServerHostKeyInfo> {
+        self.server_host_key.read().await.clone()
+    }
+
+    async fn record_server_host_key(
+        &self,
+        server_public_key: &PublicKeyOrCertificate,
+        verification: HostKeyVerification,
+    ) {
+        let public_key = server_public_key.public_key();
+        let info = ServerHostKeyInfo {
+            algorithm: public_key.algorithm().as_str().to_owned(),
+            fingerprint_sha256: public_key.fingerprint(Default::default()).to_string(),
+            verification,
+        };
+        *self.server_host_key.write().await = Some(info);
     }
 
     async fn remote_forward(&self, address: &str, port: u32) -> Option<ForwardTarget> {
@@ -67,6 +87,9 @@ impl client::Handler for ClientHandler {
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         if self.host_key_policy == HostKeyPolicy::Insecure {
+            self.state
+                .record_server_host_key(server_public_key, HostKeyVerification::Insecure)
+                .await;
             return Ok(true);
         }
 
@@ -83,6 +106,9 @@ impl client::Handler for ClientHandler {
         };
 
         if known {
+            self.state
+                .record_server_host_key(server_public_key, HostKeyVerification::Known)
+                .await;
             return Ok(true);
         }
         if self.host_key_policy == HostKeyPolicy::Strict {
@@ -99,6 +125,9 @@ impl client::Handler for ClientHandler {
         } else {
             russh::keys::known_hosts::learn_known_hosts(&self.host, self.port, &public_key)?;
         }
+        self.state
+            .record_server_host_key(server_public_key, HostKeyVerification::Learned)
+            .await;
         Ok(true)
     }
 
