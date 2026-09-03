@@ -39,15 +39,25 @@ impl HandlerState {
 
     async fn remote_forward(&self, address: &str, port: u32) -> Option<ForwardTarget> {
         let forwards = self.remote_forwards.read().await;
-        forwards
-            .get(&(address.to_owned(), port))
-            .cloned()
-            .or_else(|| {
-                forwards
-                    .iter()
-                    .find(|((_, registered_port), _)| *registered_port == port)
-                    .map(|(_, target)| target.clone())
-            })
+        if let Some(target) = forwards.get(&(address.to_owned(), port)) {
+            return Some(target.clone());
+        }
+
+        // Some SSH servers normalize wildcard/listen addresses before sending
+        // forwarded-tcpip (for example an empty bind address may come back as a
+        // concrete address). Falling back by port preserves that compatibility,
+        // but only when the port maps to exactly one registered target. Choosing
+        // an arbitrary target from multiple same-port registrations can route a
+        // forwarded connection to the wrong local service.
+        let mut matches = forwards
+            .iter()
+            .filter(|((_, registered_port), _)| *registered_port == port)
+            .map(|(_, target)| target);
+        let target = matches.next()?.clone();
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(target)
     }
 }
 
@@ -174,5 +184,57 @@ impl client::Handler for ClientHandler {
 
         #[allow(unreachable_code)]
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(host: &str, port: u16) -> ForwardTarget {
+        ForwardTarget {
+            host: host.to_owned(),
+            port,
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_remote_forward_match_wins_even_when_port_is_shared() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward("127.0.0.1".to_owned(), 9000, target("service-a", 80))
+            .await;
+        state
+            .register_remote_forward("::1".to_owned(), 9000, target("service-b", 81))
+            .await;
+
+        let resolved = state.remote_forward("::1", 9000).await.unwrap();
+        assert_eq!(resolved.host, "service-b");
+        assert_eq!(resolved.port, 81);
+    }
+
+    #[tokio::test]
+    async fn unique_port_allows_server_address_normalization_fallback() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward(String::new(), 9000, target("service-a", 80))
+            .await;
+
+        let resolved = state.remote_forward("0.0.0.0", 9000).await.unwrap();
+        assert_eq!(resolved.host, "service-a");
+        assert_eq!(resolved.port, 80);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_same_port_fallback_fails_closed() {
+        let state = HandlerState::default();
+        state
+            .register_remote_forward("127.0.0.1".to_owned(), 9000, target("service-a", 80))
+            .await;
+        state
+            .register_remote_forward("::1".to_owned(), 9000, target("service-b", 81))
+            .await;
+
+        assert!(state.remote_forward("0.0.0.0", 9000).await.is_none());
     }
 }
