@@ -129,6 +129,12 @@ impl ConnectionConfig {
 
         if let Some(proxy_jump) = &parsed.host_config.proxy_jump {
             config.jump_hosts = resolve_jump_hosts_internal(proxy_jump, false)?;
+            if !config.jump_hosts.is_empty() {
+                // Kaduox uses the same precedence as SshClient::connect(): an
+                // effective ProxyJump chain wins over ProxyCommand. Keep the
+                // resolved configuration unambiguous for diagnostics/reuse.
+                config.proxy_command = None;
+            }
         }
 
         Ok(config)
@@ -141,12 +147,12 @@ impl ConnectionConfig {
     }
 
     pub fn snapshot(&self) -> ConnectionConfigSnapshot {
-        let route = if self.proxy_command.is_some() {
-            ConnectionRouteSnapshot::ProxyCommand
-        } else if self.jump_hosts.is_empty() {
-            ConnectionRouteSnapshot::Direct
-        } else {
+        let route = if !self.jump_hosts.is_empty() {
             ConnectionRouteSnapshot::ProxyJump(self.jump_hosts.clone())
+        } else if self.proxy_command.is_some() {
+            ConnectionRouteSnapshot::ProxyCommand
+        } else {
+            ConnectionRouteSnapshot::Direct
         };
 
         ConnectionConfigSnapshot {
@@ -624,6 +630,26 @@ mod tests {
         let snapshot = config.snapshot();
         assert!(matches!(
             snapshot.route,
+            ConnectionRouteSnapshot::ProxyJump(ref hops) if hops.len() == 1
+        ));
+    }
+
+    #[test]
+    fn proxy_jump_route_wins_when_both_route_fields_are_populated() {
+        let mut config = ConnectionConfig::new("target.example", "deploy");
+        config.proxy_command = Some("nc target.example 22".to_owned());
+        config.jump_hosts.push(JumpHost {
+            alias: "bastion".to_owned(),
+            host: "bastion.example".to_owned(),
+            port: 22,
+            username: "jump".to_owned(),
+            identity_files: Vec::new(),
+            host_key_policy: HostKeyPolicy::AcceptNew,
+            known_hosts_file: None,
+        });
+
+        assert!(matches!(
+            config.snapshot().route,
             ConnectionRouteSnapshot::ProxyJump(ref hops) if hops.len() == 1
         ));
     }
