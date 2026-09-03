@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use anyhow::{Result, bail};
 
-use crate::client::quote_posix;
+use crate::client::{CommandOutput, RemoteUser, SshClient, quote_posix};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteCommandSpec {
     pub program: String,
     pub arguments: Vec<String>,
@@ -75,6 +75,16 @@ impl RemoteCommandSpec {
             rendered.push_str(&quote_posix(argument));
         }
         Ok(rendered)
+    }
+}
+
+impl SshClient {
+    pub async fn exec_spec(
+        &self,
+        command: &RemoteCommandSpec,
+        remote_user: &RemoteUser,
+    ) -> Result<CommandOutput> {
+        self.exec(&command.render_posix()?, remote_user).await
     }
 }
 
