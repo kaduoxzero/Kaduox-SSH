@@ -1,5 +1,6 @@
 #[cfg(windows)]
 use std::ffi::OsString;
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,6 +8,10 @@ use anyhow::{Context, Result, bail};
 
 const MAX_JUMP_HOPS: usize = 8;
 const SHELL_ACTIVE_TOKEN_CHARS: &str = "'`\"$\\;&<>|(){}";
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CHANNEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HostKeyPolicy {
@@ -38,6 +43,14 @@ pub struct ConnectionConfig {
     pub known_hosts_file: Option<PathBuf>,
     pub keepalive_interval: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
+    /// Upper bound for TCP connection establishment and SSH handshakes.
+    pub connect_timeout: Duration,
+    /// Upper bound for SSH channel-open requests used by sessions and ProxyJump.
+    pub channel_open_timeout: Duration,
+    /// Upper bound for channel requests that wait for a server reply, such as exec/shell/subsystem.
+    pub channel_request_timeout: Duration,
+    /// Upper bound for one SSH authentication phase.
+    pub authentication_timeout: Duration,
     pub proxy_command: Option<String>,
     pub jump_hosts: Vec<JumpHost>,
     pub agent_forwarding: bool,
@@ -56,6 +69,10 @@ impl ConnectionConfig {
             known_hosts_file: None,
             keepalive_interval: Some(Duration::from_secs(30)),
             inactivity_timeout: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            channel_open_timeout: DEFAULT_CHANNEL_OPEN_TIMEOUT,
+            channel_request_timeout: DEFAULT_CHANNEL_REQUEST_TIMEOUT,
+            authentication_timeout: DEFAULT_AUTHENTICATION_TIMEOUT,
             proxy_command: None,
             jump_hosts: Vec::new(),
             agent_forwarding: false,
@@ -89,9 +106,7 @@ impl ConnectionConfig {
             host_key_policy_from_config(parsed.host_config.strict_host_key_checking);
 
         if let Some(proxy_jump) = &parsed.host_config.proxy_jump {
-            if !proxy_jump.eq_ignore_ascii_case("none") {
-                config.jump_hosts = resolve_jump_hosts_internal(proxy_jump, false)?;
-            }
+            config.jump_hosts = resolve_jump_hosts_internal(proxy_jump, false)?;
         }
 
         Ok(config)
@@ -102,6 +117,22 @@ impl ConnectionConfig {
         self.proxy_command = None;
         Ok(self)
     }
+
+    pub(crate) fn validate_timeouts(&self) -> Result<()> {
+        if self.connect_timeout.is_zero() {
+            bail!("SSH connect timeout must be greater than zero");
+        }
+        if self.channel_open_timeout.is_zero() {
+            bail!("SSH channel-open timeout must be greater than zero");
+        }
+        if self.channel_request_timeout.is_zero() {
+            bail!("SSH channel request timeout must be greater than zero");
+        }
+        if self.authentication_timeout.is_zero() {
+            bail!("SSH authentication timeout must be greater than zero");
+        }
+        Ok(())
+    }
 }
 
 pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
@@ -109,14 +140,20 @@ pub fn resolve_jump_hosts(spec: &str) -> Result<Vec<JumpHost>> {
 }
 
 fn resolve_jump_hosts_internal(spec: &str, validate_untrusted: bool) -> Result<Vec<JumpHost>> {
-    let raw_hops = spec
-        .split(',')
-        .map(str::trim)
-        .filter(|hop| !hop.is_empty())
-        .collect::<Vec<_>>();
-
-    if raw_hops.is_empty() {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.eq_ignore_ascii_case("none") {
         return Ok(Vec::new());
+    }
+
+    let raw_hops = spec.split(',').map(str::trim).collect::<Vec<_>>();
+    if raw_hops.iter().any(|hop| hop.is_empty()) {
+        bail!("ProxyJump chain contains an empty hop");
+    }
+    if raw_hops
+        .iter()
+        .any(|hop| hop.eq_ignore_ascii_case("none"))
+    {
+        bail!("ProxyJump 'none' cannot be combined with other hops");
     }
     if raw_hops.len() > MAX_JUMP_HOPS {
         bail!("ProxyJump chain exceeds the {MAX_JUMP_HOPS}-hop safety limit");
@@ -129,12 +166,13 @@ fn resolve_jump_hosts_internal(spec: &str, validate_untrusted: bool) -> Result<V
 }
 
 fn resolve_jump_host(spec: &str, validate_untrusted: bool) -> Result<JumpHost> {
-    let (user_override, host_port) = match spec.rsplit_once('@') {
-        Some((user, host_port)) if !user.is_empty() => (Some(user), host_port),
-        _ => (None, spec),
-    };
+    if spec.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        bail!("ProxyJump hop contains whitespace or control characters: {spec:?}");
+    }
 
+    let (user_override, host_port) = parse_jump_destination(spec)?;
     let (alias, port_override) = parse_host_port(host_port)?;
+
     if validate_untrusted {
         validate_untrusted_shell_token(&alias, "ProxyJump host")?;
         if let Some(username) = user_override {
@@ -159,6 +197,99 @@ fn resolve_jump_host(spec: &str, validate_untrusted: bool) -> Result<JumpHost> {
         host_key_policy,
         known_hosts_file,
     })
+}
+
+fn parse_jump_destination(spec: &str) -> Result<(Option<&str>, &str)> {
+    let destination = if let Some(uri) = spec.strip_prefix("ssh://") {
+        if uri.is_empty() {
+            bail!("ProxyJump SSH URI is missing a destination");
+        }
+        if uri.contains('/') || uri.contains('?') || uri.contains('#') {
+            bail!("ProxyJump SSH URI cannot contain a path, query, or fragment");
+        }
+        uri
+    } else if spec.contains("://") {
+        bail!("ProxyJump URI must use the ssh:// scheme");
+    } else {
+        spec
+    };
+
+    if destination.matches('@').count() > 1 {
+        bail!("ProxyJump destination contains more than one '@': {spec:?}");
+    }
+
+    match destination.split_once('@') {
+        Some(("", _)) => bail!("ProxyJump user cannot be empty"),
+        Some((_, "")) => bail!("ProxyJump host cannot be empty"),
+        Some((user, host_port)) => Ok((Some(user), host_port)),
+        None => Ok((None, destination)),
+    }
+}
+
+fn parse_host_port(value: &str) -> Result<(String, Option<u16>)> {
+    if value.is_empty() {
+        bail!("ProxyJump host cannot be empty");
+    }
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        bail!("ProxyJump host contains whitespace or control characters: {value:?}");
+    }
+
+    if let Some(rest) = value.strip_prefix('[') {
+        let end = rest
+            .find(']')
+            .context("missing closing ']' in ProxyJump IPv6 address")?;
+        let host = &rest[..end];
+        if host.is_empty() {
+            bail!("ProxyJump IPv6 host cannot be empty");
+        }
+        host.parse::<Ipv6Addr>()
+            .context("invalid ProxyJump IPv6 address")?;
+
+        let suffix = &rest[end + 1..];
+        let port = if let Some(port) = suffix.strip_prefix(':') {
+            if port.is_empty() {
+                bail!("ProxyJump port cannot be empty");
+            }
+            Some(port.parse().context("invalid ProxyJump port")?)
+        } else if suffix.is_empty() {
+            None
+        } else {
+            bail!("invalid ProxyJump address suffix: {suffix}");
+        };
+        return Ok((host.to_owned(), port));
+    }
+
+    if value.contains('[') || value.contains(']') {
+        bail!("invalid ProxyJump bracket placement: {value:?}");
+    }
+
+    match value.matches(':').count() {
+        0 => Ok((value.to_owned(), None)),
+        1 => {
+            let (host, port) = value
+                .rsplit_once(':')
+                .context("invalid ProxyJump host:port specification")?;
+            if host.is_empty() {
+                bail!("ProxyJump host cannot be empty");
+            }
+            if port.is_empty() {
+                bail!("ProxyJump port cannot be empty");
+            }
+            if !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                bail!("invalid ProxyJump port: {port}");
+            }
+            Ok((host.to_owned(), Some(port.parse()?)))
+        }
+        _ => {
+            value
+                .parse::<Ipv6Addr>()
+                .context("invalid unbracketed ProxyJump IPv6 address")?;
+            Ok((value.to_owned(), None))
+        }
+    }
 }
 
 fn host_key_policy_from_config(strict: Option<bool>) -> HostKeyPolicy {
@@ -257,35 +388,6 @@ fn openssh_config_path() -> Option<PathBuf> {
     user_home_dir().map(|home| home.join(".ssh").join("config"))
 }
 
-fn parse_host_port(value: &str) -> Result<(String, Option<u16>)> {
-    if let Some(rest) = value.strip_prefix('[') {
-        let end = rest
-            .find(']')
-            .context("missing closing ']' in ProxyJump IPv6 address")?;
-        let host = rest[..end].to_owned();
-        let suffix = &rest[end + 1..];
-        let port = if let Some(port) = suffix.strip_prefix(':') {
-            Some(port.parse().context("invalid ProxyJump port")?)
-        } else if suffix.is_empty() {
-            None
-        } else {
-            bail!("invalid ProxyJump address suffix: {suffix}");
-        };
-        return Ok((host, port));
-    }
-
-    if value.matches(':').count() == 1 {
-        let Some((host, port)) = value.rsplit_once(':') else {
-            return Ok((value.to_owned(), None));
-        };
-        if !host.is_empty() && !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Ok((host.to_owned(), Some(port.parse()?)));
-        }
-    }
-
-    Ok((value.to_owned(), None))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +404,72 @@ mod tests {
         let (host, port) = parse_host_port("[2001:db8::1]:2200").unwrap();
         assert_eq!(host, "2001:db8::1");
         assert_eq!(port, Some(2200));
+    }
+
+    #[test]
+    fn parses_unbracketed_ipv6_without_port() {
+        let (host, port) = parse_host_port("2001:db8::1").unwrap();
+        assert_eq!(host, "2001:db8::1");
+        assert_eq!(port, None);
+    }
+
+    #[test]
+    fn parses_openssh_proxyjump_ssh_uri() {
+        let (user, host_port) =
+            parse_jump_destination("ssh://deploy@[2001:db8::1]:2222").unwrap();
+        assert_eq!(user, Some("deploy"));
+        let (host, port) = parse_host_port(host_port).unwrap();
+        assert_eq!(host, "2001:db8::1");
+        assert_eq!(port, Some(2222));
+    }
+
+    #[test]
+    fn none_disables_proxy_jump_at_the_shared_parser_boundary() {
+        assert!(resolve_jump_hosts("none").unwrap().is_empty());
+        assert!(resolve_jump_hosts("NONE").unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_jump_chains_fail_closed() {
+        for spec in ["host,,other", ",host", "host,", "host,none"] {
+            assert!(resolve_jump_hosts(spec).is_err(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_jump_user_host_forms_are_rejected() {
+        for spec in ["@host", "user@", "a@b@host", "user name@host"] {
+            assert!(resolve_jump_hosts(spec).is_err(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_jump_uri_forms_are_rejected() {
+        for spec in [
+            "ssh://",
+            "http://host",
+            "ssh://user@host/path",
+            "ssh://host?query",
+            "ssh://host#fragment",
+        ] {
+            assert!(parse_jump_destination(spec).is_err(), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_host_port_forms_are_rejected() {
+        for value in [
+            "",
+            ":22",
+            "host:",
+            "host:ssh",
+            "[]:22",
+            "[not-ipv6]:22",
+            "[2001:db8::1]oops",
+            "foo:bar:baz",
+        ] {
+            assert!(parse_host_port(value).is_err(), "{value:?}");
+        }
     }
 
     #[test]
@@ -360,5 +528,27 @@ mod tests {
         assert!(resolve_jump_hosts("deploy@bastion.example:2222").is_ok());
         assert!(resolve_jump_hosts("deploy@bad;host:2222").is_err());
         assert!(resolve_jump_hosts("bad;user@bastion.example:2222").is_err());
+    }
+
+    #[test]
+    fn connection_timeouts_have_safe_defaults_and_reject_zero() {
+        let mut config = ConnectionConfig::new("example.com", "deploy");
+        assert_eq!(config.connect_timeout, Duration::from_secs(15));
+        assert_eq!(config.channel_open_timeout, Duration::from_secs(15));
+        assert_eq!(config.channel_request_timeout, Duration::from_secs(15));
+        assert_eq!(config.authentication_timeout, Duration::from_secs(30));
+        assert!(config.validate_timeouts().is_ok());
+
+        config.connect_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
+        config.connect_timeout = DEFAULT_CONNECT_TIMEOUT;
+        config.channel_open_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
+        config.channel_open_timeout = DEFAULT_CHANNEL_OPEN_TIMEOUT;
+        config.channel_request_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
+        config.channel_request_timeout = DEFAULT_CHANNEL_REQUEST_TIMEOUT;
+        config.authentication_timeout = Duration::ZERO;
+        assert!(config.validate_timeouts().is_err());
     }
 }
