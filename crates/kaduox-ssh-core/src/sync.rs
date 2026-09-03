@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -9,6 +9,10 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::client::SshClient;
+use crate::remote_path::{
+    join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
+    validate_remote_relative_path,
+};
 use crate::transfer::{TransferOptions, TransferSummary, ensure_remote_dir, upload_file};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +95,11 @@ impl SshClient {
         options: SyncOptions,
     ) -> Result<TransferSummary> {
         options.transfer.validated()?;
+        // Validate every caller-supplied action before opening the mutation
+        // phase. SyncPlan is public and must not be assumed to originate from
+        // plan_sync_to_remote().
+        validate_sync_plan(plan)?;
+
         let metadata = tokio::fs::metadata(local_root)
             .await
             .with_context(|| format!("failed to stat {}", local_root.display()))?;
@@ -103,17 +112,16 @@ impl SshClient {
         let mut summary = TransferSummary::default();
 
         for action in &plan.actions {
+            let remote_path = join_remote_under_root(remote_root, &action.path)?;
             match action.kind {
                 SyncActionKind::DeleteRemoteFile => {
-                    sftp.remove_file(join_remote(remote_root, &action.path))
-                        .await?;
+                    sftp.remove_file(remote_path).await?;
                 }
                 SyncActionKind::DeleteRemoteDirectory => {
-                    sftp.remove_dir(join_remote(remote_root, &action.path))
-                        .await?;
+                    sftp.remove_dir(remote_path).await?;
                 }
                 SyncActionKind::CreateRemoteDirectory => {
-                    ensure_remote_dir(&sftp, &join_remote(remote_root, &action.path)).await?;
+                    ensure_remote_dir(&sftp, &remote_path).await?;
                     summary.directories += 1;
                 }
                 SyncActionKind::UploadFile => {}
@@ -129,8 +137,9 @@ impl SshClient {
             let permit = semaphore.clone().acquire_owned().await?;
             let sftp = Arc::clone(&sftp);
             let transfer = options.transfer.clone();
-            let local_path = local_root.join(path_from_relative(&action.path));
-            let remote_path = join_remote(remote_root, &action.path);
+            let local_relative = local_path_from_remote_relative(&action.path)?;
+            let local_path = local_root.join(local_relative);
+            let remote_path = join_remote_under_root(remote_root, &action.path)?;
             tasks.spawn(async move {
                 let _permit = permit;
                 upload_file(&sftp, &local_path, &remote_path, &transfer).await
@@ -186,6 +195,12 @@ async fn scan_local(root: &Path) -> Result<BTreeMap<String, SnapshotEntry>> {
                     entry.path().display()
                 )
             })?;
+            validate_remote_child_name(&name).with_context(|| {
+                format!(
+                    "local filename cannot be mapped safely to a remote sync path: {}",
+                    entry.path().display()
+                )
+            })?;
             let child_relative = join_relative(&relative, &name);
             if file_type.is_symlink() {
                 continue;
@@ -227,9 +242,16 @@ async fn scan_remote(sftp: &SftpSession, root: &str) -> Result<BTreeMap<String, 
     let mut snapshot = BTreeMap::new();
     let mut stack = vec![(root.to_owned(), String::new())];
     while let Some((directory, relative)) = stack.pop() {
-        for entry in sftp.read_dir(directory).await? {
+        for entry in sftp.read_dir(directory.clone()).await? {
             let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            validate_remote_child_name(&name).with_context(|| {
+                format!("unsafe SFTP directory entry returned while scanning {directory}")
+            })?;
             let child_relative = join_relative(&relative, &name);
+            let child_remote = join_remote_under_root(&directory, &name)?;
             let metadata = entry.metadata();
             let kind = if metadata.is_dir() {
                 EntryKind::Directory
@@ -247,7 +269,10 @@ async fn scan_remote(sftp: &SftpSession, root: &str) -> Result<BTreeMap<String, 
                 },
             );
             if kind == EntryKind::Directory {
-                stack.push((entry.path(), child_relative));
+                // Never trust entry.path() supplied by the server. Reconstruct
+                // the child location from the directory we requested plus the
+                // validated single-component filename.
+                stack.push((child_remote, child_relative));
             }
         }
     }
@@ -389,6 +414,27 @@ fn build_push_plan(
     Ok(plan)
 }
 
+fn validate_sync_plan(plan: &SyncPlan) -> Result<()> {
+    for (index, action) in plan.actions.iter().enumerate() {
+        validate_remote_relative_path(&action.path).with_context(|| {
+            format!(
+                "invalid sync plan action #{index} ({:?}) path",
+                action.kind
+            )
+        })?;
+        // Also validate the local interpretation used by UploadFile. This is
+        // harmless for non-upload actions and makes the whole plan portable
+        // across Windows/POSIX frontends before any remote mutation starts.
+        local_path_from_remote_relative(&action.path).with_context(|| {
+            format!(
+                "sync plan action #{index} ({:?}) is unsafe on this platform",
+                action.kind
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn files_match(local: &SnapshotEntry, remote: &SnapshotEntry, size_only: bool) -> bool {
     if local.len != remote.len {
         return false;
@@ -417,22 +463,6 @@ fn join_relative(parent: &str, child: &str) -> String {
     } else {
         format!("{parent}/{child}")
     }
-}
-
-fn join_remote(root: &str, relative: &str) -> String {
-    if root.is_empty() || root == "." {
-        relative.to_owned()
-    } else if root == "/" {
-        format!("/{relative}")
-    } else if root.ends_with('/') {
-        format!("{root}{relative}")
-    } else {
-        format!("{root}/{relative}")
-    }
-}
-
-fn path_from_relative(relative: &str) -> PathBuf {
-    relative.split('/').collect()
 }
 
 fn path_depth(path: &str) -> usize {
@@ -486,5 +516,40 @@ mod tests {
         )]);
         let remote = BTreeMap::from([("cache".to_owned(), file(10, 1))]);
         assert!(build_push_plan(&local, &remote, &SyncOptions::default()).is_err());
+    }
+
+    #[test]
+    fn public_sync_plan_rejects_paths_outside_the_selected_root() {
+        for path in ["../outside", "nested/../../outside", "/etc/passwd", "a\\..\\b"] {
+            let plan = SyncPlan {
+                actions: vec![SyncAction {
+                    kind: SyncActionKind::DeleteRemoteFile,
+                    path: path.to_owned(),
+                    bytes: 0,
+                }],
+                ..Default::default()
+            };
+            assert!(validate_sync_plan(&plan).is_err(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn generated_style_nested_plan_paths_pass_containment_validation() {
+        let plan = SyncPlan {
+            actions: vec![
+                SyncAction {
+                    kind: SyncActionKind::CreateRemoteDirectory,
+                    path: "releases/2026".to_owned(),
+                    bytes: 0,
+                },
+                SyncAction {
+                    kind: SyncActionKind::UploadFile,
+                    path: "releases/2026/app.bin".to_owned(),
+                    bytes: 123,
+                },
+            ],
+            ..Default::default()
+        };
+        validate_sync_plan(&plan).unwrap();
     }
 }
