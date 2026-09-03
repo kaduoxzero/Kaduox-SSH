@@ -45,3 +45,7 @@ jobs:
         run: bash scripts/ci/openssh-integration.sh
       - name: Run default identity discovery integration suite
         run: bash scripts/ci/openssh-auth-discovery-integration.sh
+      - name: Run connection probe integration suite
+        run: bash scripts/ci/openssh-probe-integration.sh
+      - name: Run typed command integration suite
+        run: bash scripts/ci/openssh-command-spec-integration.sh
