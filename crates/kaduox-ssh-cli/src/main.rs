@@ -245,10 +245,12 @@ async fn main() -> Result<()> {
 
     let authentication = resolve_authentication(&cli, &config)?;
     let ssh = SshClient::connect(config, authentication).await?;
-    let _forward_handles = setup_forwards(&ssh, &cli).await?;
+    let forward_handles = setup_forwards(&ssh, &cli).await?;
     let result = run_command(&ssh, cli.command).await;
+    let forward_close_result = forward_handles.close().await;
     let close_result = ssh.close().await;
     result?;
+    forward_close_result?;
     close_result?;
     Ok(())
 }
@@ -281,23 +283,48 @@ fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authen
     })
 }
 
-async fn setup_forwards(ssh: &SshClient, cli: &Cli) -> Result<Vec<kaduox_ssh_core::ForwardHandle>> {
-    let mut handles = Vec::new();
+struct ActiveForwards {
+    local: Vec<kaduox_ssh_core::ForwardHandle>,
+    remote: Vec<kaduox_ssh_core::RemoteForwardHandle>,
+}
+
+impl ActiveForwards {
+    async fn close(self) -> Result<()> {
+        drop(self.local);
+        let mut first_error: Option<anyhow::Error> = None;
+        for handle in self.remote {
+            if let Err(error) = handle.close().await {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+async fn setup_forwards(ssh: &SshClient, cli: &Cli) -> Result<ActiveForwards> {
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
     for raw in &cli.local_forward {
-        handles.push(ssh.local_forward(parse_local_forward(raw)?).await?);
+        local.push(ssh.local_forward(parse_local_forward(raw)?).await?);
     }
     for raw in &cli.dynamic_forward {
-        handles.push(ssh.dynamic_forward(parse_dynamic_forward(raw)?).await?);
+        local.push(ssh.dynamic_forward(parse_dynamic_forward(raw)?).await?);
     }
     for raw in &cli.remote_forward {
         let spec = parse_remote_forward(raw)?;
         let requested = spec.bind_port;
-        let port = ssh.remote_forward(spec).await?;
+        let handle = ssh.remote_forward_managed(spec).await?;
         if requested == 0 {
-            eprintln!("remote forward allocated port {port}");
+            eprintln!("remote forward allocated port {}", handle.port());
         }
+        remote.push(handle);
     }
-    Ok(handles)
+    Ok(ActiveForwards { local, remote })
 }
 
 async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
