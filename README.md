@@ -23,7 +23,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - atomic destination staging by default
 - transfer progress events and cooperative cancellation
 - configurable SFTP packet size, pipelined write concurrency, and request timeout
-- sudo-backed privileged single-file upload using unprivileged SFTP staging
+- sudo-backed privileged single-file and recursive directory upload using unprivileged SFTP staging
 - SFTP-native local-to-remote directory synchronization with non-mutating planning
 - explicit `--delete` policy for destructive sync operations
 - reusable in-process authenticated connection manager for future long-lived TUI/GUI frontends
@@ -36,7 +36,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
-Privileged file upload does not pretend SFTP can change uid. Kaduox-SSH uploads a temporary file as the SSH login user, performs an explicit `sudo install`/move to the privileged destination, and then removes the staging file.
+Privileged upload does not pretend SFTP can change uid. Kaduox-SSH stages files or directory trees as the SSH login user, then performs an explicit sudo-backed install phase as the requested remote OS user and removes the staging data afterwards. Recursive privileged replacement uses a sibling work directory and a remove-then-rename step when the destination already exists, so replacement of an existing directory is deliberately not claimed to be atomic.
 
 ## RSA security policy
 
@@ -128,6 +128,9 @@ kssh server.example.com download /srv/logs ./logs -r --jobs 8
 
 # Install a staged upload as root, without running SFTP as root
 kssh server.example.com upload ./nginx.conf /etc/nginx/nginx.conf --as-user root --mode 0644
+
+# Recursively install a staged tree as root; file and directory modes are explicit
+kssh server.example.com upload ./dist /srv/www/app -r --as-user root --mode 0644 --dir-mode 0755 --jobs 8
 
 # Inspect a sync plan without modifying the server
 kssh server.example.com sync ./dist /srv/www/dist --dry-run

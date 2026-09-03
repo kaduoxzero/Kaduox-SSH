@@ -139,12 +139,15 @@ enum Command {
         /// SFTP request timeout in seconds.
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
-        /// Install the uploaded file as this remote OS user through sudo.
+        /// Install the uploaded file or directory tree as this remote OS user through sudo.
         #[arg(long)]
         as_user: Option<String>,
-        /// Unix mode for --as-user uploads, interpreted as octal (for example 0644).
+        /// Unix file mode for --as-user uploads, interpreted as octal (for example 0644).
         #[arg(long, requires = "as_user")]
         mode: Option<String>,
+        /// Unix directory mode for recursive --as-user uploads (for example 0755).
+        #[arg(long, requires_all = ["as_user", "recursive"])]
+        dir_mode: Option<String>,
     },
     /// Download a file or directory through SFTP.
     Download {
@@ -363,10 +366,8 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
             request_timeout,
             as_user,
             mode,
+            dir_mode,
         } => {
-            if recursive && as_user.is_some() {
-                bail!("--as-user currently supports single-file uploads only");
-            }
             let ui = TransferUi::new(
                 resume,
                 !no_atomic,
@@ -376,13 +377,32 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 request_timeout,
             );
             if recursive {
-                let summary = ssh
-                    .upload_recursive(&local, &remote, ui.options.clone())
-                    .await?;
-                eprintln!(
-                    "uploaded {} files, {} directories, {} bytes; skipped {} entries",
-                    summary.files, summary.directories, summary.bytes, summary.skipped
-                );
+                if let Some(user) = as_user {
+                    let file_mode = parse_mode(mode.as_deref().unwrap_or("0644"))?;
+                    let directory_mode = parse_mode(dir_mode.as_deref().unwrap_or("0755"))?;
+                    let summary = ssh
+                        .upload_privileged_recursive(
+                            &local,
+                            &remote,
+                            &user,
+                            file_mode,
+                            directory_mode,
+                            ui.options.clone(),
+                        )
+                        .await?;
+                    eprintln!(
+                        "uploaded {} files, {} directories, {} bytes as {user}; skipped {} entries",
+                        summary.files, summary.directories, summary.bytes, summary.skipped
+                    );
+                } else {
+                    let summary = ssh
+                        .upload_recursive(&local, &remote, ui.options.clone())
+                        .await?;
+                    eprintln!(
+                        "uploaded {} files, {} directories, {} bytes; skipped {} entries",
+                        summary.files, summary.directories, summary.bytes, summary.skipped
+                    );
+                }
             } else if let Some(user) = as_user {
                 let mode = parse_mode(mode.as_deref().unwrap_or("0644"))?;
                 let bytes = ssh
