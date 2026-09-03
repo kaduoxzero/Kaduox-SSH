@@ -1,13 +1,19 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use russh::client;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 use crate::handler::{ClientHandler, ForwardTarget, HandlerState};
+
+const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub struct LocalForward {
@@ -95,11 +101,54 @@ pub(crate) async fn start_dynamic_forward(
     Ok(ForwardHandle { task })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SocksTarget {
+    host: String,
+    port: u16,
+}
+
 async fn handle_socks5(
     session: Arc<client::Handle<ClientHandler>>,
     mut local: TcpStream,
     peer: SocketAddr,
 ) -> Result<()> {
+    let target = negotiate_socks5_with_timeout(&mut local, SOCKS5_HANDSHAKE_TIMEOUT).await?;
+
+    match session
+        .channel_open_direct_tcpip(
+            target.host,
+            u32::from(target.port),
+            peer.ip().to_string(),
+            u32::from(peer.port()),
+        )
+        .await
+    {
+        Ok(channel) => {
+            local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+            let mut remote = channel.into_stream();
+            copy_bidirectional(&mut local, &mut remote).await?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            Err(error.into())
+        }
+    }
+}
+
+async fn negotiate_socks5_with_timeout<S>(local: &mut S, duration: Duration) -> Result<SocksTarget>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    timeout(duration, negotiate_socks5(local))
+        .await
+        .context("SOCKS5 handshake timed out")?
+}
+
+async fn negotiate_socks5<S>(local: &mut S) -> Result<SocksTarget>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let version = local.read_u8().await?;
     if version != 5 {
         bail!("unsupported SOCKS version {version}");
@@ -120,7 +169,10 @@ async fn handle_socks5(
         bail!("invalid SOCKS request version");
     }
     let command = local.read_u8().await?;
-    let _reserved = local.read_u8().await?;
+    let reserved = local.read_u8().await?;
+    if reserved != 0 {
+        bail!("invalid SOCKS reserved byte {reserved}");
+    }
     if command != 1 {
         local.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
         bail!("only SOCKS CONNECT is supported");
@@ -147,30 +199,14 @@ async fn handle_socks5(
             local.read_exact(&mut octets).await?;
             IpAddr::V6(octets.into()).to_string()
         }
-        _ => bail!("unsupported SOCKS address type {address_type}"),
+        _ => {
+            local.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+            bail!("unsupported SOCKS address type {address_type}");
+        }
     };
     let port = local.read_u16().await?;
 
-    match session
-        .channel_open_direct_tcpip(
-            host,
-            u32::from(port),
-            peer.ip().to_string(),
-            u32::from(peer.port()),
-        )
-        .await
-    {
-        Ok(channel) => {
-            local.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
-            let mut remote = channel.into_stream();
-            copy_bidirectional(&mut local, &mut remote).await?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = local.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-            Err(error.into())
-        }
-    }
+    Ok(SocksTarget { host, port })
 }
 
 pub(crate) async fn start_remote_forward(
@@ -201,4 +237,66 @@ pub(crate) async fn start_remote_forward(
 
 pub fn loopback(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    #[tokio::test]
+    async fn socks5_negotiation_parses_domain_connect() {
+        let (mut client, mut server) = duplex(128);
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, 11];
+        request.extend_from_slice(b"example.com");
+        request.extend_from_slice(&80_u16.to_be_bytes());
+        client.write_all(&request).await.unwrap();
+
+        let target = negotiate_socks5(&mut server).await.unwrap();
+        assert_eq!(
+            target,
+            SocksTarget {
+                host: "example.com".to_owned(),
+                port: 80,
+            }
+        );
+
+        let mut method_reply = [0_u8; 2];
+        client.read_exact(&mut method_reply).await.unwrap();
+        assert_eq!(method_reply, [5, 0]);
+    }
+
+    #[tokio::test]
+    async fn socks5_negotiation_rejects_missing_no_auth_method() {
+        let (mut client, mut server) = duplex(32);
+        client.write_all(&[5, 1, 2]).await.unwrap();
+
+        let error = negotiate_socks5(&mut server).await.unwrap_err();
+        assert!(error.to_string().contains("no-auth"));
+
+        let mut method_reply = [0_u8; 2];
+        client.read_exact(&mut method_reply).await.unwrap();
+        assert_eq!(method_reply, [5, 0xff]);
+    }
+
+    #[tokio::test]
+    async fn socks5_negotiation_rejects_nonzero_reserved_byte() {
+        let (mut client, mut server) = duplex(32);
+        client
+            .write_all(&[5, 1, 0, 5, 1, 1, 1, 127, 0, 0, 1, 0, 80])
+            .await
+            .unwrap();
+
+        let error = negotiate_socks5(&mut server).await.unwrap_err();
+        assert!(error.to_string().contains("reserved byte"));
+    }
+
+    #[tokio::test]
+    async fn stalled_socks5_handshake_is_bounded() {
+        let (_client, mut server) = duplex(16);
+        let error = negotiate_socks5_with_timeout(&mut server, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+    }
 }
