@@ -13,13 +13,35 @@ pub enum HostKeyPolicy {
     Insecure,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpHost {
     pub alias: String,
     pub host: String,
     pub port: u16,
     pub username: String,
     pub identity_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectionRouteSnapshot {
+    Direct,
+    ProxyCommand,
+    ProxyJump(Vec<JumpHost>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionConfigSnapshot {
+    pub alias: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub identity_files: Vec<PathBuf>,
+    pub host_key_policy: HostKeyPolicy,
+    pub known_hosts_file: Option<PathBuf>,
+    pub keepalive_interval: Option<Duration>,
+    pub inactivity_timeout: Option<Duration>,
+    pub route: ConnectionRouteSnapshot,
+    pub agent_forwarding: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +120,30 @@ impl ConnectionConfig {
         self.jump_hosts = resolve_jump_hosts(spec)?;
         self.proxy_command = None;
         Ok(self)
+    }
+
+    pub fn snapshot(&self) -> ConnectionConfigSnapshot {
+        let route = if self.proxy_command.is_some() {
+            ConnectionRouteSnapshot::ProxyCommand
+        } else if self.jump_hosts.is_empty() {
+            ConnectionRouteSnapshot::Direct
+        } else {
+            ConnectionRouteSnapshot::ProxyJump(self.jump_hosts.clone())
+        };
+
+        ConnectionConfigSnapshot {
+            alias: self.alias.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            username: self.username.clone(),
+            identity_files: self.identity_files.clone(),
+            host_key_policy: self.host_key_policy,
+            known_hosts_file: self.known_hosts_file.clone(),
+            keepalive_interval: self.keepalive_interval,
+            inactivity_timeout: self.inactivity_timeout,
+            route,
+            agent_forwarding: self.agent_forwarding,
+        }
     }
 }
 
@@ -184,5 +230,33 @@ mod tests {
         let (host, port) = parse_host_port("[2001:db8::1]:2200").unwrap();
         assert_eq!(host, "2001:db8::1");
         assert_eq!(port, Some(2200));
+    }
+
+    #[test]
+    fn snapshot_redacts_proxy_command_text() {
+        let mut config = ConnectionConfig::new("target.example", "deploy");
+        config.proxy_command = Some("secret-bearing-proxy-command".to_owned());
+
+        let snapshot = config.snapshot();
+        assert_eq!(snapshot.route, ConnectionRouteSnapshot::ProxyCommand);
+        assert!(!format!("{snapshot:?}").contains("secret-bearing-proxy-command"));
+    }
+
+    #[test]
+    fn snapshot_preserves_proxy_jump_route() {
+        let mut config = ConnectionConfig::new("target.example", "deploy");
+        config.jump_hosts.push(JumpHost {
+            alias: "bastion".to_owned(),
+            host: "bastion.example".to_owned(),
+            port: 2222,
+            username: "jump".to_owned(),
+            identity_files: vec![PathBuf::from("/tmp/id_ed25519")],
+        });
+
+        let snapshot = config.snapshot();
+        assert!(matches!(
+            snapshot.route,
+            ConnectionRouteSnapshot::ProxyJump(ref hops) if hops.len() == 1
+        ));
     }
 }

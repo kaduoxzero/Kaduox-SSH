@@ -203,6 +203,12 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
     },
+    /// Show the effective connection configuration without opening a network connection.
+    Inspect {
+        /// Show path-level details such as configured identity and known_hosts files.
+        #[arg(long)]
+        verbose: bool,
+    },
     /// Keep only configured -L/-R/-D forwards alive until Ctrl-C.
     Tunnel,
 }
@@ -243,6 +249,11 @@ async fn main() -> Result<()> {
     }
     config.agent_forwarding = cli.forward_agent;
 
+    if let Command::Inspect { verbose } = &cli.command {
+        inspect_connection(&config, &cli, *verbose)?;
+        return Ok(());
+    }
+
     let authentication = resolve_authentication(&cli, &config)?;
     let ssh = SshClient::connect(config, authentication).await?;
     let _forward_handles = setup_forwards(&ssh, &cli).await?;
@@ -251,6 +262,124 @@ async fn main() -> Result<()> {
     result?;
     close_result?;
     Ok(())
+}
+
+fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Result<()> {
+    println!("alias: {}", config.alias);
+    println!("endpoint: {}", format_endpoint(&config.host, config.port));
+    println!("user: {}", config.username);
+    println!("host-key-policy: {}", host_key_policy_name(config.host_key_policy));
+    println!("authentication: {}", authentication_mode(cli));
+    println!(
+        "agent-forwarding: {}",
+        if config.agent_forwarding { "enabled" } else { "disabled" }
+    );
+
+    if config.proxy_command.is_some() {
+        println!("route: proxy-command (configured; command redacted)");
+    } else if config.jump_hosts.is_empty() {
+        println!("route: direct");
+    } else {
+        println!("route: proxy-jump ({} hop(s))", config.jump_hosts.len());
+        for (index, hop) in config.jump_hosts.iter().enumerate() {
+            println!(
+                "  hop {}: {}@{}",
+                index + 1,
+                hop.username,
+                format_endpoint(&hop.host, hop.port)
+            );
+            if verbose && !hop.identity_files.is_empty() {
+                for identity in &hop.identity_files {
+                    println!("    identity: {}", identity.display());
+                }
+            }
+        }
+    }
+
+    if verbose {
+        match &config.known_hosts_file {
+            Some(path) => println!("known-hosts: {}", path.display()),
+            None => println!("known-hosts: default OpenSSH path"),
+        }
+        if config.identity_files.is_empty() {
+            println!("identity-files: none explicitly configured");
+        } else {
+            println!("identity-files:");
+            for identity in &config.identity_files {
+                println!("  {}", identity.display());
+            }
+        }
+    } else {
+        println!("identity-files: {} configured", config.identity_files.len());
+    }
+
+    if let Some(interval) = config.keepalive_interval {
+        println!("keepalive: {}s", interval.as_secs());
+    } else {
+        println!("keepalive: disabled");
+    }
+    if let Some(timeout) = config.inactivity_timeout {
+        println!("inactivity-timeout: {}s", timeout.as_secs());
+    } else {
+        println!("inactivity-timeout: disabled");
+    }
+
+    if cli.local_forward.is_empty() && cli.remote_forward.is_empty() && cli.dynamic_forward.is_empty()
+    {
+        println!("forwards: none");
+        return Ok(());
+    }
+
+    println!("forwards:");
+    for raw in &cli.local_forward {
+        let spec = parse_local_forward(raw)?;
+        println!(
+            "  local: {} -> {}",
+            spec.bind,
+            format_endpoint(&spec.target_host, spec.target_port)
+        );
+    }
+    for raw in &cli.remote_forward {
+        let spec = parse_remote_forward(raw)?;
+        println!(
+            "  remote: {} -> {}",
+            format_endpoint(&spec.bind_address, spec.bind_port),
+            format_endpoint(&spec.target_host, spec.target_port)
+        );
+    }
+    for raw in &cli.dynamic_forward {
+        let spec = parse_dynamic_forward(raw)?;
+        println!("  dynamic: {} (SOCKS5)", spec.bind);
+    }
+    Ok(())
+}
+
+fn authentication_mode(cli: &Cli) -> &'static str {
+    if cli.password {
+        "password (secret not requested by inspect)"
+    } else if cli.keyboard_interactive {
+        "keyboard-interactive (secret not requested by inspect)"
+    } else if cli.identity.is_some() {
+        "explicit identity file"
+    } else {
+        "auto (SSH agent, then configured identities)"
+    }
+}
+
+fn host_key_policy_name(policy: HostKeyPolicy) -> &'static str {
+    match policy {
+        HostKeyPolicy::Strict => "strict",
+        HostKeyPolicy::AcceptNew => "accept-new",
+        HostKeyPolicy::Insecure => "insecure",
+    }
+}
+
+fn format_endpoint(host: &str, port: u16) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authentication> {
@@ -466,6 +595,7 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 );
             }
         }
+        Command::Inspect { .. } => {}
         Command::Tunnel => {
             tokio::signal::ctrl_c().await?;
         }
@@ -758,5 +888,17 @@ mod tests {
         assert_eq!(parse_mode("0644").unwrap(), 0o644);
         assert_eq!(parse_mode("0o755").unwrap(), 0o755);
         assert!(parse_mode("0999").is_err());
+    }
+
+    #[test]
+    fn parses_connection_inspect_subcommand() {
+        let cli = Cli::try_parse_from(["kssh", "example.com", "inspect", "--verbose"]).unwrap();
+        assert!(matches!(cli.command, Command::Inspect { verbose: true }));
+    }
+
+    #[test]
+    fn formats_ipv6_endpoints_unambiguously() {
+        assert_eq!(format_endpoint("2001:db8::1", 22), "[2001:db8::1]:22");
+        assert_eq!(format_endpoint("example.com", 2222), "example.com:2222");
     }
 }
