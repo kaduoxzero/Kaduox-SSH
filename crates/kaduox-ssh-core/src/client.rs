@@ -64,6 +64,28 @@ pub struct CommandOutput {
     pub exit_status: Option<u32>,
 }
 
+#[derive(Default)]
+struct BufferWriter(Vec<u8>);
+
+impl AsyncWrite for BufferWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
 pub struct SshClient {
     session: Arc<client::Handle<ClientHandler>>,
     jump_sessions: Vec<Arc<client::Handle<ClientHandler>>>,
@@ -152,7 +174,40 @@ impl SshClient {
         &self.config
     }
 
+    /// Execute a command and collect its complete output in memory.
+    ///
+    /// Long-lived frontends and commands with potentially large output should
+    /// prefer [`Self::exec_stream`] so stdout/stderr are consumed incrementally.
     pub async fn exec(&self, command: &str, remote_user: &RemoteUser) -> Result<CommandOutput> {
+        let mut stdout = BufferWriter::default();
+        let mut stderr = BufferWriter::default();
+        let exit_status = self
+            .exec_stream(command, remote_user, &mut stdout, &mut stderr)
+            .await?;
+        Ok(CommandOutput {
+            stdout: stdout.0,
+            stderr: stderr.0,
+            exit_status,
+        })
+    }
+
+    /// Execute a command while streaming stdout and stderr to caller-provided sinks.
+    ///
+    /// SSH session/channel request setup keeps the canonical connection bounds;
+    /// once established, command output uses natural async backpressure and has
+    /// no arbitrary runtime limit. `None` means the server closed the channel
+    /// without sending an SSH exit-status message.
+    pub async fn exec_stream<WOut, WErr>(
+        &self,
+        command: &str,
+        remote_user: &RemoteUser,
+        stdout: &mut WOut,
+        stderr: &mut WErr,
+    ) -> Result<Option<u32>>
+    where
+        WOut: AsyncWrite + Unpin,
+        WErr: AsyncWrite + Unpin,
+    {
         let command = command_for_user(command, remote_user);
         let mut channel = timeout(
             self.config.channel_open_timeout,
@@ -175,16 +230,20 @@ impl SshClient {
         .await
         .context("SSH exec request timed out")??;
 
-        let mut output = CommandOutput::default();
+        let mut exit_status = None;
         while let Some(message) = channel.wait().await {
             match message {
-                ChannelMsg::Data { data } => output.stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, .. } => output.stderr.extend_from_slice(&data),
-                ChannelMsg::ExitStatus { exit_status } => output.exit_status = Some(exit_status),
+                ChannelMsg::Data { data } => stdout.write_all(&data).await?,
+                ChannelMsg::ExtendedData { data, .. } => stderr.write_all(&data).await?,
+                ChannelMsg::ExitStatus {
+                    exit_status: status,
+                } => exit_status = Some(status),
                 _ => {}
             }
         }
-        Ok(output)
+        stdout.flush().await?;
+        stderr.flush().await?;
+        Ok(exit_status)
     }
 
     pub async fn interactive_shell<R, W>(
@@ -790,5 +849,14 @@ mod tests {
         config.username = "deploy".into();
         config.alias = "prod|cat".into();
         assert!(expand_proxy_command("proxy %n", &config).is_err());
+    }
+
+    #[tokio::test]
+    async fn buffer_writer_collects_streamed_bytes() {
+        let mut writer = BufferWriter::default();
+        writer.write_all(b"hello").await.unwrap();
+        writer.write_all(b" world").await.unwrap();
+        writer.flush().await.unwrap();
+        assert_eq!(writer.0, b"hello world");
     }
 }
