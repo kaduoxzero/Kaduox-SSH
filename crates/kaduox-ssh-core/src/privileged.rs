@@ -56,6 +56,41 @@ fn privileged_tree_install_command(
     )
 }
 
+async fn create_privileged_staging_directory(
+    ssh: &SshClient,
+    staging_path: &str,
+    options: &TransferOptions,
+) -> Result<()> {
+    let sftp = ssh.open_sftp_for_transfer(options).await?;
+    let result = async {
+        let parent = sftp
+            .symlink_metadata("/tmp".to_owned())
+            .await
+            .context("failed to inspect privileged staging parent /tmp")?;
+        if parent.is_symlink() {
+            bail!("refusing privileged staging through symbolic-link /tmp");
+        }
+        if !parent.is_dir() {
+            bail!("privileged staging parent /tmp is not a directory");
+        }
+
+        // Unlike the generic recursive uploader, privileged staging must never
+        // reuse an existing shared-/tmp directory. SFTP mkdir is the exclusive
+        // ownership boundary: any collision or attacker-precreated entry fails.
+        sftp.create_dir(staging_path.to_owned())
+            .await
+            .with_context(|| {
+                format!("failed to exclusively create privileged staging directory {staging_path}")
+            })?;
+        Ok(())
+    }
+    .await;
+    let close_result = sftp.close().await;
+    result?;
+    close_result?;
+    Ok(())
+}
+
 impl SshClient {
     /// Upload a file as the SSH login user, then atomically install it as another
     /// remote OS user through sudo. The SFTP server itself never changes uid.
@@ -113,11 +148,11 @@ impl SshClient {
     /// Recursively upload a directory as the SSH login user, then install the
     /// staged tree as another remote OS user through sudo.
     ///
-    /// Recursive SFTP staging keeps the normal bounded file concurrency. The
+    /// The shared-/tmp staging root is created exclusively before traversal and
+    /// every staged regular file uses the canonical atomic upload policy. The
     /// privileged phase never runs SFTP as the target user and deliberately
-    /// does not follow symbolic links because the regular recursive uploader
-    /// skips them. Replacing an existing destination directory requires a
-    /// remove-then-rename step and therefore is not claimed to be atomic.
+    /// does not follow symbolic links. Replacing an existing destination tree
+    /// still requires remove-then-rename and is therefore not claimed atomic.
     pub async fn upload_privileged_recursive(
         &self,
         local_path: &Path,
@@ -150,12 +185,24 @@ impl SshClient {
 
         let mut staging_options = options;
         staging_options.resume = false;
-        staging_options.atomic = false;
+        staging_options.atomic = true;
 
-        let summary = self
+        create_privileged_staging_directory(self, &staging_path, &staging_options).await?;
+
+        let summary = match self
             .upload_recursive(local_path, &staging_path, staging_options)
             .await
-            .with_context(|| format!("failed to stage recursive upload at {staging_path}"))?;
+            .with_context(|| format!("failed to stage recursive upload at {staging_path}"))
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                // This path is safe to remove because exclusive mkdir above
+                // established ownership of the staging root for this operation.
+                let cleanup = format!("rm -rf -- {}", quote_posix(&staging_path));
+                let _ = self.exec(&cleanup, &RemoteUser::Current).await;
+                return Err(error);
+            }
+        };
 
         let install_command = privileged_tree_install_command(
             &staging_path,
