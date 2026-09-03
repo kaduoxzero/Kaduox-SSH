@@ -43,3 +43,5 @@ jobs:
         run: cargo build --workspace --locked
       - name: Run real OpenSSH integration suite
         run: bash scripts/ci/openssh-integration.sh
+      - name: Run connection probe integration suite
+        run: bash scripts/ci/openssh-probe-integration.sh
