@@ -13,20 +13,19 @@ const MAX_INCLUDE_PATH_BYTES: usize = 16 * 1024;
 const MAX_GLOB_COMPONENT_BYTES: usize = 1024;
 
 pub(crate) fn expand_user_config(root: &Path, home: &Path) -> Result<String> {
-    let mut state = ExpansionState {
-        home,
-        files_seen: 0,
-        bytes_read: 0,
-        active_paths: HashSet::new(),
-    };
+    let mut state = ExpansionState::new(home);
 
     // russh-config models only explicit Host entries, while OpenSSH permits
     // options in the implicit global scope before the first Host. Represent
     // that scope as Host * so first-value-wins ordering remains intact.
     let mut expanded = String::from("Host *\n");
-    let root_contents = state.expand_file(root, 0, Scope::Global)?;
+    let root_contents = state.expand_connection_file(root, 0, Scope::Global)?;
     push_bounded(&mut expanded, &root_contents)?;
     Ok(expanded)
+}
+
+pub(crate) fn expand_user_config_for_catalog(root: &Path, home: &Path) -> Result<String> {
+    ExpansionState::new(home).expand_catalog_file(root, 0)
 }
 
 #[derive(Clone, Debug)]
@@ -51,39 +50,38 @@ struct ExpansionState<'a> {
     active_paths: HashSet<PathBuf>,
 }
 
-impl ExpansionState<'_> {
-    fn expand_file(&mut self, path: &Path, depth: usize, inherited_scope: Scope) -> Result<String> {
-        if depth > MAX_INCLUDE_DEPTH {
-            bail!("OpenSSH Include nesting exceeds the {MAX_INCLUDE_DEPTH}-level safety limit");
+impl<'a> ExpansionState<'a> {
+    fn new(home: &'a Path) -> Self {
+        Self {
+            home,
+            files_seen: 0,
+            bytes_read: 0,
+            active_paths: HashSet::new(),
         }
-        if self.files_seen >= MAX_INCLUDE_FILES {
-            bail!("OpenSSH Include expansion exceeds the {MAX_INCLUDE_FILES}-file safety limit");
-        }
-
-        let identity = fs::canonicalize(path)
-            .with_context(|| format!("failed to resolve OpenSSH config include {}", path.display()))?;
-        if !self.active_paths.insert(identity.clone()) {
-            bail!("OpenSSH Include cycle detected at {}", path.display());
-        }
-        self.files_seen += 1;
-
-        let result = self.expand_file_inner(path, depth, inherited_scope);
-        self.active_paths.remove(&identity);
-        result
     }
 
-    fn expand_file_inner(
+    fn expand_connection_file(
         &mut self,
         path: &Path,
         depth: usize,
         inherited_scope: Scope,
     ) -> Result<String> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
-        self.account_input_bytes(contents.len())?;
+        let identity = self.enter_file(path, depth)?;
+        let result = self.expand_connection_file_inner(path, depth, inherited_scope);
+        self.active_paths.remove(&identity);
+        result
+    }
 
+    fn expand_connection_file_inner(
+        &mut self,
+        path: &Path,
+        depth: usize,
+        inherited_scope: Scope,
+    ) -> Result<String> {
+        let contents = self.read_config(path)?;
         let mut scope = inherited_scope;
         let mut expanded = String::with_capacity(contents.len());
+
         for (line_index, line) in contents.lines().enumerate() {
             let key = directive_key(line);
             if key.is_some_and(|key| key.eq_ignore_ascii_case("match")) {
@@ -112,27 +110,12 @@ impl ExpansionState<'_> {
                 continue;
             };
 
-            if arguments.is_empty() {
-                bail!(
-                    "OpenSSH Include on {}:{} requires at least one path",
-                    path.display(),
-                    line_index + 1
-                );
-            }
-            if arguments.len() > MAX_INCLUDE_ARGUMENTS_PER_LINE {
-                bail!(
-                    "OpenSSH Include on {}:{} exceeds the {}-path per-line safety limit",
-                    path.display(),
-                    line_index + 1,
-                    MAX_INCLUDE_ARGUMENTS_PER_LINE
-                );
-            }
-
+            self.validate_include_arguments(path, line_index, &arguments)?;
             for argument in arguments {
                 let pattern = self.anchor_user_include(&argument)?;
                 for include in expand_path_pattern(&pattern)? {
                     let included = self
-                        .expand_file(&include, depth + 1, scope.clone())
+                        .expand_connection_file(&include, depth + 1, scope.clone())
                         .with_context(|| {
                             format!(
                                 "while expanding OpenSSH Include from {}:{}",
@@ -153,6 +136,101 @@ impl ExpansionState<'_> {
             }
         }
         Ok(expanded)
+    }
+
+    fn expand_catalog_file(&mut self, path: &Path, depth: usize) -> Result<String> {
+        let identity = self.enter_file(path, depth)?;
+        let result = self.expand_catalog_file_inner(path, depth);
+        self.active_paths.remove(&identity);
+        result
+    }
+
+    fn expand_catalog_file_inner(&mut self, path: &Path, depth: usize) -> Result<String> {
+        let contents = self.read_config(path)?;
+        let mut expanded = String::with_capacity(contents.len());
+
+        for (line_index, line) in contents.lines().enumerate() {
+            let Some(arguments) = include_arguments(line).with_context(|| {
+                format!(
+                    "invalid OpenSSH Include on {}:{}",
+                    path.display(),
+                    line_index + 1
+                )
+            })?
+            else {
+                push_line_bounded(&mut expanded, line)?;
+                continue;
+            };
+
+            self.validate_include_arguments(path, line_index, &arguments)?;
+            for argument in arguments {
+                let pattern = self.anchor_user_include(&argument)?;
+                for include in expand_path_pattern(&pattern)? {
+                    let included = self
+                        .expand_catalog_file(&include, depth + 1)
+                        .with_context(|| {
+                            format!(
+                                "while expanding OpenSSH catalog Include from {}:{}",
+                                path.display(),
+                                line_index + 1
+                            )
+                        })?;
+                    push_bounded(&mut expanded, &included)?;
+                    if !included.ends_with('\n') {
+                        push_bounded(&mut expanded, "\n")?;
+                    }
+                }
+            }
+        }
+        Ok(expanded)
+    }
+
+    fn enter_file(&mut self, path: &Path, depth: usize) -> Result<PathBuf> {
+        if depth > MAX_INCLUDE_DEPTH {
+            bail!("OpenSSH Include nesting exceeds the {MAX_INCLUDE_DEPTH}-level safety limit");
+        }
+        if self.files_seen >= MAX_INCLUDE_FILES {
+            bail!("OpenSSH Include expansion exceeds the {MAX_INCLUDE_FILES}-file safety limit");
+        }
+
+        let identity = fs::canonicalize(path)
+            .with_context(|| format!("failed to resolve OpenSSH config include {}", path.display()))?;
+        if !self.active_paths.insert(identity.clone()) {
+            bail!("OpenSSH Include cycle detected at {}", path.display());
+        }
+        self.files_seen += 1;
+        Ok(identity)
+    }
+
+    fn read_config(&mut self, path: &Path) -> Result<String> {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
+        self.account_input_bytes(contents.len())?;
+        Ok(contents)
+    }
+
+    fn validate_include_arguments(
+        &self,
+        path: &Path,
+        line_index: usize,
+        arguments: &[String],
+    ) -> Result<()> {
+        if arguments.is_empty() {
+            bail!(
+                "OpenSSH Include on {}:{} requires at least one path",
+                path.display(),
+                line_index + 1
+            );
+        }
+        if arguments.len() > MAX_INCLUDE_ARGUMENTS_PER_LINE {
+            bail!(
+                "OpenSSH Include on {}:{} exceeds the {}-path per-line safety limit",
+                path.display(),
+                line_index + 1,
+                MAX_INCLUDE_ARGUMENTS_PER_LINE
+            );
+        }
+        Ok(())
     }
 
     fn anchor_user_include(&self, value: &str) -> Result<PathBuf> {
@@ -565,9 +643,17 @@ mod tests {
         let home = temp_root("unsupported");
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
-        for include in ["%d/conf", "${SSH_CONF}/prod", "~other/.ssh/config", "conf.d/[0-9]*"] {
+        for include in [
+            "%d/conf",
+            "${SSH_CONF}/prod",
+            "~other/.ssh/config",
+            "conf.d/[0-9]*",
+        ] {
             fs::write(ssh.join("config"), format!("Include {include}\n")).unwrap();
-            assert!(expand_user_config(&ssh.join("config"), &home).is_err(), "{include}");
+            assert!(
+                expand_user_config(&ssh.join("config"), &home).is_err(),
+                "{include}"
+            );
         }
         fs::remove_dir_all(home).unwrap();
     }
@@ -680,6 +766,25 @@ mod tests {
     }
 
     #[test]
+    fn catalog_expansion_keeps_match_marker_but_expands_includes() {
+        let home = temp_root("catalog");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(ssh.join("nested.conf"), "Host included\n  User deploy\n").unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Include nested.conf\nMatch host *.internal\n  User internal\nHost direct\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config_for_catalog(&ssh.join("config"), &home).unwrap();
+        assert!(expanded.contains("Host included"));
+        assert!(expanded.contains("Match host *.internal"));
+        assert!(expanded.contains("Host direct"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn missing_glob_matches_are_ignored_like_openssh() {
         let home = temp_root("nomatch");
         let ssh = home.join(".ssh");
@@ -696,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn match_in_included_file_fails_closed() {
+    fn match_in_included_file_fails_closed_for_connection_resolution() {
         let home = temp_root("match");
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
