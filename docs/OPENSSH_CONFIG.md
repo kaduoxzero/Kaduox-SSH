@@ -46,6 +46,32 @@ Supported behavior:
 The implementation intentionally has no shell invocation and performs no
 command substitution.
 
+## User-config trust checks
+
+v0.15 applies the same trust check at the single config-file read boundary, so
+it covers the root `~/.ssh/config`, every nested `Include`, and the read-only
+host-catalog path.
+
+On Unix targets:
+
+- the resolved path must be a regular file;
+- the file owner must be the process real uid returned by `getuid()` or uid 0
+  (`root`);
+- group and other write bits must both be clear (`mode & 0022 == 0`);
+- the check is performed before reading file contents;
+- symlink paths are checked through their resolved target metadata, so a link
+  cannot make an insecure target pass the owner/mode boundary.
+
+The implementation deliberately uses the process uid rather than trusting the
+owner of a path selected through `$HOME`. Redirecting `$HOME` therefore cannot
+change which uid is trusted to author SSH configuration.
+
+Windows does not use POSIX uid/mode semantics. Kaduox-SSH still requires the
+resolved config path to be a regular file there, but v0.15 does **not** claim
+that this is equivalent to OpenSSH's Windows ACL trust policy. A proper ACL
+implementation remains separate V1 security work rather than translating Unix
+mode checks into a misleading approximation.
+
 ## Include limits
 
 Include expansion is bounded before parsing:
@@ -58,14 +84,14 @@ Include expansion is bounded before parsing:
 - maximum wildcard path-component length: 1024 bytes.
 
 Canonicalized active paths are tracked while recursing, so an include cycle
-fails explicitly. Filesystem permission/read errors also fail rather than
-being converted into an empty include.
+fails explicitly. Filesystem metadata, trust, permission, and read errors fail
+rather than being converted into an empty include.
 
 ## Include forms that still fail closed
 
 Current OpenSSH also supports forms that require additional parsing context or
-full `glob(7)` behavior. v0.14 deliberately rejects them instead of treating
-them as literal paths:
+full `glob(7)` behavior. Kaduox-SSH deliberately rejects them instead of
+treating them as literal paths:
 
 - `%` token expansion;
 - `${ENVIRONMENT_VARIABLE}` expansion;
@@ -104,8 +130,10 @@ assume Kaduox-SSH is equivalent to `ssh(1)` for that trust policy.
 
 ## Validation boundary
 
-The unit tests cover include ordering, global/Host scope restoration, nested
-cycles, hidden-file wildcard behavior, unsupported expansion rejection, and
-catalog discovery. Candidate promotion still requires the repository's real
-CI, Clippy, audit, and OpenSSH jobs to acquire runners and execute; a workflow
-that ends with no steps executed is not considered validation.
+Unit coverage includes include ordering, global/Host scope restoration, nested
+cycles, hidden-file wildcard behavior, unsupported expansion rejection,
+catalog discovery, regular-file enforcement, accepted Unix 0600/0640/0644
+modes, rejected group/other-writable modes, and an insecure nested Include
+fixture. Candidate promotion still requires the repository's real CI, Clippy,
+audit, release-policy, and OpenSSH jobs to acquire runners and execute; a
+workflow that ends with no steps executed is not considered validation.
