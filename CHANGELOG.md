@@ -4,6 +4,27 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.9.0-rc.1] - Unreleased
+
+### Added
+
+- recursive directory download from the `kssh-tui` remote workspace with exact `YES` confirmation;
+- recursive local-directory upload into the current TUI remote directory with root symlink rejection and exact `YES` confirmation;
+- live per-file recursive transfer progress rendered from the existing bounded core progress event queue;
+- direct remote path navigation from the TUI workspace with `p`.
+
+### Safety and resource boundaries
+
+- recursive TUI transfers reuse `SshClient::upload_recursive` / `download_recursive` and the canonical `TransferOptions` defaults rather than introducing a second scheduler;
+- upload/download keep the existing bounded file concurrency, SFTP write window, request timeout, atomic per-file policy, and no-follow symlink scan behavior;
+- recursive actions refuse the wrong selected/source type before starting and require an explicit confirmation token;
+- remote progress paths continue through the TUI terminal escaping boundary before display;
+- destructive remote mutations such as delete/rename remain intentionally out of the TUI until a separate confirmation and recovery model is designed.
+
+### Validation status
+
+`integration/v0.9.0-candidate` is wired into CI, Quality, and real OpenSSH push workflows. Candidate promotion to `develop` or `main` remains gated on those jobs actually acquiring runners and executing successfully.
+
 ## [0.7.0-rc.1] - Unreleased
 
 ### Added
