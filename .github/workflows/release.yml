@@ -71,6 +71,18 @@ jobs:
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Build all release binaries
         run: cargo build -p kaduox-ssh-cli --release --locked --bins --target ${{ matrix.target }}
+      - name: Smoke-test every release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for binary in kssh kssh-tui kssh-fleet kssh-inventory; do
+            path="target/${{ matrix.target }}/release/${binary}${{ matrix.exe_suffix }}"
+            test -f "$path"
+            output="$($path --version)"
+            printf '%s\n' "$output"
+            grep -F -- "$version" <<<"$output" >/dev/null
+          done
       - name: Package release suite
         shell: bash
         run: >-
