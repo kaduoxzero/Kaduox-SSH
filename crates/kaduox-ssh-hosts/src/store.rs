@@ -24,30 +24,37 @@ impl HostStore {
 
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let database = if path.exists() {
-            reject_symlink(&path, "host database")?;
-            validate_private_file(&path)?;
-            let metadata = fs::metadata(&path)
-                .with_context(|| format!("failed to stat host database {}", path.display()))?;
-            if !metadata.is_file() {
-                bail!("host database {} is not a regular file", path.display());
+        let database = match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    bail!("host database {} must not be a symlink", path.display());
+                }
+                validate_private_file(&path)?;
+                if !metadata.is_file() {
+                    bail!("host database {} is not a regular file", path.display());
+                }
+                if metadata.len() > MAX_STORE_BYTES {
+                    bail!(
+                        "host database {} exceeds {} bytes",
+                        path.display(),
+                        MAX_STORE_BYTES
+                    );
+                }
+                let mut input = String::with_capacity(metadata.len() as usize);
+                File::open(&path)
+                    .with_context(|| format!("failed to open host database {}", path.display()))?
+                    .read_to_string(&mut input)
+                    .with_context(|| {
+                        format!("failed to read UTF-8 host database {}", path.display())
+                    })?;
+                codec::decode(&input)
+                    .with_context(|| format!("failed to parse host database {}", path.display()))?
             }
-            if metadata.len() > MAX_STORE_BYTES {
-                bail!(
-                    "host database {} exceeds {} bytes",
-                    path.display(),
-                    MAX_STORE_BYTES
-                );
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HostDatabase::default(),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect host database {}", path.display()));
             }
-            let mut input = String::with_capacity(metadata.len() as usize);
-            File::open(&path)
-                .with_context(|| format!("failed to open host database {}", path.display()))?
-                .read_to_string(&mut input)
-                .with_context(|| format!("failed to read UTF-8 host database {}", path.display()))?;
-            codec::decode(&input)
-                .with_context(|| format!("failed to parse host database {}", path.display()))?
-        } else {
-            HostDatabase::default()
         };
         Ok(Self { path, database })
     }
@@ -88,19 +95,14 @@ impl HostStore {
             }
         }
         let alias = host.alias.clone();
-        let previous = self.database.hosts.insert(alias, host);
+        let previous = self.database.hosts.insert(alias.clone(), host);
         if let Err(error) = self.database.validate() {
             match previous.clone() {
                 Some(old) => {
-                    self.database.hosts.insert(old.alias.clone(), old);
+                    self.database.hosts.insert(alias, old);
                 }
                 None => {
-                    self.database.hosts.remove(
-                        previous
-                            .as_ref()
-                            .map(|host| host.alias.as_str())
-                            .unwrap_or_default(),
-                    );
+                    self.database.hosts.remove(&alias);
                 }
             }
             return Err(error);
@@ -256,9 +258,18 @@ fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .context("host database path has no parent directory")?;
     ensure_private_directory(parent)?;
-    if path.exists() {
-        reject_symlink(path, "host database")?;
-        validate_private_file(path)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                bail!("host database {} must not be a symlink", path.display());
+            }
+            validate_private_file(path)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect host database {}", path.display()));
+        }
     }
 
     let file_name = path
@@ -289,9 +300,9 @@ fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         drop(file);
         set_private_file_permissions(&temp)?;
 
-        // temp and destination are siblings, so the publish remains on one
-        // filesystem. std::fs::rename uses the platform's replace/rename
-        // primitive and never exposes a partially-written database.
+        // Staging and destination are siblings. The platform rename/replace
+        // operation either publishes the complete new database or leaves the old
+        // database intact; no partially-written final file is exposed.
         fs::rename(&temp, path).with_context(|| {
             format!(
                 "failed to atomically publish host database {} -> {}",
@@ -386,11 +397,13 @@ mod tests {
     use super::*;
 
     fn temp_store_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "kaduox-host-store-test-{}-{}-{name}",
-            std::process::id(),
-            now_unix_nanos().unwrap()
-        )).join("hosts.toml")
+        std::env::temp_dir()
+            .join(format!(
+                "kaduox-host-store-test-{}-{}-{name}",
+                std::process::id(),
+                now_unix_nanos().unwrap()
+            ))
+            .join("hosts.toml")
     }
 
     #[test]
@@ -417,5 +430,17 @@ mod tests {
         let host = store.host("prod").unwrap();
         assert_eq!(host.stats.connection_count, 1);
         assert_eq!(host.stats.last_auth_method, Some(StoredAuthMethod::Agent));
+    }
+
+    #[test]
+    fn failed_first_upsert_rolls_back_inserted_alias() {
+        let path = temp_store_path("rollback");
+        let mut store = HostStore::open(path).unwrap();
+        let invalid = HostRecord {
+            jump_chain: Some("missing".into()),
+            ..HostRecord::new("prod", "10.0.0.1", "deploy")
+        };
+        assert!(store.upsert_host(invalid).is_err());
+        assert!(store.host("prod").is_none());
     }
 }
