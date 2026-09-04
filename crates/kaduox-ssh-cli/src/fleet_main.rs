@@ -158,7 +158,6 @@ struct PreparedTarget {
     ordinal: usize,
     label: String,
     config: ConnectionConfig,
-    authentication: Authentication,
 }
 
 struct FleetResult {
@@ -202,17 +201,18 @@ async fn main() -> Result<()> {
 
     // Resolve every target/config before opening the first SSH connection. This
     // makes malformed targets and unsupported OpenSSH config fail preflight
-    // rather than producing a partially executed fleet operation.
+    // rather than producing a partially executed fleet operation. Pending
+    // targets deliberately do not own Authentication values: secret-bearing
+    // credentials are instantiated only when a target enters the bounded
+    // in-flight window.
     let mut pending = VecDeque::with_capacity(cli.hosts.len());
     for (ordinal, label) in cli.hosts.iter().enumerate() {
         let config = build_connection_config(&cli, label)
             .with_context(|| format!("failed to resolve fleet target {label}"))?;
-        let authentication = auth_template.for_config(&config);
         pending.push_back(PreparedTarget {
             ordinal,
             label: label.clone(),
             config,
-            authentication,
         });
     }
 
@@ -223,6 +223,7 @@ async fn main() -> Result<()> {
             spawn_target(
                 &mut tasks,
                 target,
+                auth_template.clone(),
                 rendered_command.clone(),
                 remote_user.clone(),
                 cli.output_limit,
@@ -251,6 +252,7 @@ async fn main() -> Result<()> {
             spawn_target(
                 &mut tasks,
                 target,
+                auth_template.clone(),
                 rendered_command.clone(),
                 remote_user.clone(),
                 cli.output_limit,
@@ -267,24 +269,29 @@ async fn main() -> Result<()> {
 fn spawn_target(
     tasks: &mut JoinSet<FleetResult>,
     target: PreparedTarget,
+    authentication: AuthTemplate,
     command: String,
     remote_user: RemoteUser,
     output_limit: usize,
 ) {
-    tasks.spawn(async move { run_target(target, command, remote_user, output_limit).await });
+    tasks.spawn(async move {
+        run_target(target, authentication, command, remote_user, output_limit).await
+    });
 }
 
 async fn run_target(
     target: PreparedTarget,
+    authentication: AuthTemplate,
     command: String,
     remote_user: RemoteUser,
     output_limit: usize,
 ) -> FleetResult {
     let endpoint = format_endpoint(&target.config.host, target.config.port);
+    let concrete_authentication = authentication.for_config(&target.config);
     let mut stdout = CappedBuffer::new(output_limit);
     let mut stderr = CappedBuffer::new(output_limit);
 
-    let ssh = match SshClient::connect(target.config, target.authentication).await {
+    let ssh = match SshClient::connect(target.config, concrete_authentication).await {
         Ok(ssh) => ssh,
         Err(error) => {
             return FleetResult {
@@ -300,9 +307,10 @@ async fn run_target(
         }
     };
 
-    let host_key = ssh.server_host_key().await.map(|info| {
-        format!("{} {}", info.algorithm, info.fingerprint_sha256)
-    });
+    let host_key = ssh
+        .server_host_key()
+        .await
+        .map(|info| format!("{} {}", info.algorithm, info.fingerprint_sha256));
     let exec_result = ssh
         .exec_stream(&command, &remote_user, &mut stdout, &mut stderr)
         .await;
@@ -310,9 +318,12 @@ async fn run_target(
 
     let (exit_status, error) = match (exec_result, close_result) {
         (Ok(status), Ok(())) => (status, None),
-        (Ok(status), Err(error)) => {
-            (status, Some(format!("command completed but SSH disconnect failed: {error:#}")))
-        }
+        (Ok(status), Err(error)) => (
+            status,
+            Some(format!(
+                "command completed but SSH disconnect failed: {error:#}"
+            )),
+        ),
         (Err(error), Ok(())) => (None, Some(format!("remote command failed: {error:#}"))),
         (Err(exec_error), Err(close_error)) => (
             None,
@@ -353,9 +364,7 @@ fn validate_limits(cli: &Cli) -> Result<()> {
         .and_then(|value| value.checked_mul(2))
         .context("fleet output window overflow")?;
     if window > MAX_OUTPUT_WINDOW {
-        bail!(
-            "jobs × output-limit × 2 must stay at or below {MAX_OUTPUT_WINDOW} bytes"
-        );
+        bail!("jobs × output-limit × 2 must stay at or below {MAX_OUTPUT_WINDOW} bytes");
     }
     Ok(())
 }
@@ -475,7 +484,11 @@ fn print_result(result: &FleetResult, completed: usize, total: usize, raw: bool)
         writeln!(
             output,
             "--- stdout{} ---",
-            if result.stdout.truncated { " (truncated)" } else { "" }
+            if result.stdout.truncated {
+                " (truncated)"
+            } else {
+                ""
+            }
         )?;
         write_remote_output(&mut output, &result.stdout.bytes, raw)?;
     }
@@ -483,7 +496,11 @@ fn print_result(result: &FleetResult, completed: usize, total: usize, raw: bool)
         writeln!(
             output,
             "--- stderr{} ---",
-            if result.stderr.truncated { " (truncated)" } else { "" }
+            if result.stderr.truncated {
+                " (truncated)"
+            } else {
+                ""
+            }
         )?;
         write_remote_output(&mut output, &result.stderr.bytes, raw)?;
     }
