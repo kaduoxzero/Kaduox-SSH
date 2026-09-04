@@ -1,6 +1,9 @@
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{Authentication, RemoteCommandSpec};
-use kaduox_ssh_daemon::{AuthRequest, DaemonClient, DaemonExecOutcome, DaemonShellOutcome};
+use kaduox_ssh_daemon::{
+    AuthRequest, DaemonClient, DaemonExecOutcome, DaemonJumpAuthChallenge,
+    DaemonJumpAuthFuture, DaemonJumpAuthProvider, DaemonShellOutcome,
+};
 use tokio::sync::watch;
 
 use crate::{Cli, Command, RawModeGuard, parse_remote_environment, resolve_authentication};
@@ -52,6 +55,40 @@ fn eligible(cli: &Cli, command: &Command) -> bool {
         && !cli.host.contains('@')
 }
 
+struct InteractiveDaemonJumpAuth;
+
+impl DaemonJumpAuthProvider for InteractiveDaemonJumpAuth {
+    fn authentication<'a>(
+        &'a mut self,
+        challenge: DaemonJumpAuthChallenge,
+    ) -> DaemonJumpAuthFuture<'a> {
+        Box::pin(async move {
+            let raw_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+            if raw_enabled {
+                crossterm::terminal::disable_raw_mode()?;
+            }
+            let prompt = format!(
+                "Jump {}/{} {} ({}:{}) password, attempt {}: ",
+                challenge.index + 1,
+                challenge.total,
+                challenge.alias,
+                challenge.host,
+                challenge.port,
+                challenge.attempt,
+            );
+            let secret = rpassword::prompt_password(prompt);
+            if raw_enabled {
+                crossterm::terminal::enable_raw_mode()?;
+            }
+            let secret = secret?;
+            if secret.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(AuthRequest::Password(secret)))
+        })
+    }
+}
+
 async fn run_exec(cli: &Cli, command: &str, as_user: Option<&str>) -> Result<bool> {
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
@@ -79,13 +116,15 @@ async fn run_exec(cli: &Cli, command: &str, as_user: Option<&str>) -> Result<boo
                 })?
                 .config;
             let authentication = resolve_authentication(cli, &config)?;
-            DaemonClient::exec(
+            let mut jump_auth = InteractiveDaemonJumpAuth;
+            DaemonClient::exec_with_jump_auth(
                 &cli.host,
                 Some(auth_request(authentication)),
                 command,
                 as_user,
                 &mut stdout,
                 &mut stderr,
+                Some(&mut jump_auth),
             )
             .await?
         }
@@ -153,6 +192,7 @@ async fn run_shell(cli: &Cli, as_user: Option<&str>) -> Result<bool> {
     finish_shell(outcome)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn shell_attempt(
     cli: &Cli,
     auth: Option<AuthRequest>,
@@ -163,9 +203,8 @@ async fn shell_attempt(
     interactive: bool,
 ) -> Result<Option<DaemonShellOutcome>> {
     if !interactive {
-        // A shell request must start streaming immediately after a cache hit. We
-        // cannot safely probe it without entering raw mode, so use Ping to
-        // distinguish unavailable daemon first, then make the real request.
+        // Check endpoint availability before raw mode so an absent daemon falls
+        // back to direct SSH without touching terminal state.
         DaemonClient::ping().await?;
     }
 
@@ -174,18 +213,35 @@ async fn shell_attempt(
     let _raw_mode = RawModeGuard::enable()?;
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
-    let outcome = DaemonClient::shell(
-        &cli.host,
-        auth,
-        term,
-        columns,
-        rows,
-        as_user,
-        &mut stdin,
-        &mut stdout,
-        Some(resize_rx),
-    )
-    .await;
+    let outcome = if interactive {
+        let mut jump_auth = InteractiveDaemonJumpAuth;
+        DaemonClient::shell_with_jump_auth(
+            &cli.host,
+            auth,
+            term,
+            columns,
+            rows,
+            as_user,
+            &mut stdin,
+            &mut stdout,
+            Some(resize_rx),
+            Some(&mut jump_auth),
+        )
+        .await
+    } else {
+        DaemonClient::shell(
+            &cli.host,
+            auth,
+            term,
+            columns,
+            rows,
+            as_user,
+            &mut stdin,
+            &mut stdout,
+            Some(resize_rx),
+        )
+        .await
+    };
     resize_task.abort();
     match outcome? {
         DaemonShellOutcome::AuthRequired => Ok(None),
