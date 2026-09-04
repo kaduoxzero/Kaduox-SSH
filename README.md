@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core that can power CLI, TUI, and GUI frontends.
+Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core shared by CLI, TUI, and fleet frontends.
 
 ## Current capabilities
 
@@ -26,17 +26,33 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - sudo-backed privileged single-file and recursive directory upload using unprivileged SFTP staging
 - SFTP-native local-to-remote directory synchronization with non-mutating planning
 - explicit `--delete` policy for destructive sync operations
-- reusable in-process authenticated connection manager for future long-lived TUI/GUI frontends
-- real OpenSSH protocol integration tests
-- Linux/macOS/Windows CI plus a verified Rust 1.85 MSRV gate
-- committed `Cargo.lock` with `--locked` CI builds
-- clippy `-D warnings` and dependency audit quality gates
+- reusable in-process authenticated connection manager with explicit long-lived leases
+- `kssh-tui` multi-host Session Dashboard with persistent authenticated sessions
+- TUI OpenSSH Host picker, remote SFTP workspace, interactive shell/sudo shell, and regular-file upload/download
+- bounded Dashboard Broadcast across already-open authenticated sessions
+- `kssh-fleet` bounded-concurrency typed command execution across multiple SSH targets
+- per-target fleet failure isolation, capped output retention, and terminal-safe aggregation
+- real OpenSSH protocol integration fixtures, including fleet execution coverage
+- Linux/macOS/Windows CI, Rust 1.85 MSRV, clippy, audit, and real-OpenSSH workflow gates
+- committed `Cargo.lock` with `--locked` builds
 - on-demand real-OpenSSH performance benchmark harness
 - tag-driven Linux/macOS/Windows release packaging
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
 Privileged upload does not pretend SFTP can change uid. Kaduox-SSH stages files or directory trees as the SSH login user, then performs an explicit sudo-backed install phase as the requested remote OS user and removes the staging data afterwards. Recursive privileged replacement uses a sibling work directory and a remove-then-rename step when the destination already exists, so replacement of an existing directory is deliberately not claimed to be atomic.
+
+## Frontends
+
+Kaduox-SSH currently ships three frontends over the same core security and transport implementation:
+
+- `kssh`: single-target CLI for shell, exec, transfer, sync, forwarding, inspection, and diagnostics;
+- `kssh-tui`: multi-host interactive Session Dashboard. Each open host owns an explicit `ConnectionLease`; entering/leaving its remote workspace does not reconnect. The dashboard can also broadcast one operator-authored command over all already-open sessions;
+- `kssh-fleet`: non-interactive bounded-concurrency command execution over an explicit target list. It preflights target/config/typed-command input before opening the first SSH connection and isolates runtime failures per host.
+
+The TUI and fleet frontends do not implement separate SSH stacks. They reuse `kaduox-ssh-core` for authentication, host-key policy, ProxyJump/ProxyCommand, channels, SFTP, privilege switching, and transport limits.
+
+See `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, and `docs/FLEET_EXEC.md` for frontend-specific contracts and resource limits.
 
 ## RSA security policy
 
@@ -70,20 +86,20 @@ The long-term target is lossless OpenSSH-compatible resolution, including `Inclu
 ```text
 crates/
   kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege/manager core
-  kaduox-ssh-cli/    # current CLI frontend
+  kaduox-ssh-cli/    # kssh + kssh-tui + kssh-fleet frontend package
 ```
 
-The core is intentionally independent from a particular terminal UI so future desktop and TUI frontends can reuse the same connection, forwarding, and transfer engines.
+The core is frontend-independent. TUI sessions use explicit connection leases over the same manager, while fleet operations use the same typed command and transport APIs with separate batch scheduling and output policies.
 
 ## Build
 
-Rust 1.85+ is required and continuously checked as the declared MSRV.
+Rust 1.85+ is the declared MSRV.
 
 ```bash
 cargo build --release --locked
 ```
 
-The CLI binary is named `kssh`.
+The resulting frontend binaries are `kssh`, `kssh-tui`, and `kssh-fleet`.
 
 ## Examples
 
@@ -143,6 +159,18 @@ kssh server.example.com sync ./dist /srv/www/dist --delete
 
 # Faster comparisons when timestamps are unreliable
 kssh server.example.com sync ./dist /srv/www/dist --size-only --jobs 8
+
+# Open the multi-host TUI dashboard with one initial session
+kssh-tui production
+
+# Or start an empty dashboard and add hosts interactively
+kssh-tui
+
+# Run one typed command across a bounded fleet
+kssh-fleet -H web-01 -H web-02 -H deploy@web-03 --jobs 3 -- uname -a
+
+# Fleet command with typed cwd/environment and sudo-backed remote user
+kssh-fleet -H app-01 -H app-02 --cwd /srv/app --env APP_ENV=prod --as-user root -- id
 ```
 
 By default host keys use `accept-new`: unknown keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing entry. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments.
@@ -157,9 +185,17 @@ Synchronization scans both local and remote directory trees and builds a typed a
 
 Symbolic links encountered during recursive transfer or synchronization scans are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy is intentionally separate.
 
+## Fleet resource model
+
+`kssh-fleet` defaults to 8 concurrent SSH tasks and hard-limits concurrency to 64. It retains at most 1 MiB stdout and 1 MiB stderr per in-flight host by default; each stream is capped at 16 MiB and the configured `jobs × output-limit × 2` memory window may not exceed 512 MiB. Output beyond the retention cap is still drained from SSH and marked truncated.
+
+Targets and supported OpenSSH configuration are resolved before the first connection. Checks that inherently require a live transport—host-key verification, authentication, and ProxyCommand expansion-value validation immediately before process spawn—remain fail-closed at runtime and are isolated per host.
+
 ## Validation and performance
 
-Normal CI runs checks and tests on Ubuntu, macOS, and Windows, and separately verifies Rust 1.85. The Linux OpenSSH integration workflow starts real `sshd` fixtures and exercises authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, and TCP forwarding.
+CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution.
+
+At the time of the v0.7 release-candidate preparation, GitHub Actions successfully creates candidate runs/jobs but the repository's GitHub-hosted jobs are failing before runner allocation: job step lists are empty and logs are not created. Therefore the candidate is **not** claimed to have passed CI, and promotion to `develop`/`main` remains blocked until those jobs actually execute.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
@@ -169,7 +205,7 @@ The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP
 feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 ```
 
-`develop` is the small-version integration branch. `main` is reserved for stable/major release promotion.
+`develop` is the small-version integration branch. `main` is reserved for stable/major release promotion. Release-candidate integration branches may be used to assemble and validate a large version without bypassing those promotion gates.
 
 ## Remaining security-sensitive work
 
@@ -181,4 +217,4 @@ Some features are deliberately not enabled until they can be implemented complet
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol
 - explicit symbolic-link transfer/sync policy
 
-See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
+See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
