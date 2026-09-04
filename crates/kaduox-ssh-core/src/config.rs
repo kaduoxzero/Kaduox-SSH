@@ -372,10 +372,14 @@ fn validate_untrusted_shell_token(value: &str, role: &str) -> Result<()> {
 }
 
 fn parse_home_config(alias: &str) -> Result<russh_config::Config> {
-    let Some(home) = user_home_dir() else {
+    let Some(path) = openssh_config_path() else {
         return Ok(russh_config::Config::default(alias));
     };
-    let path = home.join(".ssh").join("config");
+    let home = path
+        .parent()
+        .and_then(|ssh_dir| ssh_dir.parent())
+        .map(|home| home.to_path_buf())
+        .context("failed to resolve home directory from OpenSSH config path")?;
 
     match std::fs::metadata(&path) {
         Ok(_) => {}
