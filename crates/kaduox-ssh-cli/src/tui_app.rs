@@ -53,6 +53,15 @@ pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
             KeyCode::Char('p') => {
                 jump_to_path(&mut terminal, ssh, &mut state).await?;
             }
+            KeyCode::Char('m') => {
+                create_directory_in_current(&mut terminal, ssh, &mut state).await?;
+            }
+            KeyCode::Char('R') => {
+                rename_selected(&mut terminal, ssh, &mut state).await?;
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                remove_selected(&mut terminal, ssh, &mut state).await?;
+            }
             KeyCode::Char('s') => {
                 run_shell_action(&mut terminal, ssh, &mut state, RemoteUser::Current).await?;
             }
@@ -146,6 +155,135 @@ async fn jump_to_path(
     }
     state.change_path(ssh, path.to_owned()).await;
     Ok(())
+}
+
+async fn create_directory_in_current(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let name = prompt_with_terminal(
+        terminal,
+        "new remote directory name (empty cancels): ".to_owned(),
+    )
+    .await?;
+    if name.is_empty() {
+        state.status = "remote mkdir cancelled".to_owned();
+        return Ok(());
+    }
+    if let Err(error) = validate_remote_leaf(&name) {
+        state.status = format!("invalid remote directory name: {error:#}");
+        return Ok(());
+    }
+
+    let path = join_remote_child(&state.path, &name);
+    match ssh.create_remote_directory(&path).await {
+        Ok(()) => {
+            state.reload_preserving_name(ssh, &name).await;
+            state.status = format!("created remote directory {path}");
+        }
+        Err(error) => state.status = format!("remote mkdir failed: {error:#}"),
+    }
+    Ok(())
+}
+
+async fn rename_selected(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let Some(entry) = state.selected_entry().cloned() else {
+        state.status = "directory is empty".to_owned();
+        return Ok(());
+    };
+
+    let name = prompt_with_terminal(
+        terminal,
+        format!(
+            "rename {} to new leaf name (empty cancels): ",
+            terminal_safe(&entry.name)
+        ),
+    )
+    .await?;
+    if name.is_empty() {
+        state.status = "remote rename cancelled".to_owned();
+        return Ok(());
+    }
+    if name == entry.name {
+        state.status = "remote rename cancelled: name is unchanged".to_owned();
+        return Ok(());
+    }
+    if let Err(error) = validate_remote_leaf(&name) {
+        state.status = format!("invalid remote rename target: {error:#}");
+        return Ok(());
+    }
+
+    let destination = join_remote_child(&state.path, &name);
+    match ssh.rename_remote_path(&entry.path, &destination).await {
+        Ok(file_type) => {
+            state.reload_preserving_name(ssh, &name).await;
+            state.status = format!(
+                "renamed remote {} {} -> {}",
+                file_type_name(file_type),
+                entry.path,
+                destination
+            );
+        }
+        Err(error) => state.status = format!("remote rename failed: {error:#}"),
+    }
+    Ok(())
+}
+
+async fn remove_selected(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let Some(entry) = state.selected_entry().cloned() else {
+        state.status = "directory is empty".to_owned();
+        return Ok(());
+    };
+    if entry.metadata.file_type == RemoteFileType::Other {
+        state.status = "refusing to remove unsupported remote file type".to_owned();
+        return Ok(());
+    }
+
+    let detail = match entry.metadata.file_type {
+        RemoteFileType::Directory => "empty directory only; recursive deletion is disabled",
+        RemoteFileType::Symlink => "the symlink itself, not its target",
+        RemoteFileType::File => "one regular file",
+        RemoteFileType::Other => unreachable!(),
+    };
+    let confirmation = prompt_with_terminal(
+        terminal,
+        format!(
+            "delete {} ({detail}); type DELETE to continue: ",
+            terminal_safe(&entry.path)
+        ),
+    )
+    .await?;
+    if !is_delete_confirmed(&confirmation) {
+        state.status = "remote delete cancelled".to_owned();
+        return Ok(());
+    }
+
+    match ssh.remove_remote_path(&entry.path).await {
+        Ok(file_type) => {
+            let removed_path = entry.path.clone();
+            state.reload(ssh).await;
+            state.status = format!(
+                "removed remote {} {}",
+                file_type_name(file_type),
+                removed_path
+            );
+        }
+        Err(error) => state.status = format!("remote delete failed: {error:#}"),
+    }
+    Ok(())
+}
+
+fn is_delete_confirmed(value: &str) -> bool {
+    value.trim() == "DELETE"
 }
 
 async fn run_shell_action(
@@ -791,7 +929,7 @@ impl TerminalSession {
             MoveTo(0, help_row),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: j/k nav | Enter open/stat | ← parent | p path | i info | r refresh | s shell | S sudo | d/D download file/dir | u/U upload file/dir | q quit",
+                "keys: j/k nav | Enter open/stat | ← parent | p path | m mkdir | R rename | x/Delete remove | i info | r refresh | s shell | S sudo | d/D download | u/U upload | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
@@ -1033,6 +1171,14 @@ mod tests {
         assert!(is_confirmed(" YES \n"));
         assert!(!is_confirmed("yes"));
         assert!(!is_confirmed("Y"));
+    }
+
+    #[test]
+    fn destructive_mutation_confirmation_is_exact() {
+        assert!(is_delete_confirmed("DELETE"));
+        assert!(is_delete_confirmed(" DELETE \n"));
+        assert!(!is_delete_confirmed("delete"));
+        assert!(!is_delete_confirmed("DEL"));
     }
 
     #[test]
