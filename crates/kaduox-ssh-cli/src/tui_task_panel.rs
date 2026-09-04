@@ -13,14 +13,19 @@ pub(crate) enum TaskPanelAction {
     Cleared(usize),
 }
 
-pub(crate) async fn choose_action(registry: &TransferTaskRegistry) -> Result<TaskPanelAction> {
+pub(crate) async fn choose_action(
+    registry: TransferTaskRegistry,
+) -> Result<TaskPanelAction> {
     let tasks = registry.recent(DISPLAY_TASK_LIMIT)?;
-    tokio::task::spawn_blocking(move || choose_action_blocking(tasks))
+    tokio::task::spawn_blocking(move || choose_action_blocking(tasks, registry))
         .await
         .context("transfer task panel input task failed")?
 }
 
-fn choose_action_blocking(tasks: Vec<TransferTaskSnapshot>) -> Result<TaskPanelAction> {
+fn choose_action_blocking(
+    tasks: Vec<TransferTaskSnapshot>,
+    registry: TransferTaskRegistry,
+) -> Result<TaskPanelAction> {
     let mut stdout = io::stdout();
     writeln!(stdout)?;
     writeln!(stdout, "Kaduox-SSH transfer tasks (newest first)")?;
@@ -48,10 +53,7 @@ fn choose_action_blocking(tasks: Vec<TransferTaskSnapshot>) -> Result<TaskPanelA
     }
     if input.eq_ignore_ascii_case("clear") {
         // `clear` deliberately removes terminal history only. The registry
-        // refuses to remove queued/running work through this operation.
-        let registry = TASK_PANEL_REGISTRY
-            .with(|slot| slot.borrow().clone())
-            .context("transfer task panel clear registry was not installed")?;
+        // preserves queued/running work through this operation.
         return Ok(TaskPanelAction::Cleared(registry.clear_finished()?));
     }
 
@@ -84,33 +86,6 @@ fn choose_action_blocking(tasks: Vec<TransferTaskSnapshot>) -> Result<TaskPanelA
     } else {
         Ok(TaskPanelAction::Return)
     }
-}
-
-thread_local! {
-    static TASK_PANEL_REGISTRY: std::cell::RefCell<Option<TransferTaskRegistry>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Install the session registry only for the blocking panel interaction.
-///
-/// The task panel needs the registry only for the `clear` action; task retry is
-/// returned to the async workspace and executed there. The scoped thread-local
-/// avoids global cross-session state.
-pub(crate) async fn choose_action_scoped(
-    registry: TransferTaskRegistry,
-) -> Result<TaskPanelAction> {
-    let tasks = registry.recent(DISPLAY_TASK_LIMIT)?;
-    tokio::task::spawn_blocking(move || {
-        TASK_PANEL_REGISTRY.with(|slot| {
-            *slot.borrow_mut() = Some(registry);
-        });
-        let result = choose_action_blocking(tasks);
-        TASK_PANEL_REGISTRY.with(|slot| {
-            *slot.borrow_mut() = None;
-        });
-        result
-    })
-    .await
-    .context("transfer task panel input task failed")?
 }
 
 fn format_task(task: &TransferTaskSnapshot) -> String {
@@ -181,7 +156,6 @@ fn terminal_safe(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kaduox_ssh_core::{TransferTaskKind, TransferTaskRegistry};
 
     #[test]
     fn panel_escapes_task_control_text() {
