@@ -4,6 +4,7 @@ mod auth;
 mod client;
 mod command;
 mod config;
+mod connect;
 mod diagnostics;
 mod forward;
 mod handler;
@@ -28,6 +29,10 @@ pub use command::RemoteCommandSpec;
 pub use config::{
     ConnectionConfig, ConnectionConfigSnapshot, ConnectionRouteSnapshot, HostKeyPolicy, JumpHost,
     resolve_jump_hosts,
+};
+pub use connect::{
+    AuthenticationKind, AutoJumpAuthProvider, ConnectionProgress, JumpAuthFuture, JumpAuthProvider,
+    JumpAuthRequest, MAX_JUMP_AUTH_ATTEMPTS, authentication_kind,
 };
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{
