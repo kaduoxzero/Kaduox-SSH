@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::Authentication;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_ALIAS_BYTES: usize = 128;
 pub const MAX_COMMAND_BYTES: usize = 256 * 1024;
@@ -21,6 +21,7 @@ const TAG_INPUT: u8 = 6;
 const TAG_RESIZE: u8 = 7;
 const TAG_EOF: u8 = 8;
 const TAG_SHUTDOWN: u8 = 9;
+const TAG_JUMP_AUTH_RESPONSE: u8 = 10;
 
 const TAG_OK: u8 = 64;
 const TAG_ERROR: u8 = 65;
@@ -30,6 +31,7 @@ const TAG_STDERR: u8 = 68;
 const TAG_EXIT: u8 = 69;
 const TAG_STATUS_RESPONSE: u8 = 70;
 const TAG_CACHE: u8 = 71;
+const TAG_JUMP_AUTH_CHALLENGE: u8 = 72;
 
 #[derive(Clone)]
 pub enum AuthRequest {
@@ -101,6 +103,7 @@ pub enum ClientFrame {
     Resize { columns: u32, rows: u32 },
     Eof,
     Shutdown,
+    JumpAuthResponse { auth: Option<AuthRequest> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +122,15 @@ pub enum ServerFrame {
         available_capacity: usize,
     },
     Cache { reused: bool },
+    JumpAuthChallenge {
+        index: usize,
+        total: usize,
+        attempt: usize,
+        alias: String,
+        host: String,
+        port: u16,
+        previous_failed: bool,
+    },
 }
 
 pub async fn read_client_frame<R>(reader: &mut R) -> Result<Option<ClientFrame>>
@@ -161,13 +173,18 @@ async fn read_payload<R>(reader: &mut R) -> Result<Option<Vec<u8>>>
 where
     R: AsyncRead + Unpin,
 {
-    let mut length = [0_u8; 4];
-    match reader.read_exact(&mut length).await {
+    let mut first = [0_u8; 1];
+    match reader.read_exact(&mut first).await {
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(None),
         Err(error) => return Err(error).context("failed to read daemon IPC frame length"),
     }
-    let length = u32::from_be_bytes(length) as usize;
+    let mut rest = [0_u8; 3];
+    reader
+        .read_exact(&mut rest)
+        .await
+        .context("daemon IPC frame length was truncated")?;
+    let length = u32::from_be_bytes([first[0], rest[0], rest[1], rest[2]]) as usize;
     if length == 0 || length > MAX_FRAME_BYTES {
         bail!("daemon IPC frame length {length} is outside 1..={MAX_FRAME_BYTES}");
     }
@@ -249,6 +266,10 @@ fn encode_client(frame: &ClientFrame) -> Result<Vec<u8>> {
         }
         ClientFrame::Eof => out.push(TAG_EOF),
         ClientFrame::Shutdown => out.push(TAG_SHUTDOWN),
+        ClientFrame::JumpAuthResponse { auth } => {
+            out.push(TAG_JUMP_AUTH_RESPONSE);
+            put_auth(&mut out, auth)?;
+        }
     }
     Ok(out)
 }
@@ -283,6 +304,9 @@ fn decode_client(payload: &[u8]) -> Result<ClientFrame> {
         },
         TAG_EOF => ClientFrame::Eof,
         TAG_SHUTDOWN => ClientFrame::Shutdown,
+        TAG_JUMP_AUTH_RESPONSE => ClientFrame::JumpAuthResponse {
+            auth: cursor.auth()?,
+        },
         _ => bail!("unknown daemon client frame tag {tag}"),
     };
     cursor.finish()?;
@@ -341,6 +365,24 @@ fn encode_server(frame: &ServerFrame) -> Result<Vec<u8>> {
             out.push(TAG_CACHE);
             out.push(u8::from(*reused));
         }
+        ServerFrame::JumpAuthChallenge {
+            index,
+            total,
+            attempt,
+            alias,
+            host,
+            port,
+            previous_failed,
+        } => {
+            out.push(TAG_JUMP_AUTH_CHALLENGE);
+            put_usize_u32(&mut out, *index, "jump index")?;
+            put_usize_u32(&mut out, *total, "jump count")?;
+            put_usize_u32(&mut out, *attempt, "jump auth attempt")?;
+            put_string(&mut out, alias, MAX_ALIAS_BYTES)?;
+            put_string(&mut out, host, 4096)?;
+            put_u16(&mut out, *port);
+            out.push(u8::from(*previous_failed));
+        }
     }
     Ok(out)
 }
@@ -370,11 +412,16 @@ fn decode_server(payload: &[u8]) -> Result<ServerFrame> {
             available_capacity: usize_from_u64(cursor.u64()?)?,
         },
         TAG_CACHE => ServerFrame::Cache {
-            reused: match cursor.u8()? {
-                0 => false,
-                1 => true,
-                value => bail!("invalid daemon cache flag {value}"),
-            },
+            reused: cursor.bool()?,
+        },
+        TAG_JUMP_AUTH_CHALLENGE => ServerFrame::JumpAuthChallenge {
+            index: usize_from_u32(cursor.u32()?),
+            total: usize_from_u32(cursor.u32()?),
+            attempt: usize_from_u32(cursor.u32()?),
+            alias: cursor.string(MAX_ALIAS_BYTES)?,
+            host: cursor.string(4096)?,
+            port: cursor.u16()?,
+            previous_failed: cursor.bool()?,
         },
         _ => bail!("unknown daemon server frame tag {tag}"),
     };
@@ -397,7 +444,10 @@ fn put_auth(out: &mut Vec<u8>, auth: &Option<AuthRequest>) -> Result<()> {
         }
         Some(AuthRequest::PrivateKey { path, passphrase }) => {
             out.push(5);
-            put_string(out, &path.to_string_lossy(), 4096)?;
+            let path = path
+                .to_str()
+                .context("daemon private-key path is not valid UTF-8")?;
+            put_string(out, path, 4096)?;
             put_optional_string(out, passphrase.as_deref(), MAX_SECRET_BYTES)?;
         }
     }
@@ -429,12 +479,26 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8], max: usize) -> Result<()> {
     Ok(())
 }
 
+fn put_usize_u32(out: &mut Vec<u8>, value: usize, label: &str) -> Result<()> {
+    let value = u32::try_from(value).with_context(|| format!("daemon {label} exceeds u32"))?;
+    put_u32(out, value);
+    Ok(())
+}
+
+fn put_u16(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
 fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
 fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn usize_from_u32(value: u32) -> usize {
+    value as usize
 }
 
 fn usize_from_u64(value: u64) -> Result<usize> {
@@ -458,6 +522,19 @@ impl<'a> Cursor<'a> {
             .context("daemon IPC frame ended unexpectedly")?;
         self.offset += 1;
         Ok(value)
+    }
+
+    fn bool(&mut self) -> Result<bool> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            value => bail!("invalid daemon boolean value {value}"),
+        }
+    }
+
+    fn u16(&mut self) -> Result<u16> {
+        let bytes = self.take(2)?;
+        Ok(u16::from_be_bytes(bytes.try_into().expect("length checked")))
     }
 
     fn u32(&mut self) -> Result<u32> {
@@ -533,7 +610,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exec_round_trip_redacts_nothing_on_wire_but_preserves_fields() {
+    fn exec_round_trip_preserves_secret_only_on_wire() {
         let frame = ClientFrame::Exec {
             alias: "prod".into(),
             auth: Some(AuthRequest::Password("secret".into())),
@@ -569,5 +646,32 @@ mod tests {
         assert!(
             encode_client(&ClientFrame::Input(vec![0; OUTPUT_CHUNK_BYTES + 1])).is_err()
         );
+    }
+
+    #[test]
+    fn jump_challenge_round_trip_preserves_location_without_secret() {
+        let frame = ServerFrame::JumpAuthChallenge {
+            index: 1,
+            total: 3,
+            attempt: 2,
+            alias: "inner".into(),
+            host: "10.0.0.8".into(),
+            port: 2222,
+            previous_failed: true,
+        };
+        let encoded = encode_server(&frame).unwrap();
+        assert_eq!(decode_server(&encoded).unwrap(), frame);
+    }
+
+    #[test]
+    fn jump_auth_response_round_trip_redacts_debug_secret() {
+        let frame = ClientFrame::JumpAuthResponse {
+            auth: Some(AuthRequest::Password("jump-secret".into())),
+        };
+        let encoded = encode_client(&frame).unwrap();
+        let decoded = decode_client(&encoded).unwrap();
+        let text = format!("{decoded:?}");
+        assert!(!text.contains("jump-secret"));
+        assert!(text.contains("redacted"));
     }
 }
