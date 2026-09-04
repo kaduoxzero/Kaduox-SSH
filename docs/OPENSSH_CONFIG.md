@@ -58,13 +58,21 @@ On Unix targets:
 - the file owner must be the process real uid returned by `getuid()` or uid 0
   (`root`);
 - group and other write bits must both be clear (`mode & 0022 == 0`);
-- the check is performed before reading file contents;
-- symlink paths are checked through their resolved target metadata, so a link
-  cannot make an insecure target pass the owner/mode boundary.
+- each path is opened once, metadata is checked on that opened file descriptor,
+  and configuration bytes are then read from the same descriptor; the trust
+  decision and parsed bytes therefore cannot be redirected by replacing the
+  pathname between a separate `stat` and `open`;
+- symlink paths are evaluated through the file opened from that path, and the
+  trust decision applies to the resolved target file metadata.
 
 The implementation deliberately uses the process uid rather than trusting the
 owner of a path selected through `$HOME`. Redirecting `$HOME` therefore cannot
 change which uid is trusted to author SSH configuration.
+
+Configuration reads are also bounded before allocation: one physical config
+file is read through a 4 MiB + 1 byte probe and rejected if it exceeds 4 MiB.
+The Include expansion layer separately enforces its 4 MiB cumulative input and
+expanded-output budgets.
 
 Windows does not use POSIX uid/mode semantics. Kaduox-SSH still requires the
 resolved config path to be a regular file there, but v0.15 does **not** claim
@@ -78,7 +86,8 @@ Include expansion is bounded before parsing:
 
 - maximum nesting depth: 16;
 - maximum processed files: 256;
-- maximum input/expanded configuration budget: 4 MiB;
+- maximum cumulative input/expanded configuration budget: 4 MiB;
+- maximum physical config-file read: 4 MiB;
 - maximum include arguments on one directive: 64;
 - maximum include path length: 16 KiB;
 - maximum wildcard path-component length: 1024 bytes.
@@ -133,7 +142,8 @@ assume Kaduox-SSH is equivalent to `ssh(1)` for that trust policy.
 Unit coverage includes include ordering, global/Host scope restoration, nested
 cycles, hidden-file wildcard behavior, unsupported expansion rejection,
 catalog discovery, regular-file enforcement, accepted Unix 0600/0640/0644
-modes, rejected group/other-writable modes, and an insecure nested Include
-fixture. Candidate promotion still requires the repository's real CI, Clippy,
-audit, release-policy, and OpenSSH jobs to acquire runners and execute; a
-workflow that ends with no steps executed is not considered validation.
+modes, rejected group/other-writable modes, an insecure nested Include fixture,
+and oversized single-file rejection. Candidate promotion still requires the
+repository's real CI, Clippy, audit, release-policy, and OpenSSH jobs to acquire
+runners and execute; a workflow that ends with no steps executed is not
+considered validation.
