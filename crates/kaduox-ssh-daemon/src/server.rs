@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{
-    ConnectionManager, ConnectionManagerConfig, RemoteUser, SshClient, TerminalSize, TerminalSpec,
+    Authentication, ConnectionManager, ConnectionManagerConfig, JumpAuthFuture, JumpAuthProvider,
+    JumpAuthRequest, RemoteUser, SshClient, TerminalSize, TerminalSpec,
 };
-use kaduox_ssh_hosts::{HostStore, resolve_host};
+use kaduox_ssh_hosts::{HostStore, StoredAuthMethod, resolve_host};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, watch};
 
@@ -124,7 +125,18 @@ where
             auth,
             command,
             as_user,
-        } => handle_exec(&writer, &state, &alias, auth, command, as_user).await,
+        } => {
+            handle_exec(
+                &mut reader,
+                &writer,
+                &state,
+                &alias,
+                auth,
+                command,
+                as_user,
+            )
+            .await
+        }
         ClientFrame::Shell {
             alias,
             auth,
@@ -152,22 +164,77 @@ where
             state.request_shutdown();
             send_frame(&writer, ServerFrame::Ok).await
         }
-        ClientFrame::Input(_) | ClientFrame::Resize { .. } | ClientFrame::Eof => {
+        ClientFrame::Input(_)
+        | ClientFrame::Resize { .. }
+        | ClientFrame::Eof
+        | ClientFrame::JumpAuthResponse { .. } => {
             send_frame(
                 &writer,
-                ServerFrame::Error("shell stream frame received before Shell request".into()),
+                ServerFrame::Error("stream/control frame received before an operation".into()),
             )
             .await
         }
     }
 }
 
-async fn acquire_client(
+struct IpcJumpAuthProvider<'a, R, W> {
+    reader: &'a mut R,
+    writer: &'a Arc<Mutex<W>>,
+}
+
+impl<R, W> JumpAuthProvider for IpcJumpAuthProvider<'_, R, W>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    fn authentication<'a>(&'a mut self, request: JumpAuthRequest) -> JumpAuthFuture<'a> {
+        Box::pin(async move {
+            if request.attempt == 1 {
+                return Ok(Some(Authentication::Auto {
+                    identity_files: request.jump.identity_files,
+                    passphrase: None,
+                }));
+            }
+
+            send_frame(
+                self.writer,
+                ServerFrame::JumpAuthChallenge {
+                    index: request.index,
+                    total: request.total,
+                    attempt: request.attempt,
+                    alias: request.jump.alias.clone(),
+                    host: request.jump.host.clone(),
+                    port: request.jump.port,
+                    previous_failed: request.previous_failed,
+                },
+            )
+            .await?;
+
+            let Some(frame) = read_client_frame(self.reader).await? else {
+                return Ok(None);
+            };
+            match frame {
+                ClientFrame::JumpAuthResponse { auth } => Ok(auth.map(|auth| {
+                    auth.into_authentication(request.jump.identity_files.clone())
+                })),
+                _ => bail!("expected JumpAuthResponse while authenticating jump host"),
+            }
+        })
+    }
+}
+
+async fn acquire_client<R, W>(
+    reader: &mut R,
+    writer: &Arc<Mutex<W>>,
     state: &DaemonState,
     alias: &str,
     auth: Option<AuthRequest>,
-) -> Result<Option<(Arc<SshClient>, bool)>> {
-    let store = HostStore::open_default()?;
+) -> Result<Option<(Arc<SshClient>, bool)>>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let mut store = HostStore::open_default()?;
     let resolved = resolve_host(store.database(), alias, None, None)
         .with_context(|| format!("failed to resolve daemon target {alias:?}"))?;
 
@@ -177,23 +244,64 @@ async fn acquire_client(
                 "cached connection {alias:?} no longer matches the current host/OpenSSH configuration; disconnect it before reconnecting"
             );
         }
+        record_store_use(&mut store, alias, None)?;
         return Ok(Some((existing, true)));
     }
 
     let Some(auth) = auth else {
         return Ok(None);
     };
+    let stored_method = stored_auth_method(&auth);
     let configured_identities = resolved.config.identity_files.clone();
     let authentication = auth.into_authentication(configured_identities);
+    let mut jump_auth = IpcJumpAuthProvider { reader, writer };
     let client = state
         .manager
-        .connect(alias.to_owned(), resolved.config, authentication)
+        .connect_with_jump_auth(
+            alias.to_owned(),
+            resolved.config,
+            authentication,
+            &mut jump_auth,
+            None,
+        )
         .await
         .with_context(|| format!("daemon failed to establish SSH connection {alias:?}"))?;
+    record_store_use(&mut store, alias, Some(stored_method))?;
     Ok(Some((client, false)))
 }
 
-async fn handle_exec<W>(
+fn stored_auth_method(auth: &AuthRequest) -> StoredAuthMethod {
+    match auth {
+        AuthRequest::Auto => StoredAuthMethod::Auto,
+        AuthRequest::Agent => StoredAuthMethod::Agent,
+        AuthRequest::Password(_) => StoredAuthMethod::Password,
+        AuthRequest::KeyboardInteractive(_) => StoredAuthMethod::KeyboardInteractive,
+        AuthRequest::PrivateKey { .. } => StoredAuthMethod::PrivateKey,
+    }
+}
+
+fn record_store_use(
+    store: &mut HostStore,
+    alias: &str,
+    new_method: Option<StoredAuthMethod>,
+) -> Result<()> {
+    let Some(host) = store.host(alias) else {
+        return Ok(());
+    };
+    let method = new_method
+        .or(host.stats.last_auth_method)
+        .unwrap_or(StoredAuthMethod::Auto);
+    if let Err(error) = store
+        .record_success(alias, method)
+        .and_then(|_| store.save())
+    {
+        eprintln!("warning: daemon connection succeeded but host statistics update failed: {error:#}");
+    }
+    Ok(())
+}
+
+async fn handle_exec<R, W>(
+    reader: &mut R,
     writer: &Arc<Mutex<W>>,
     state: &DaemonState,
     alias: &str,
@@ -202,9 +310,10 @@ async fn handle_exec<W>(
     as_user: Option<String>,
 ) -> Result<()>
 where
+    R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let Some((client, reused)) = acquire_client(state, alias, auth).await? else {
+    let Some((client, reused)) = acquire_client(reader, writer, state, alias, auth).await? else {
         return send_frame(writer, ServerFrame::AuthRequired).await;
     };
     send_frame(writer, ServerFrame::Cache { reused }).await?;
@@ -244,10 +353,10 @@ async fn handle_shell<R, W>(
     as_user: Option<String>,
 ) -> Result<()>
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let Some((client, reused)) = acquire_client(state, alias, auth).await? else {
+    let Some((client, reused)) = acquire_client(reader, writer, state, alias, auth).await? else {
         return send_frame(writer, ServerFrame::AuthRequired).await;
     };
     send_frame(writer, ServerFrame::Cache { reused }).await?;
@@ -296,7 +405,8 @@ where
                     | ClientFrame::Disconnect { .. }
                     | ClientFrame::Exec { .. }
                     | ClientFrame::Shell { .. }
-                    | ClientFrame::Shutdown => {
+                    | ClientFrame::Shutdown
+                    | ClientFrame::JumpAuthResponse { .. } => {
                         shell_task.abort();
                         return send_frame(
                             writer,
