@@ -3,14 +3,11 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::auth::AuthenticationReuseKey;
 use crate::{
     Authentication, ConnectionConfig, ConnectionProgress, JumpAuthProvider, SshClient,
 };
 
-use super::{
-    ConnectClaim, ConnectionManager, ManagedConnection, ensure_reusable,
-};
+use super::{ConnectClaim, ConnectionManager, ManagedConnection, ensure_reusable};
 
 impl ConnectionManager {
     /// Connect or compatibly reuse a named transport while allowing the caller
@@ -19,17 +16,14 @@ impl ConnectionManager {
     /// Capacity, per-name single-flight, compatibility checks, idle accounting,
     /// and the secret-free reuse key are identical to [`ConnectionManager::connect`].
     /// Only the transport constructor differs.
-    pub async fn connect_with_jump_auth<P>(
+    pub async fn connect_with_jump_auth(
         &self,
         name: impl Into<String>,
         config: ConnectionConfig,
         authentication: Authentication,
-        jump_auth: &mut P,
+        jump_auth: &mut dyn JumpAuthProvider,
         progress: Option<&UnboundedSender<ConnectionProgress>>,
-    ) -> Result<Arc<SshClient>>
-    where
-        P: JumpAuthProvider + ?Sized,
-    {
+    ) -> Result<Arc<SshClient>> {
         let name = name.into();
         if name.is_empty() {
             bail!("connection name cannot be empty");
@@ -120,6 +114,7 @@ impl ConnectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthenticationReuseKey;
 
     #[test]
     fn jump_manager_extension_keeps_non_reusable_password_semantics() {
