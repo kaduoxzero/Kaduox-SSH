@@ -44,6 +44,7 @@ pub use manager::{
     ConnectionSnapshot,
 };
 pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
+pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary};
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
 pub use target::ConnectionTarget;
 pub use transfer::{
