@@ -3,6 +3,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn getuid() -> std::os::raw::c_uint;
+}
+
 pub(crate) fn verify_user_config_file(path: &Path, home: &Path) -> Result<()> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("failed to inspect OpenSSH config {}", path.display()))?;
@@ -14,20 +19,14 @@ pub(crate) fn verify_user_config_file(path: &Path, home: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn verify_platform_trust(path: &Path, home: &Path, metadata: &fs::Metadata) -> Result<()> {
+fn verify_platform_trust(path: &Path, _home: &Path, metadata: &fs::Metadata) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
 
-    let home_metadata = fs::metadata(home)
-        .with_context(|| format!("failed to inspect user home directory {}", home.display()))?;
-    if !home_metadata.is_dir() {
-        bail!("configured user home is not a directory: {}", home.display());
-    }
-
     let owner = metadata.uid();
-    let home_owner = home_metadata.uid();
-    if owner != home_owner && owner != 0 {
+    let uid = current_real_uid();
+    if owner != uid && owner != 0 {
         bail!(
-            "OpenSSH config {} is owned by uid {owner}; expected the home owner uid {home_owner} or root",
+            "OpenSSH config {} is owned by uid {owner}; expected the current uid {uid} or root",
             path.display()
         );
     }
@@ -41,6 +40,15 @@ fn verify_platform_trust(path: &Path, home: &Path, metadata: &fs::Metadata) -> R
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn current_real_uid() -> u32 {
+    // SAFETY: getuid() is a side-effect-free POSIX process query with no
+    // arguments or pointer requirements. Linux and macOS expose uid_t as an
+    // unsigned integer compatible with c_uint, which are the Unix targets in
+    // the supported CI/release matrix.
+    unsafe { getuid() as u32 }
 }
 
 #[cfg(not(unix))]
@@ -120,6 +128,19 @@ mod tests {
             verify_user_config_file(&config, &home).unwrap();
         }
 
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_uid_matches_new_temp_file_owner() {
+        use std::os::unix::fs::MetadataExt;
+
+        let home = temp_root("uid");
+        fs::create_dir_all(&home).unwrap();
+        let file = home.join("owned");
+        fs::write(&file, "x").unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().uid(), current_real_uid());
         fs::remove_dir_all(home).unwrap();
     }
 }
