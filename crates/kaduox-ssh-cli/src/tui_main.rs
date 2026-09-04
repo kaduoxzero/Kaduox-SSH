@@ -1,13 +1,14 @@
 mod tui_actions;
 mod tui_app;
+mod tui_picker;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
 use kaduox_ssh_core::{
     Authentication, ConnectionConfig, ConnectionTarget, HostKeyPolicy, SshClient,
-    resolve_jump_hosts,
+    discover_openssh_hosts, resolve_jump_hosts,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -18,8 +19,8 @@ use tracing_subscriber::EnvFilter;
     about = "Interactive terminal UI for Kaduox-SSH"
 )]
 struct Cli {
-    /// Host alias, hostname, IP, or user@host. ~/.ssh/config is resolved automatically.
-    host: String,
+    /// Host alias, hostname, IP, or user@host. Omit to choose from ~/.ssh/config.
+    host: Option<String>,
 
     /// Initial remote directory shown by the file browser.
     #[arg(long, default_value = ".")]
@@ -92,7 +93,28 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let target = ConnectionTarget::parse(&cli.host)?;
+    let host = match cli.host.clone() {
+        Some(host) => host,
+        None => {
+            let catalog = discover_openssh_hosts()?;
+            if catalog.aliases.is_empty() {
+                let path = catalog
+                    .config_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "~/.ssh/config".to_owned());
+                bail!(
+                    "no concrete OpenSSH Host aliases found in {path}; pass a host explicitly to kssh-tui"
+                );
+            }
+            let Some(host) = tui_picker::select_host(&catalog)? else {
+                return Ok(());
+            };
+            host
+        }
+    };
+
+    let target = ConnectionTarget::parse(&host)?;
     let target_user = cli.user.as_deref().or(target.username.as_deref());
     let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?;
 
@@ -179,6 +201,14 @@ mod tests {
     #[test]
     fn tui_remote_path_defaults_to_current_directory() {
         let cli = Cli::try_parse_from(["kssh-tui", "server.example"]).unwrap();
+        assert_eq!(cli.remote, ".");
+        assert_eq!(cli.host.as_deref(), Some("server.example"));
+    }
+
+    #[test]
+    fn tui_host_is_optional_for_picker_mode() {
+        let cli = Cli::try_parse_from(["kssh-tui"]).unwrap();
+        assert!(cli.host.is_none());
         assert_eq!(cli.remote, ".");
     }
 }
