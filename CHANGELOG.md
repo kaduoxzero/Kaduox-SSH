@@ -4,6 +4,34 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.12.0-rc.1] - Unreleased
+
+### Added
+
+- frontend-neutral bounded `TransferTaskRegistry` with monotonic task IDs, `Queued` / `Running` / `Completed` / `Cancelled` / `Failed` states, latest progress, completion summaries, bounded error text, explicit cancellation state, and retry lineage;
+- `TransferTaskManager` for tracked single-file and recursive upload/download without changing the existing direct `SshClient` transfer API signatures;
+- core retry path that creates a new task record, records `retry_of`, and enables the canonical `TransferOptions.resume=true` staging/part-file policy;
+- per-SSH-session transfer task history in `kssh-tui`, retained while the Dashboard session remains open;
+- TUI `t` task panel for viewing recent tasks, clearing finished history, and resuming failed/cancelled work after exact `RESUME` confirmation.
+
+### Resource and recovery boundaries
+
+- task history defaults to 128 retained entries and has a hard maximum of 1024; capacity pressure evicts only the oldest terminal task and refuses to discard active work;
+- retained source/destination labels and progress/error text are bounded before entering task history;
+- tracked progress uses a bounded 64-entry internal queue and non-blocking downstream forwarding so task observation cannot backpressure SFTP or create unbounded memory growth;
+- caller cancellation is propagated on a fixed 50ms interval into the registered task's canonical `TransferCancellation`, preserving the existing transfer cancellation model;
+- TUI histories are isolated by `WorkspaceSession`, survive leaving/re-entering the remote workspace, and are released when that SSH session is closed;
+- the TUI displays at most the 20 newest retained tasks and terminal-escapes task-controlled source, destination, progress, and error text;
+- `clear` removes terminal task history only; queued/running tasks are preserved;
+- only failed/cancelled tasks can be resumed, and resume creates a new task ID rather than overwriting the old record;
+- resume is not rollback: already committed files remain committed and stable `.kaduox.part` / staging checkpoints may remain after another interruption;
+- tracked local paths require valid UTF-8 so retry can reconstruct source/destination exactly; direct core transfer APIs retain their prior path behavior;
+- no second transfer scheduler, SSH stack, SFTP stack, or UI framework dependency is introduced.
+
+### Validation status
+
+`integration/v0.12.0-candidate` is wired into CI, Quality, and real OpenSSH push workflows. Promotion remains blocked until GitHub-hosted jobs actually acquire runners and execute checkout, formatting, compile, tests, Clippy, audit, and real OpenSSH fixtures; runner-allocation failures are not treated as either passing validation or source failures.
+
 ## [0.11.0-rc.1] - Unreleased
 
 ### Added
