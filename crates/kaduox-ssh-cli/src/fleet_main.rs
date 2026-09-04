@@ -1,4 +1,6 @@
-use std::collections::{HashSet, VecDeque};
+mod fleet_targets;
+
+use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -7,12 +9,14 @@ use std::task::{Context as TaskContext, Poll};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, ConnectionTarget, HostKeyPolicy, RemoteCommandSpec,
-    RemoteUser, SshClient, resolve_jump_hosts,
+    Authentication, ConnectionConfig, ConnectionRouteSnapshot, ConnectionTarget, HostKeyPolicy,
+    RemoteCommandSpec, RemoteUser, SshClient, resolve_jump_hosts,
 };
 use tokio::io::AsyncWrite;
 use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
+
+use crate::fleet_targets::resolve_target_labels;
 
 const DEFAULT_JOBS: usize = 8;
 const MAX_JOBS: usize = 64;
@@ -25,12 +29,24 @@ const MAX_TARGETS: usize = 1024;
 #[command(
     name = "kssh-fleet",
     version,
-    about = "Bounded-concurrency SSH command execution across multiple hosts"
+    about = "Bounded-concurrency SSH command execution across hosts or inventory groups"
 )]
 struct Cli {
-    /// Target host, alias, IP, or user@host. Repeat for every fleet member.
-    #[arg(short = 'H', long = "host", required = true)]
+    /// Direct target host, alias, IP, or user@host. Repeat as needed.
+    #[arg(short = 'H', long = "host")]
     hosts: Vec<String>,
+
+    /// Inventory group to expand. Repeat as needed; nested groups are supported.
+    #[arg(short = 'G', long = "group")]
+    groups: Vec<String>,
+
+    /// Explicit inventory path used by --group. Also validates the file when supplied alone.
+    #[arg(long)]
+    inventory: Option<PathBuf>,
+
+    /// Resolve and print the full connection plan without prompting for secrets or connecting.
+    #[arg(long)]
+    plan: bool,
 
     /// Maximum number of simultaneous SSH connections/commands.
     #[arg(short = 'j', long, default_value_t = DEFAULT_JOBS)]
@@ -56,15 +72,15 @@ struct Cli {
     #[arg(short = 'i', long)]
     identity: Option<PathBuf>,
 
-    /// Prompt once for the explicit private-key passphrase.
+    /// Prompt once for the explicit private-key passphrase during execution.
     #[arg(long, requires = "identity")]
     ask_key_passphrase: bool,
 
-    /// Prompt once for a password and use it for every target.
+    /// Prompt once for a password and intentionally use it for every target during execution.
     #[arg(long, conflicts_with_all = ["identity", "keyboard_interactive", "agent"])]
     password: bool,
 
-    /// Prompt once for a keyboard-interactive response secret and reuse it for every target.
+    /// Prompt once for a keyboard-interactive response and reuse it for every target.
     #[arg(long, conflicts_with_all = ["identity", "password", "agent"])]
     keyboard_interactive: bool,
 
@@ -80,7 +96,7 @@ struct Cli {
     #[arg(short = 'J', long)]
     jump: Option<String>,
 
-    /// Override ProxyCommand for every target.
+    /// Override ProxyCommand for every target. Its text is never printed by --plan.
     #[arg(long, conflicts_with = "jump")]
     proxy_command: Option<String>,
 
@@ -100,8 +116,8 @@ struct Cli {
     #[arg(long = "env")]
     environment: Vec<String>,
 
-    /// Command program and arguments. Place them after `--`.
-    #[arg(last = true, required = true, num_args = 1..)]
+    /// Command program and arguments. Place them after `--`. Optional only with --plan.
+    #[arg(last = true, num_args = 0..)]
     command: Vec<String>,
 }
 
@@ -186,27 +202,28 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    validate_limits(&cli)?;
-    validate_unique_targets(&cli.hosts)?;
+    let labels = resolve_target_labels(&cli.hosts, &cli.groups, cli.inventory.as_deref())?;
+    validate_limits(&cli, labels.len())?;
 
-    // Validate the entire command before any network side effect.
+    // Typed command validation is part of preflight. Plan mode may omit the
+    // command entirely, but if one is supplied it is validated without exposing
+    // environment values or opening a network connection.
     let command = build_command_spec(&cli)?;
-    let rendered_command = command.render_posix()?;
+    if !cli.plan && command.is_none() {
+        bail!("remote command cannot be empty; place the command after `--`");
+    }
+
     let remote_user = cli
         .as_user
         .as_ref()
         .map(|user| RemoteUser::Sudo(user.clone()))
         .unwrap_or_default();
-    let auth_template = resolve_auth_template(&cli)?;
 
-    // Resolve every target/config before opening the first SSH connection. This
-    // makes malformed targets and unsupported OpenSSH config fail preflight
-    // rather than producing a partially executed fleet operation. Pending
-    // targets deliberately do not own Authentication values: secret-bearing
-    // credentials are instantiated only when a target enters the bounded
-    // in-flight window.
-    let mut pending = VecDeque::with_capacity(cli.hosts.len());
-    for (ordinal, label) in cli.hosts.iter().enumerate() {
+    // Resolve every target/config before any authentication prompt or network
+    // side effect. This catches malformed targets and unsupported OpenSSH
+    // configuration for the complete fleet first.
+    let mut pending = VecDeque::with_capacity(labels.len());
+    for (ordinal, label) in labels.iter().enumerate() {
         let config = build_connection_config(&cli, label)
             .with_context(|| format!("failed to resolve fleet target {label}"))?;
         pending.push_back(PreparedTarget {
@@ -215,6 +232,19 @@ async fn main() -> Result<()> {
             config,
         });
     }
+
+    if cli.plan {
+        print_plan(&cli, &pending, command.as_ref(), &remote_user)?;
+        return Ok(());
+    }
+
+    // Secret-bearing prompts happen only after the complete target/config
+    // preflight succeeds and are never reached by --plan.
+    let auth_template = resolve_auth_template(&cli)?;
+    let rendered_command = command
+        .as_ref()
+        .context("validated execution command unexpectedly missing")?
+        .render_posix()?;
 
     let total = pending.len();
     let mut tasks = JoinSet::new();
@@ -345,11 +375,11 @@ async fn run_target(
     }
 }
 
-fn validate_limits(cli: &Cli) -> Result<()> {
-    if cli.hosts.is_empty() {
-        bail!("at least one --host is required");
+fn validate_limits(cli: &Cli, target_count: usize) -> Result<()> {
+    if target_count == 0 {
+        bail!("fleet requires at least one --host or --group target");
     }
-    if cli.hosts.len() > MAX_TARGETS {
+    if target_count > MAX_TARGETS {
         bail!("fleet target count cannot exceed {MAX_TARGETS}");
     }
     if cli.jobs == 0 || cli.jobs > MAX_JOBS {
@@ -369,17 +399,14 @@ fn validate_limits(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn validate_unique_targets(hosts: &[String]) -> Result<()> {
-    let mut seen = HashSet::with_capacity(hosts.len());
-    for host in hosts {
-        if !seen.insert(host) {
-            bail!("duplicate fleet target is not allowed: {host}");
+fn build_command_spec(cli: &Cli) -> Result<Option<RemoteCommandSpec>> {
+    if cli.command.is_empty() {
+        if cli.cwd.is_some() || !cli.environment.is_empty() || cli.as_user.is_some() {
+            bail!("--cwd, --env, and --as-user require a remote command after `--`");
         }
+        return Ok(None);
     }
-    Ok(())
-}
 
-fn build_command_spec(cli: &Cli) -> Result<RemoteCommandSpec> {
     let (program, arguments) = cli
         .command
         .split_first()
@@ -393,7 +420,7 @@ fn build_command_spec(cli: &Cli) -> Result<RemoteCommandSpec> {
         .map(|entry| parse_environment(entry))
         .collect::<Result<Vec<_>>>()?;
     command.validated()?;
-    Ok(command)
+    Ok(Some(command))
 }
 
 fn parse_environment(value: &str) -> Result<(String, String)> {
@@ -459,6 +486,104 @@ fn build_connection_config(cli: &Cli, label: &str) -> Result<ConnectionConfig> {
     }
     config.agent_forwarding = cli.forward_agent;
     Ok(config)
+}
+
+fn print_plan(
+    cli: &Cli,
+    targets: &VecDeque<PreparedTarget>,
+    command: Option<&RemoteCommandSpec>,
+    remote_user: &RemoteUser,
+) -> Result<()> {
+    let mut output = io::stdout().lock();
+    writeln!(
+        output,
+        "fleet-plan targets={} jobs={} auth={} command={}",
+        targets.len(),
+        cli.jobs,
+        planned_auth_name(cli),
+        if command.is_some() { "validated" } else { "none" }
+    )?;
+
+    if let Some(command) = command {
+        let env_names = command
+            .environment
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        writeln!(
+            output,
+            "command program={} args={} env-names={} cwd={} remote-user={}",
+            terminal_safe(&command.program),
+            command.arguments.len(),
+            terminal_safe(&env_names),
+            if command.working_directory.is_some() {
+                "set"
+            } else {
+                "unset"
+            },
+            remote_user_name(remote_user)
+        )?;
+    }
+
+    for target in targets {
+        let snapshot = target.config.snapshot();
+        writeln!(
+            output,
+            "[{}] target={} endpoint={} user={} route={} host-key={} identities={} agent-forwarding={}",
+            target.ordinal + 1,
+            terminal_safe(&target.label),
+            terminal_safe(&format_endpoint(&snapshot.host, snapshot.port)),
+            terminal_safe(&snapshot.username),
+            route_name(&snapshot.route),
+            host_key_policy_name(snapshot.host_key_policy),
+            snapshot.identity_files.len(),
+            snapshot.agent_forwarding
+        )?;
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn planned_auth_name(cli: &Cli) -> &'static str {
+    if cli.password {
+        "password-prompt-on-execute"
+    } else if cli.keyboard_interactive {
+        "keyboard-interactive-prompt-on-execute"
+    } else if cli.agent {
+        "agent"
+    } else if cli.identity.is_some() {
+        if cli.ask_key_passphrase {
+            "private-key-passphrase-prompt-on-execute"
+        } else {
+            "private-key"
+        }
+    } else {
+        "auto-agent-configured-identities"
+    }
+}
+
+fn route_name(route: &ConnectionRouteSnapshot) -> String {
+    match route {
+        ConnectionRouteSnapshot::Direct => "direct".to_owned(),
+        ConnectionRouteSnapshot::ProxyCommand => "proxy-command(redacted)".to_owned(),
+        ConnectionRouteSnapshot::ProxyJump(hops) => format!("proxy-jump:{}", hops.len()),
+    }
+}
+
+fn host_key_policy_name(policy: HostKeyPolicy) -> &'static str {
+    match policy {
+        HostKeyPolicy::Strict => "strict",
+        HostKeyPolicy::AcceptNew => "accept-new",
+        HostKeyPolicy::Insecure => "insecure",
+    }
+}
+
+fn remote_user_name(user: &RemoteUser) -> String {
+    match user {
+        RemoteUser::Current => "current".to_owned(),
+        RemoteUser::Sudo(user) => format!("sudo:{}", terminal_safe(user)),
+    }
 }
 
 fn print_result(result: &FleetResult, completed: usize, total: usize, raw: bool) -> Result<()> {
@@ -580,8 +705,6 @@ impl AsyncWrite for CappedBuffer {
         if retain < buf.len() {
             self.truncated = true;
         }
-        // Report the complete input as consumed. The sink deliberately drops
-        // bytes after the retention cap so SSH backpressure continues normally.
         Poll::Ready(Ok(buf.len()))
     }
 
@@ -606,12 +729,6 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     #[test]
-    fn rejects_duplicate_targets_and_unsafe_limits() {
-        assert!(validate_unique_targets(&["a".to_owned(), "b".to_owned()]).is_ok());
-        assert!(validate_unique_targets(&["a".to_owned(), "a".to_owned()]).is_err());
-    }
-
-    #[test]
     fn parses_environment_at_first_equals_only() {
         assert_eq!(
             parse_environment("TOKEN=a=b=c").unwrap(),
@@ -634,5 +751,25 @@ mod tests {
             terminal_safe("line1\n\u{1b}[31mred\r"),
             "line1\n\\x1b[31mred\\r"
         );
+    }
+
+    #[test]
+    fn plan_mode_can_omit_a_remote_command() {
+        let cli = Cli::try_parse_from(["kssh-fleet", "--host", "server", "--plan"]).unwrap();
+        assert!(cli.command.is_empty());
+        assert!(build_command_spec(&cli).unwrap().is_none());
+    }
+
+    #[test]
+    fn plan_auth_description_never_requires_secret_material() {
+        let cli = Cli::try_parse_from([
+            "kssh-fleet",
+            "--host",
+            "server",
+            "--plan",
+            "--password",
+        ])
+        .unwrap();
+        assert_eq!(planned_auth_name(&cli), "password-prompt-on-execute");
     }
 }
