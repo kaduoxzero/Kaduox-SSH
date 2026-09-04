@@ -70,7 +70,12 @@ impl ExpansionState<'_> {
         result
     }
 
-    fn expand_file_inner(&mut self, path: &Path, depth: usize, inherited_scope: Scope) -> Result<String> {
+    fn expand_file_inner(
+        &mut self,
+        path: &Path,
+        depth: usize,
+        inherited_scope: Scope,
+    ) -> Result<String> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
         self.account_input_bytes(contents.len())?;
@@ -93,8 +98,13 @@ impl ExpansionState<'_> {
                 continue;
             }
 
-            let Some(arguments) = include_arguments(line)
-                .with_context(|| format!("invalid OpenSSH Include on {}:{}", path.display(), line_index + 1))?
+            let Some(arguments) = include_arguments(line).with_context(|| {
+                format!(
+                    "invalid OpenSSH Include on {}:{}",
+                    path.display(),
+                    line_index + 1
+                )
+            })?
             else {
                 push_line_bounded(&mut expanded, line)?;
                 continue;
@@ -155,11 +165,16 @@ impl ExpansionState<'_> {
         if value == "~" {
             return Ok(self.home.to_path_buf());
         }
-        if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+        if let Some(rest) = value
+            .strip_prefix("~/")
+            .or_else(|| value.strip_prefix("~\\"))
+        {
             return Ok(self.home.join(rest));
         }
         if value.starts_with('~') {
-            bail!("OpenSSH Include ~user expansion is not supported; refusing ambiguous path {value:?}");
+            bail!(
+                "OpenSSH Include ~user expansion is not supported; refusing ambiguous path {value:?}"
+            );
         }
 
         let path = PathBuf::from(value);
@@ -227,11 +242,10 @@ fn include_arguments(line: &str) -> Result<Option<Vec<String>>> {
 fn parse_arguments(input: &str) -> Result<Vec<String>> {
     let mut output = Vec::new();
     let mut current = String::new();
-    let mut chars = input.chars();
     let mut quote: Option<char> = None;
     let mut escaped = false;
 
-    while let Some(ch) = chars.next() {
+    for ch in input.chars() {
         if escaped {
             if matches!(ch, '*' | '?' | '[' | ']' | '\\') {
                 current.push('\\');
@@ -303,6 +317,7 @@ fn expand_path_pattern(pattern: &Path) -> Result<Vec<PathBuf>> {
             }
             Component::Normal(segment) if contains_glob_meta(segment) => {
                 let mut next = Vec::new();
+                let allow_hidden = pattern_explicitly_starts_with_period(segment)?;
                 for candidate in &candidates {
                     let directory = if candidate.as_os_str().is_empty() {
                         Path::new(".")
@@ -314,18 +329,30 @@ fn expand_path_pattern(pattern: &Path) -> Result<Vec<PathBuf>> {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                         Err(error) => {
                             return Err(error).with_context(|| {
-                                format!("failed to expand OpenSSH Include pattern {}", pattern.display())
+                                format!(
+                                    "failed to expand OpenSSH Include pattern {}",
+                                    pattern.display()
+                                )
                             });
                         }
                     };
                     for entry in entries {
                         let entry = entry.with_context(|| {
-                            format!("failed to enumerate OpenSSH Include pattern {}", pattern.display())
+                            format!(
+                                "failed to enumerate OpenSSH Include pattern {}",
+                                pattern.display()
+                            )
                         })?;
-                        if glob_segment_matches(segment, &entry.file_name())? {
-                            next.push(candidate.join(entry.file_name()));
+                        let name = entry.file_name();
+                        if !allow_hidden && name.to_string_lossy().starts_with('.') {
+                            continue;
+                        }
+                        if glob_segment_matches(segment, &name)? {
+                            next.push(candidate.join(name));
                             if next.len() > MAX_INCLUDE_FILES {
-                                bail!("OpenSSH Include glob expansion exceeds the {MAX_INCLUDE_FILES}-path safety limit");
+                                bail!(
+                                    "OpenSSH Include glob expansion exceeds the {MAX_INCLUDE_FILES}-path safety limit"
+                                );
                             }
                         }
                     }
@@ -353,6 +380,14 @@ fn contains_glob_meta(segment: &OsStr) -> bool {
         .to_string_lossy()
         .chars()
         .any(|ch| matches!(ch, '*' | '?' | '['))
+}
+
+fn pattern_explicitly_starts_with_period(pattern: &OsStr) -> Result<bool> {
+    let pattern = pattern
+        .to_str()
+        .context("OpenSSH Include glob patterns must be valid UTF-8")?;
+    Ok(pattern.as_bytes().first() == Some(&b'.')
+        || pattern.as_bytes().starts_with(br"\."))
 }
 
 fn glob_segment_matches(pattern: &OsStr, candidate: &OsString) -> Result<bool> {
@@ -427,7 +462,13 @@ fn glob_match(pattern: &[u8], candidate: &[u8]) -> Result<bool> {
                 }
                 candidate_index < candidate.len()
                     && candidate[candidate_index] == pattern[literal_index]
-                    && inner(pattern, candidate, literal_index + 1, candidate_index + 1, memo)?
+                    && inner(
+                        pattern,
+                        candidate,
+                        literal_index + 1,
+                        candidate_index + 1,
+                        memo,
+                    )?
             }
             literal => {
                 candidate_index < candidate.len()
@@ -504,13 +545,51 @@ mod tests {
     }
 
     #[test]
-    fn glob_match_supports_openbsd_style_basic_patterns() {
+    fn glob_match_supports_basic_patterns_and_escapes() {
         assert!(glob_match(b"*.conf", b"10-prod.conf").unwrap());
         assert!(glob_match(b"host?.conf", b"host1.conf").unwrap());
         assert!(glob_match(b"[0-9][0-9]-*.conf", b"10-prod.conf").unwrap());
         assert!(!glob_match(b"[!0-9]*.conf", b"10-prod.conf").unwrap());
         assert!(glob_match(b"[!0-9]*.conf", b"prod.conf").unwrap());
         assert!(glob_match(b"literal\\*.conf", b"literal*.conf").unwrap());
+    }
+
+    #[test]
+    fn wildcard_include_does_not_match_hidden_files() {
+        let home = temp_root("hidden");
+        let ssh = home.join(".ssh");
+        let conf = ssh.join("conf.d");
+        fs::create_dir_all(&conf).unwrap();
+        fs::write(conf.join("visible.conf"), "  User visible\n").unwrap();
+        fs::write(conf.join(".hidden.conf"), "  Port 2022\n").unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host prod\n  Include conf.d/*.conf\n  HostName prod.example\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        assert!(expanded.contains("User visible"));
+        assert!(!expanded.contains("Port 2022"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn explicit_period_include_can_match_hidden_files() {
+        let home = temp_root("hidden-explicit");
+        let ssh = home.join(".ssh");
+        let conf = ssh.join("conf.d");
+        fs::create_dir_all(&conf).unwrap();
+        fs::write(conf.join(".hidden.conf"), "  Port 2022\n").unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host prod\n  Include conf.d/.hidden*.conf\n  HostName prod.example\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        assert!(expanded.contains("Port 2022"));
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -603,7 +682,11 @@ mod tests {
         let home = temp_root("match");
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
-        fs::write(ssh.join("nested.conf"), "Match host *.internal\n  User wrong\n").unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Match host *.internal\n  User wrong\n",
+        )
+        .unwrap();
         fs::write(ssh.join("config"), "Host prod\n  Include nested.conf\n").unwrap();
         assert!(expand_user_config(&ssh.join("config"), &home).is_err());
         fs::remove_dir_all(home).unwrap();
