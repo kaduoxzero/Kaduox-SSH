@@ -4,6 +4,31 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.11.0-rc.1] - Unreleased
+
+### Added
+
+- bounded two-phase `SshClient` recursive remote deletion with read-only planning, exact pre-write revalidation, post-order removal, and explicit plan summaries;
+- `RemoteDeleteOptions`, `RemoteDeletePlan`, and `RemoteDeleteSummary`, with a 10,000-entry default planning budget and 100,000-entry hard limit;
+- `kssh-tui` `X` action for planned recursive directory deletion after exact `DELETE TREE` confirmation;
+- cancellable TUI single-file and recursive upload/download using the existing core `TransferCancellation` token;
+- a dedicated bounded terminal cancellation listener for transfer-time `Esc` / `Ctrl-C` handling.
+
+### Safety and resource boundaries
+
+- recursive delete planning is read-only, requires a real directory root, never follows symlinks, and aborts on unsupported remote file types;
+- before the first recursive-delete write, the complete tree is re-scanned and must exactly match the approved path/type plan;
+- every recursive-delete entry is lstat-checked again immediately before removal and every directory is re-listed before `rmdir`;
+- recursive tree deletion is explicitly non-transactional under SFTP v3, so the TUI does not offer user cancellation after mutation begins; protocol/race failures stop at the first error and may leave a partial tree;
+- TUI transfer cancellation uses 100ms bounded `crossterm::event::poll` windows and explicitly stops/joins its listener, avoiding leaked blocking input tasks;
+- transfer cancellation is cooperative rather than rollback: already completed files/directories and `.kaduox.part` staging artifacts may remain;
+- recursive transfer progress continues to use the existing bounded core progress queue and no second scheduler is introduced;
+- single-entry `x` / `Delete`, non-overwriting same-directory rename, and one-directory mkdir remain available as the safer narrow mutation primitives.
+
+### Validation status
+
+`integration/v0.11.0-candidate` is wired into CI, Quality, and real OpenSSH push workflows. Promotion remains blocked until GitHub-hosted jobs actually acquire runners and execute checkout, compile, tests, Clippy, audit, and OpenSSH fixtures; a `runner_id=0` / `steps=[]` failure is not treated as passing validation or as evidence of a source failure.
+
 ## [0.10.0-rc.1] - Unreleased
 
 ### Added
