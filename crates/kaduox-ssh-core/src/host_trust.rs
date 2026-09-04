@@ -3,7 +3,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use russh::keys::ssh_key::PublicKey;
+use russh::keys::ssh_key::certificate::CertType;
+use russh::keys::ssh_key::{Certificate, HashAlg, PublicKey};
 
 const MAX_KNOWN_HOSTS_BYTES: usize = 8 * 1024 * 1024;
 
@@ -11,6 +12,11 @@ const MAX_KNOWN_HOSTS_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) struct HostTrustPolicy {
     trusted_certificate_authorities: Vec<PublicKey>,
     revoked_keys: Vec<PublicKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedHostCertificate {
+    pub(crate) ca_fingerprint_sha256: String,
 }
 
 impl HostTrustPolicy {
@@ -95,12 +101,56 @@ impl HostTrustPolicy {
         !self.trusted_certificate_authorities.is_empty()
     }
 
-    pub(crate) fn certificate_authorities(&self) -> &[PublicKey] {
-        &self.trusted_certificate_authorities
-    }
-
     pub(crate) fn is_revoked(&self, key: &PublicKey) -> bool {
         self.revoked_keys.iter().any(|revoked| revoked == key)
+    }
+
+    pub(crate) fn verify_host_certificate(
+        &self,
+        host: &str,
+        certificate: &Certificate,
+    ) -> Result<VerifiedHostCertificate> {
+        if certificate.cert_type() != CertType::Host {
+            bail!("server presented a user certificate where a host certificate is required");
+        }
+        if self.trusted_certificate_authorities.is_empty() {
+            bail!("server presented a host certificate but no matching @cert-authority is trusted");
+        }
+
+        let certified_key = PublicKey::from(certificate.public_key().clone());
+        let signing_ca = PublicKey::from(certificate.signature_key().clone());
+        if self.is_revoked(&certified_key) {
+            bail!("server host certificate public key is marked @revoked");
+        }
+        if self.is_revoked(&signing_ca) {
+            bail!("server host certificate signing CA is marked @revoked");
+        }
+
+        let ca_fingerprints = self
+            .trusted_certificate_authorities
+            .iter()
+            .map(|key| key.fingerprint(HashAlg::Sha256))
+            .collect::<Vec<_>>();
+        certificate
+            .validate(ca_fingerprints.iter())
+            .context("server host certificate signature, authority, or validity window is invalid")?;
+
+        if !certificate.critical_options().is_empty() {
+            bail!("server host certificate contains unsupported critical options");
+        }
+
+        let principals = certificate.valid_principals();
+        if !principals.is_empty()
+            && !principals
+                .iter()
+                .any(|principal| host_principal_matches(host, principal))
+        {
+            bail!("server host certificate does not authorize hostname {host:?}");
+        }
+
+        Ok(VerifiedHostCertificate {
+            ca_fingerprint_sha256: signing_ca.fingerprint(HashAlg::Sha256).to_string(),
+        })
     }
 }
 
@@ -172,6 +222,13 @@ fn host_patterns_match(target: &str, patterns: &str) -> Result<bool> {
     Ok(positive_match)
 }
 
+fn host_principal_matches(host: &str, principal: &str) -> bool {
+    wildcard_match(
+        principal.to_ascii_lowercase().as_bytes(),
+        host.to_ascii_lowercase().as_bytes(),
+    )
+}
+
 fn wildcard_match(pattern: &[u8], candidate: &[u8]) -> bool {
     let mut pattern_index = 0usize;
     let mut candidate_index = 0usize;
@@ -237,6 +294,14 @@ mod tests {
     }
 
     #[test]
+    fn certificate_principals_use_hostname_without_known_hosts_port_form() {
+        assert!(host_principal_matches("prod.example", "prod.example"));
+        assert!(host_principal_matches("api.prod.example", "*.prod.example"));
+        assert!(!host_principal_matches("prod.example", "[prod.example]:2222"));
+        assert!(!host_principal_matches("db10.example", "db?.example"));
+    }
+
+    #[test]
     fn nonstandard_port_uses_openssh_bracket_form() {
         assert_eq!(known_hosts_target("Example.COM", 22), "example.com");
         assert_eq!(known_hosts_target("Example.COM", 2222), "[example.com]:2222");
@@ -282,6 +347,6 @@ mod tests {
             "@cert-authority prod.example {KEY}\n@cert-authority prod.example {KEY}\n"
         );
         let policy = HostTrustPolicy::parse("prod.example", 22, &contents).unwrap();
-        assert_eq!(policy.certificate_authorities().len(), 1);
+        assert_eq!(policy.trusted_certificate_authorities.len(), 1);
     }
 }
