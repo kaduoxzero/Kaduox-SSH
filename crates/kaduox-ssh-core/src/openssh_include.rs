@@ -9,6 +9,8 @@ const MAX_INCLUDE_DEPTH: usize = 16;
 const MAX_INCLUDE_FILES: usize = 256;
 const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_INCLUDE_ARGUMENTS_PER_LINE: usize = 64;
+const MAX_INCLUDE_PATH_BYTES: usize = 16 * 1024;
+const MAX_GLOB_COMPONENT_BYTES: usize = 1024;
 
 pub(crate) fn expand_user_config(root: &Path, home: &Path) -> Result<String> {
     let mut state = ExpansionState {
@@ -144,9 +146,8 @@ impl ExpansionState<'_> {
                     }
 
                     // OpenSSH restores the parent file's active Host/Match state
-                    // after each included file. Re-emit the parent Host scope so
-                    // a Host directive inside the include cannot capture later
-                    // declarations from the parent file.
+                    // after each included file. Match is still rejected, so the
+                    // only states we need to re-emit are global and Host.
                     push_line_bounded(&mut expanded, scope.restore_directive())?;
                 }
             }
@@ -158,8 +159,26 @@ impl ExpansionState<'_> {
         if value.is_empty() {
             bail!("OpenSSH Include path cannot be empty");
         }
+        if value.len() > MAX_INCLUDE_PATH_BYTES {
+            bail!("OpenSSH Include path exceeds the {MAX_INCLUDE_PATH_BYTES}-byte safety limit");
+        }
         if value.chars().any(char::is_control) {
             bail!("OpenSSH Include path cannot contain control characters");
+        }
+        if value.contains('%') {
+            bail!(
+                "OpenSSH Include token expansion is not supported yet; refusing path {value:?}"
+            );
+        }
+        if value.contains("${") {
+            bail!(
+                "OpenSSH Include environment expansion is not supported yet; refusing path {value:?}"
+            );
+        }
+        if value.contains('[') || value.contains(']') {
+            bail!(
+                "OpenSSH Include bracket glob expressions are not supported yet; refusing path {value:?}"
+            );
         }
 
         if value == "~" {
@@ -247,7 +266,7 @@ fn parse_arguments(input: &str) -> Result<Vec<String>> {
 
     for ch in input.chars() {
         if escaped {
-            if matches!(ch, '*' | '?' | '[' | ']' | '\\') {
+            if matches!(ch, '*' | '?' | '\\') {
                 current.push('\\');
             }
             current.push(ch);
@@ -316,6 +335,7 @@ fn expand_path_pattern(pattern: &Path) -> Result<Vec<PathBuf>> {
                 }
             }
             Component::Normal(segment) if contains_glob_meta(segment) => {
+                validate_glob_component(segment)?;
                 let mut next = Vec::new();
                 let allow_hidden = pattern_explicitly_starts_with_period(segment)?;
                 for candidate in &candidates {
@@ -369,17 +389,46 @@ fn expand_path_pattern(pattern: &Path) -> Result<Vec<PathBuf>> {
         }
     }
 
-    candidates.retain(|path| path.is_file());
-    candidates.sort();
-    candidates.dedup();
-    Ok(candidates)
+    let mut files = Vec::new();
+    for candidate in candidates {
+        match fs::metadata(&candidate) {
+            Ok(metadata) if metadata.is_file() => files.push(candidate),
+            Ok(_) => {
+                bail!(
+                    "OpenSSH Include matched a non-file path: {}",
+                    candidate.display()
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect OpenSSH Include path {}", candidate.display())
+                });
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 fn contains_glob_meta(segment: &OsStr) -> bool {
     segment
         .to_string_lossy()
         .chars()
-        .any(|ch| matches!(ch, '*' | '?' | '['))
+        .any(|ch| matches!(ch, '*' | '?'))
+}
+
+fn validate_glob_component(pattern: &OsStr) -> Result<()> {
+    let pattern = pattern
+        .to_str()
+        .context("OpenSSH Include glob patterns must be valid UTF-8")?;
+    if pattern.len() > MAX_GLOB_COMPONENT_BYTES {
+        bail!(
+            "OpenSSH Include glob component exceeds the {MAX_GLOB_COMPONENT_BYTES}-byte safety limit"
+        );
+    }
+    Ok(())
 }
 
 fn pattern_explicitly_starts_with_period(pattern: &OsStr) -> Result<bool> {
@@ -445,16 +494,6 @@ fn glob_match(pattern: &[u8], candidate: &[u8]) -> Result<bool> {
                         memo,
                     )?
             }
-            b'[' => {
-                let tail = &pattern[pattern_index + 1..];
-                let Some(relative_close) = tail.iter().position(|byte| *byte == b']') else {
-                    bail!("OpenSSH Include glob contains an unterminated character class");
-                };
-                let close = pattern_index + 1 + relative_close;
-                candidate_index < candidate.len()
-                    && class_matches(&pattern[pattern_index + 1..close], candidate[candidate_index])?
-                    && inner(pattern, candidate, close + 1, candidate_index + 1, memo)?
-            }
             b'\\' => {
                 let literal_index = pattern_index + 1;
                 if literal_index >= pattern.len() {
@@ -489,37 +528,6 @@ fn glob_match(pattern: &[u8], candidate: &[u8]) -> Result<bool> {
     inner(pattern, candidate, 0, 0, &mut HashMap::new())
 }
 
-fn class_matches(class: &[u8], candidate: u8) -> Result<bool> {
-    if class.is_empty() {
-        bail!("OpenSSH Include glob contains an empty character class");
-    }
-    let (negated, mut index) = if matches!(class.first(), Some(b'!') | Some(b'^')) {
-        (true, 1)
-    } else {
-        (false, 0)
-    };
-    if index >= class.len() {
-        bail!("OpenSSH Include glob contains an empty negated character class");
-    }
-
-    let mut matched = false;
-    while index < class.len() {
-        let start = class[index];
-        if index + 2 < class.len() && class[index + 1] == b'-' {
-            let end = class[index + 2];
-            if start > end {
-                bail!("OpenSSH Include glob contains a descending character range");
-            }
-            matched |= (start..=end).contains(&candidate);
-            index += 3;
-        } else {
-            matched |= start == candidate;
-            index += 1;
-        }
-    }
-    Ok(if negated { !matched } else { matched })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,13 +553,23 @@ mod tests {
     }
 
     #[test]
-    fn glob_match_supports_basic_patterns_and_escapes() {
+    fn glob_match_supports_star_question_and_escapes() {
         assert!(glob_match(b"*.conf", b"10-prod.conf").unwrap());
         assert!(glob_match(b"host?.conf", b"host1.conf").unwrap());
-        assert!(glob_match(b"[0-9][0-9]-*.conf", b"10-prod.conf").unwrap());
-        assert!(!glob_match(b"[!0-9]*.conf", b"10-prod.conf").unwrap());
-        assert!(glob_match(b"[!0-9]*.conf", b"prod.conf").unwrap());
+        assert!(!glob_match(b"host?.conf", b"host10.conf").unwrap());
         assert!(glob_match(b"literal\\*.conf", b"literal*.conf").unwrap());
+    }
+
+    #[test]
+    fn unsupported_include_expansions_fail_closed() {
+        let home = temp_root("unsupported");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        for include in ["%d/conf", "${SSH_CONF}/prod", "~other/.ssh/config", "conf.d/[0-9]*"] {
+            fs::write(ssh.join("config"), format!("Include {include}\n")).unwrap();
+            assert!(expand_user_config(&ssh.join("config"), &home).is_err(), "{include}");
+        }
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -701,16 +719,6 @@ mod tests {
         fs::write(ssh.join("nested.conf"), "Include config\n").unwrap();
         let error = expand_user_config(&ssh.join("config"), &home).unwrap_err();
         assert!(error.to_string().contains("Include"));
-        fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn tilde_user_include_fails_closed() {
-        let home = temp_root("tilde-user");
-        let ssh = home.join(".ssh");
-        fs::create_dir_all(&ssh).unwrap();
-        fs::write(ssh.join("config"), "Include ~other/config\n").unwrap();
-        assert!(expand_user_config(&ssh.join("config"), &home).is_err());
         fs::remove_dir_all(home).unwrap();
     }
 }
