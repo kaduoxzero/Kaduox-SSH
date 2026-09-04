@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
+use crate::openssh_include::expand_user_config;
+
 const MAX_JUMP_HOPS: usize = 8;
 const SHELL_ACTIVE_TOKEN_CHARS: &str = "'`\"$\\;&<>|(){}";
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -370,21 +372,24 @@ fn validate_untrusted_shell_token(value: &str, role: &str) -> Result<()> {
 }
 
 fn parse_home_config(alias: &str) -> Result<russh_config::Config> {
-    let Some(path) = openssh_config_path() else {
+    let Some(home) = user_home_dir() else {
         return Ok(russh_config::Config::default(alias));
     };
+    let path = home.join(".ssh").join("config");
 
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
+    match std::fs::metadata(&path) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(russh_config::Config::default(alias));
         }
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("failed to read OpenSSH config {}", path.display()));
+                .with_context(|| format!("failed to inspect OpenSSH config {}", path.display()));
         }
-    };
+    }
 
+    let contents = expand_user_config(&path, &home)
+        .with_context(|| format!("failed to expand OpenSSH config {}", path.display()))?;
     parse_openssh_contents(&contents, alias)
         .with_context(|| format!("failed to parse OpenSSH config {} for {alias}", path.display()))
 }
@@ -537,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn match_and_include_are_rejected_before_partial_resolution() {
+    fn raw_match_and_include_are_rejected_before_partial_resolution() {
         let match_config = "Host prod\n  User alice\nMatch host *.internal\n  User bob\n";
         assert!(parse_openssh_contents(match_config, "prod").is_err());
 
