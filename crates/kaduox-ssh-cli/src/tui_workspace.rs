@@ -12,7 +12,7 @@ use crossterm::terminal::{
 };
 use kaduox_ssh_core::{
     ConnectionManager, ConnectionManagerSnapshot, HostInventory, HostKeyVerification,
-    discover_inventory, discover_openssh_hosts, load_inventory,
+    TransferTaskRegistry, discover_inventory, discover_openssh_hosts, load_inventory,
 };
 
 use crate::tui_actions::prompt_line;
@@ -64,7 +64,12 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(session) = sessions.get(selected) {
                     terminal.suspend()?;
-                    let run_result = tui_app::run(session.lease.client(), &session.remote_root).await;
+                    let run_result = tui_app::run(
+                        session.lease.client(),
+                        &session.remote_root,
+                        session.transfer_tasks.clone(),
+                    )
+                    .await;
                     let resume_result = terminal.resume();
                     match run_result {
                         Ok(()) => {
@@ -303,6 +308,7 @@ async fn connect_session(
         lease,
         remote_root: cli.remote.clone(),
         host_key,
+        transfer_tasks: TransferTaskRegistry::default(),
     });
     *selected = sessions.len() - 1;
     Ok(format!("connected {host}"))
