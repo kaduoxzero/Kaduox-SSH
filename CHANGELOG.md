@@ -115,7 +115,7 @@ The v0.7 candidate has CI, Quality, and real OpenSSH workflows wired directly to
 - ProxyCommand token expansion is bounded and restricted to a portable shell-token grammar for untrusted expanded values;
 - SSH connect, authentication, channel-open, channel-request, SFTP initialization, forwarding, and SOCKS handshakes have explicit bounds;
 - server-initiated forwarded channels are rejected unless registered and are protected by a per-connection resource budget;
-- remote forwarding unregisters the local route before sending cancellation so late server channels fail closed;
+- remote forwarding unregisters the local route before sending cancellation so late forwarded channels fail closed;
 - recursive transfer/sync path traversal and symlink boundaries were hardened;
 - authentication secrets are excluded from `Debug` output;
 - unsupported OpenSSH structural directives such as `Include` and `Match` continue to fail closed in connection resolution;
