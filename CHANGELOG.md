@@ -4,6 +4,29 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.10.0-rc.1] - Unreleased
+
+### Added
+
+- fail-closed `SshClient` remote filesystem mutation APIs for one-directory creation, same-directory rename, and one-entry removal;
+- `kssh-tui` `m` action for creating one directory in the current remote directory;
+- `kssh-tui` `R` action for same-directory non-overwriting rename of the selected entry;
+- `kssh-tui` `x` / `Delete` action for removing one regular file, one symbolic link itself, or one empty directory after exact `DELETE` confirmation.
+
+### Safety boundaries
+
+- remote mutation paths reject root/current-directory mutation, NUL/control characters, ambiguous `.` / `..` components, repeated separators, and trailing-directory paths;
+- target occupancy uses lstat-style metadata, so dangling symbolic links remain occupied destinations instead of being mistaken for absent paths;
+- rename is restricted to the same directory and rejects an existing destination; v0.10 exposes neither overwrite rename nor cross-directory move;
+- symbolic-link deletion removes the link itself and never follows its target;
+- directory removal performs an immediate directory listing and only permits an empty directory before issuing `rmdir`; recursive deletion is intentionally unavailable;
+- TUI deletion requires the exact confirmation token `DELETE`, separate from the `YES` token used for recursive transfer confirmation;
+- all mutations use the canonical bounded SFTP session path and frontends never receive a raw `SftpSession`.
+
+### Validation status
+
+`integration/v0.10.0-candidate` is wired into CI, Quality, and real OpenSSH push workflows. Promotion remains blocked until GitHub-hosted jobs actually acquire runners and execute repository steps; the previously observed `runner_id=0` / `steps=[]` condition is not treated as either passing validation or a source-code failure.
+
 ## [0.9.0-rc.1] - Unreleased
 
 ### Added
@@ -92,7 +115,7 @@ The v0.7 candidate has CI, Quality, and real OpenSSH workflows wired directly to
 - ProxyCommand token expansion is bounded and restricted to a portable shell-token grammar for untrusted expanded values;
 - SSH connect, authentication, channel-open, channel-request, SFTP initialization, forwarding, and SOCKS handshakes have explicit bounds;
 - server-initiated forwarded channels are rejected unless registered and are protected by a per-connection resource budget;
-- remote forwarding unregisters the local route before sending cancellation so late forwarded channels fail closed;
+- remote forwarding unregisters the local route before sending cancellation so late server channels fail closed;
 - recursive transfer/sync path traversal and symlink boundaries were hardened;
 - authentication secrets are excluded from `Debug` output;
 - unsupported OpenSSH structural directives such as `Include` and `Match` continue to fail closed in connection resolution;
