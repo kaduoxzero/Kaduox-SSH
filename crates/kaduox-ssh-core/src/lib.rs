@@ -20,6 +20,7 @@ mod target;
 mod transfer_engine;
 mod transfer_download_policy;
 mod transfer_facade;
+mod transfer_task;
 pub(crate) mod transfer_policy;
 pub(crate) use transfer_facade as transfer;
 
@@ -49,4 +50,8 @@ pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
 pub use target::ConnectionTarget;
 pub use transfer::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
+};
+pub use transfer_task::{
+    TransferTaskId, TransferTaskKind, TransferTaskProgress, TransferTaskRegistration,
+    TransferTaskRegistry, TransferTaskSnapshot, TransferTaskState,
 };
