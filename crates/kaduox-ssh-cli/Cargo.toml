@@ -10,6 +10,10 @@ repository.workspace = true
 name = "kssh"
 path = "src/main.rs"
 
+[[bin]]
+name = "kssh-tui"
+path = "src/tui_main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
