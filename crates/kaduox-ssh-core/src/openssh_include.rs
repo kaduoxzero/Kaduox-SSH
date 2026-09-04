@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -14,21 +14,43 @@ pub(crate) fn expand_user_config(root: &Path, home: &Path) -> Result<String> {
     let mut state = ExpansionState {
         home,
         files_seen: 0,
-        bytes_emitted: 0,
+        bytes_read: 0,
         active_paths: HashSet::new(),
     };
-    state.expand_file(root, 0)
+
+    // russh-config models only explicit Host entries, while OpenSSH permits
+    // options in the implicit global scope before the first Host. Represent
+    // that scope as Host * so first-value-wins ordering remains intact.
+    let mut expanded = String::from("Host *\n");
+    let root_contents = state.expand_file(root, 0, Scope::Global)?;
+    push_bounded(&mut expanded, &root_contents)?;
+    Ok(expanded)
+}
+
+#[derive(Clone, Debug)]
+enum Scope {
+    Global,
+    Host(String),
+}
+
+impl Scope {
+    fn restore_directive(&self) -> &str {
+        match self {
+            Self::Global => "Host *",
+            Self::Host(line) => line,
+        }
+    }
 }
 
 struct ExpansionState<'a> {
     home: &'a Path,
     files_seen: usize,
-    bytes_emitted: usize,
+    bytes_read: usize,
     active_paths: HashSet<PathBuf>,
 }
 
 impl ExpansionState<'_> {
-    fn expand_file(&mut self, path: &Path, depth: usize) -> Result<String> {
+    fn expand_file(&mut self, path: &Path, depth: usize, inherited_scope: Scope) -> Result<String> {
         if depth > MAX_INCLUDE_DEPTH {
             bail!("OpenSSH Include nesting exceeds the {MAX_INCLUDE_DEPTH}-level safety limit");
         }
@@ -43,23 +65,38 @@ impl ExpansionState<'_> {
         }
         self.files_seen += 1;
 
-        let result = self.expand_file_inner(path, depth);
+        let result = self.expand_file_inner(path, depth, inherited_scope);
         self.active_paths.remove(&identity);
         result
     }
 
-    fn expand_file_inner(&mut self, path: &Path, depth: usize) -> Result<String> {
+    fn expand_file_inner(&mut self, path: &Path, depth: usize, inherited_scope: Scope) -> Result<String> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
-        self.account_bytes(contents.len())?;
+        self.account_input_bytes(contents.len())?;
 
+        let mut scope = inherited_scope;
         let mut expanded = String::with_capacity(contents.len());
         for (line_index, line) in contents.lines().enumerate() {
+            let key = directive_key(line);
+            if key.is_some_and(|key| key.eq_ignore_ascii_case("match")) {
+                bail!(
+                    "OpenSSH Match on {}:{} is not safely supported yet; refusing partial configuration resolution",
+                    path.display(),
+                    line_index + 1
+                );
+            }
+
+            if key.is_some_and(|key| key.eq_ignore_ascii_case("host")) {
+                scope = Scope::Host(line.trim().to_owned());
+                push_line_bounded(&mut expanded, line)?;
+                continue;
+            }
+
             let Some(arguments) = include_arguments(line)
                 .with_context(|| format!("invalid OpenSSH Include on {}:{}", path.display(), line_index + 1))?
             else {
-                expanded.push_str(line);
-                expanded.push('\n');
+                push_line_bounded(&mut expanded, line)?;
                 continue;
             };
 
@@ -82,18 +119,25 @@ impl ExpansionState<'_> {
             for argument in arguments {
                 let pattern = self.anchor_user_include(&argument)?;
                 for include in expand_path_pattern(&pattern)? {
-                    let included = self.expand_file(&include, depth + 1).with_context(|| {
-                        format!(
-                            "while expanding OpenSSH Include from {}:{}",
-                            path.display(),
-                            line_index + 1
-                        )
-                    })?;
-                    self.account_bytes(included.len())?;
-                    expanded.push_str(&included);
+                    let included = self
+                        .expand_file(&include, depth + 1, scope.clone())
+                        .with_context(|| {
+                            format!(
+                                "while expanding OpenSSH Include from {}:{}",
+                                path.display(),
+                                line_index + 1
+                            )
+                        })?;
+                    push_bounded(&mut expanded, &included)?;
                     if !included.ends_with('\n') {
-                        expanded.push('\n');
+                        push_bounded(&mut expanded, "\n")?;
                     }
+
+                    // OpenSSH restores the parent file's active Host/Match state
+                    // after each included file. Re-emit the parent Host scope so
+                    // a Host directive inside the include cannot capture later
+                    // declarations from the parent file.
+                    push_line_bounded(&mut expanded, scope.restore_directive())?;
                 }
             }
         }
@@ -126,33 +170,56 @@ impl ExpansionState<'_> {
         }
     }
 
-    fn account_bytes(&mut self, additional: usize) -> Result<()> {
-        self.bytes_emitted = self
-            .bytes_emitted
+    fn account_input_bytes(&mut self, additional: usize) -> Result<()> {
+        self.bytes_read = self
+            .bytes_read
             .checked_add(additional)
             .context("OpenSSH Include byte accounting overflow")?;
-        if self.bytes_emitted > MAX_CONFIG_BYTES {
-            bail!("expanded OpenSSH configuration exceeds the {MAX_CONFIG_BYTES}-byte safety limit");
+        if self.bytes_read > MAX_CONFIG_BYTES {
+            bail!("OpenSSH configuration input exceeds the {MAX_CONFIG_BYTES}-byte safety limit");
         }
         Ok(())
     }
 }
 
-fn include_arguments(line: &str) -> Result<Option<Vec<String>>> {
+fn push_line_bounded(output: &mut String, line: &str) -> Result<()> {
+    push_bounded(output, line)?;
+    push_bounded(output, "\n")
+}
+
+fn push_bounded(output: &mut String, text: &str) -> Result<()> {
+    let new_len = output
+        .len()
+        .checked_add(text.len())
+        .context("OpenSSH Include output byte accounting overflow")?;
+    if new_len > MAX_CONFIG_BYTES {
+        bail!("expanded OpenSSH configuration exceeds the {MAX_CONFIG_BYTES}-byte safety limit");
+    }
+    output.push_str(text);
+    Ok(())
+}
+
+fn directive_key(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        return Ok(None);
+        return None;
     }
-
     let split = trimmed
         .find(|ch: char| ch.is_ascii_whitespace() || ch == '=')
         .unwrap_or(trimmed.len());
-    let key = &trimmed[..split];
+    Some(&trimmed[..split])
+}
+
+fn include_arguments(line: &str) -> Result<Option<Vec<String>>> {
+    let Some(key) = directive_key(line) else {
+        return Ok(None);
+    };
     if !key.eq_ignore_ascii_case("include") {
         return Ok(None);
     }
 
-    let mut rest = &trimmed[split..];
+    let trimmed = line.trim_start();
+    let mut rest = &trimmed[key.len()..];
     rest = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == '=');
     Ok(Some(parse_arguments(rest)?))
 }
@@ -160,12 +227,15 @@ fn include_arguments(line: &str) -> Result<Option<Vec<String>>> {
 fn parse_arguments(input: &str) -> Result<Vec<String>> {
     let mut output = Vec::new();
     let mut current = String::new();
-    let mut chars = input.chars().peekable();
+    let mut chars = input.chars();
     let mut quote: Option<char> = None;
     let mut escaped = false;
 
     while let Some(ch) = chars.next() {
         if escaped {
+            if matches!(ch, '*' | '?' | '[' | ']' | '\\') {
+                current.push('\\');
+            }
             current.push(ch);
             escaped = false;
             continue;
@@ -279,7 +349,10 @@ fn expand_path_pattern(pattern: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn contains_glob_meta(segment: &OsStr) -> bool {
-    segment.to_string_lossy().chars().any(|ch| matches!(ch, '*' | '?' | '['))
+    segment
+        .to_string_lossy()
+        .chars()
+        .any(|ch| matches!(ch, '*' | '?' | '['))
 }
 
 fn glob_segment_matches(pattern: &OsStr, candidate: &OsString) -> Result<bool> {
@@ -293,67 +366,86 @@ fn glob_segment_matches(pattern: &OsStr, candidate: &OsString) -> Result<bool> {
 }
 
 fn glob_match(pattern: &[u8], candidate: &[u8]) -> Result<bool> {
-    fn inner(pattern: &[u8], candidate: &[u8]) -> Result<bool> {
-        let Some((&head, tail)) = pattern.split_first() else {
-            return Ok(candidate.is_empty());
-        };
-        match head {
+    fn inner(
+        pattern: &[u8],
+        candidate: &[u8],
+        pattern_index: usize,
+        candidate_index: usize,
+        memo: &mut HashMap<(usize, usize), bool>,
+    ) -> Result<bool> {
+        if let Some(result) = memo.get(&(pattern_index, candidate_index)) {
+            return Ok(*result);
+        }
+        if pattern_index >= pattern.len() {
+            return Ok(candidate_index >= candidate.len());
+        }
+
+        let head = pattern[pattern_index];
+        let result = match head {
             b'*' => {
-                let mut rest = tail;
-                while rest.first() == Some(&b'*') {
-                    rest = &rest[1..];
+                let mut next_pattern = pattern_index + 1;
+                while next_pattern < pattern.len() && pattern[next_pattern] == b'*' {
+                    next_pattern += 1;
                 }
-                if rest.is_empty() {
-                    return Ok(true);
-                }
-                for index in 0..=candidate.len() {
-                    if inner(rest, &candidate[index..])? {
-                        return Ok(true);
+                if next_pattern >= pattern.len() {
+                    true
+                } else {
+                    let mut matched = false;
+                    for next_candidate in candidate_index..=candidate.len() {
+                        if inner(pattern, candidate, next_pattern, next_candidate, memo)? {
+                            matched = true;
+                            break;
+                        }
                     }
+                    matched
                 }
-                Ok(false)
             }
             b'?' => {
-                if candidate.is_empty() {
-                    Ok(false)
-                } else {
-                    inner(tail, &candidate[1..])
-                }
+                candidate_index < candidate.len()
+                    && inner(
+                        pattern,
+                        candidate,
+                        pattern_index + 1,
+                        candidate_index + 1,
+                        memo,
+                    )?
             }
             b'[' => {
-                let Some(close) = tail.iter().position(|byte| *byte == b']') else {
+                let tail = &pattern[pattern_index + 1..];
+                let Some(relative_close) = tail.iter().position(|byte| *byte == b']') else {
                     bail!("OpenSSH Include glob contains an unterminated character class");
                 };
-                if candidate.is_empty() {
-                    return Ok(false);
-                }
-                let class = &tail[..close];
-                let matched = class_matches(class, candidate[0])?;
-                if !matched {
-                    return Ok(false);
-                }
-                inner(&tail[close + 1..], &candidate[1..])
+                let close = pattern_index + 1 + relative_close;
+                candidate_index < candidate.len()
+                    && class_matches(&pattern[pattern_index + 1..close], candidate[candidate_index])?
+                    && inner(pattern, candidate, close + 1, candidate_index + 1, memo)?
             }
             b'\\' => {
-                let Some((&literal, rest)) = tail.split_first() else {
+                let literal_index = pattern_index + 1;
+                if literal_index >= pattern.len() {
                     bail!("OpenSSH Include glob ends with an incomplete escape");
-                };
-                if candidate.first() == Some(&literal) {
-                    inner(rest, &candidate[1..])
-                } else {
-                    Ok(false)
                 }
+                candidate_index < candidate.len()
+                    && candidate[candidate_index] == pattern[literal_index]
+                    && inner(pattern, candidate, literal_index + 1, candidate_index + 1, memo)?
             }
             literal => {
-                if candidate.first() == Some(&literal) {
-                    inner(tail, &candidate[1..])
-                } else {
-                    Ok(false)
-                }
+                candidate_index < candidate.len()
+                    && candidate[candidate_index] == literal
+                    && inner(
+                        pattern,
+                        candidate,
+                        pattern_index + 1,
+                        candidate_index + 1,
+                        memo,
+                    )?
             }
-        }
+        };
+        memo.insert((pattern_index, candidate_index), result);
+        Ok(result)
     }
-    inner(pattern, candidate)
+
+    inner(pattern, candidate, 0, 0, &mut HashMap::new())
 }
 
 fn class_matches(class: &[u8], candidate: u8) -> Result<bool> {
@@ -397,7 +489,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("kaduox-openssh-include-{label}-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "kaduox-openssh-include-{label}-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -415,6 +510,7 @@ mod tests {
         assert!(glob_match(b"[0-9][0-9]-*.conf", b"10-prod.conf").unwrap());
         assert!(!glob_match(b"[!0-9]*.conf", b"10-prod.conf").unwrap());
         assert!(glob_match(b"[!0-9]*.conf", b"prod.conf").unwrap());
+        assert!(glob_match(b"literal\\*.conf", b"literal*.conf").unwrap());
     }
 
     #[test]
@@ -423,7 +519,7 @@ mod tests {
         let ssh = home.join(".ssh");
         let conf = ssh.join("conf.d");
         fs::create_dir_all(&conf).unwrap();
-        fs::write(conf.join("20-b.conf"), "  User second\n").unwrap();
+        fs::write(conf.join("20-b.conf"), "  IdentityFile /tmp/second\n").unwrap();
         fs::write(conf.join("10-a.conf"), "  User first\n").unwrap();
         fs::write(
             ssh.join("config"),
@@ -432,7 +528,57 @@ mod tests {
         .unwrap();
 
         let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
-        assert_eq!(expanded, "Host prod\n  User first\n  User second\n  Port 2200\n");
+        let first = expanded.find("User first").unwrap();
+        let second = expanded.find("IdentityFile /tmp/second").unwrap();
+        let port = expanded.rfind("Port 2200").unwrap();
+        assert!(first < second && second < port);
+
+        let parsed = russh_config::parse(&expanded, "prod").unwrap();
+        assert_eq!(parsed.user(), "first");
+        assert_eq!(parsed.port(), 2200);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn include_restores_parent_host_scope_after_nested_host_blocks() {
+        let home = temp_root("scope");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Host other\n  User wrong\n  Port 2022\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host prod\n  User deploy\n  Include nested.conf\n  Port 2200\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let parsed = russh_config::parse(&expanded, "prod").unwrap();
+        assert_eq!(parsed.user(), "deploy");
+        assert_eq!(parsed.port(), 2200);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn global_scope_is_restored_after_include() {
+        let home = temp_root("global-scope");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(ssh.join("nested.conf"), "Host other\n  Port 2022\n").unwrap();
+        fs::write(
+            ssh.join("config"),
+            "User global-user\nInclude nested.conf\nPort 2200\nHost prod\n  HostName prod.example\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let parsed = russh_config::parse(&expanded, "prod").unwrap();
+        assert_eq!(parsed.user(), "global-user");
+        assert_eq!(parsed.port(), 2200);
+        assert_eq!(parsed.host(), "prod.example");
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -447,7 +593,19 @@ mod tests {
         )
         .unwrap();
         let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
-        assert_eq!(expanded, "Host prod\n  User deploy\n");
+        let parsed = russh_config::parse(&expanded, "prod").unwrap();
+        assert_eq!(parsed.user(), "deploy");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn match_in_included_file_fails_closed() {
+        let home = temp_root("match");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(ssh.join("nested.conf"), "Match host *.internal\n  User wrong\n").unwrap();
+        fs::write(ssh.join("config"), "Host prod\n  Include nested.conf\n").unwrap();
+        assert!(expand_user_config(&ssh.join("config"), &home).is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
