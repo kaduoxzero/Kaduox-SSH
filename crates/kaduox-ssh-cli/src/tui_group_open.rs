@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::{Result, bail};
 use kaduox_ssh_core::{
-    ConnectionConfig, ConnectionLease, ConnectionManager, HostKeyVerification,
+    ConnectionConfig, ConnectionLease, ConnectionManager, HostKeyVerification, TransferTaskRegistry,
 };
 
 use crate::{Cli, build_connection_config, resolve_authentication};
@@ -13,6 +13,7 @@ pub(crate) struct WorkspaceSession {
     pub(crate) lease: ConnectionLease,
     pub(crate) remote_root: String,
     pub(crate) host_key: String,
+    pub(crate) transfer_tasks: TransferTaskRegistry,
 }
 
 struct PreparedSession {
@@ -90,6 +91,7 @@ pub(crate) async fn open_group(
                 lease,
                 remote_root: cli.remote.clone(),
                 host_key,
+                transfer_tasks: TransferTaskRegistry::default(),
             })
         }
         .await;
