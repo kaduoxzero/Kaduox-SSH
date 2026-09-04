@@ -1,10 +1,11 @@
 mod chains_cli;
+mod daemon_cli;
 mod host_picker;
 mod hosts_cli;
 mod jump_auth_cli;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -226,10 +227,16 @@ async fn main() -> Result<()> {
         .init();
 
     let mut raw_args = std::env::args_os().collect::<Vec<_>>();
-    if raw_args.get(1).is_some_and(|value| value == "hosts") {
+    if raw_args
+        .get(1)
+        .is_some_and(|value| value.as_os_str() == OsStr::new("hosts"))
+    {
         return hosts_cli::run(raw_args.drain(2..));
     }
-    if raw_args.get(1).is_some_and(|value| value == "chains") {
+    if raw_args
+        .get(1)
+        .is_some_and(|value| value.as_os_str() == OsStr::new("chains"))
+    {
         return chains_cli::run(raw_args.drain(2..));
     }
     if raw_args.len() == 1 {
@@ -292,6 +299,10 @@ async fn main() -> Result<()> {
             || !cli.dynamic_forward.is_empty())
     {
         bail!("probe does not start port forwards; remove -L/-R/-D options");
+    }
+
+    if daemon_cli::try_run(&cli, &command).await? {
+        return Ok(());
     }
 
     let authentication = resolve_authentication(&cli, &config)?;
