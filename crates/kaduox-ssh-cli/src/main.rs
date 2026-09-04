@@ -1,4 +1,10 @@
+mod chains_cli;
+mod host_picker;
+mod hosts_cli;
+mod jump_auth_cli;
+
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -6,15 +12,18 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, ConnectionTarget, DynamicForward, HostKeyPolicy,
-    HostKeyVerification, LocalForward, RemoteCommandSpec, RemoteFileMetadata, RemoteFileType,
-    RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize,
-    TerminalSpec, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
-    resolve_jump_hosts,
+    Authentication, AuthenticationKind, ConnectionConfig, ConnectionTarget, DynamicForward,
+    HostKeyPolicy, HostKeyVerification, LocalForward, RemoteCommandSpec, RemoteFileMetadata,
+    RemoteFileType, RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan,
+    TerminalSize, TerminalSpec, TransferCancellation, TransferDirection, TransferEvent,
+    TransferOptions, authentication_kind, resolve_jump_hosts,
 };
+use kaduox_ssh_hosts::{HostStore, StoredAuthMethod, resolve_host as resolve_library_host};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
+
+use crate::jump_auth_cli::InteractiveJumpAuth;
 
 const PROGRESS_QUEUE_CAPACITY: usize = 256;
 
@@ -25,7 +34,7 @@ const PROGRESS_QUEUE_CAPACITY: usize = 256;
     about = "High-performance SSH client built in Rust"
 )]
 struct Cli {
-    /// Host alias, hostname, IP, or user@host. ~/.ssh/config is resolved automatically.
+    /// Host-library alias, OpenSSH alias, hostname, IP, or user@host.
     host: String,
 
     /// Override SSH port.
@@ -81,7 +90,7 @@ struct Cli {
     dynamic_forward: Vec<String>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -125,34 +134,24 @@ enum Command {
     Upload {
         local: PathBuf,
         remote: String,
-        /// Recursively upload a directory tree.
         #[arg(short = 'r', long)]
         recursive: bool,
-        /// Resume from a stable .kaduox.part file when possible.
         #[arg(long)]
         resume: bool,
-        /// Write directly to the destination instead of using an atomic staging file.
         #[arg(long)]
         no_atomic: bool,
-        /// Number of files transferred concurrently during recursive transfers.
         #[arg(long, default_value_t = 4)]
         jobs: usize,
-        /// Maximum pipelined SFTP write requests per file.
         #[arg(long, default_value_t = 16)]
         write_concurrency: usize,
-        /// Requested SFTP packet size; server limits can reduce the effective size.
         #[arg(long, default_value_t = 262_144)]
         packet_size: u32,
-        /// SFTP request timeout in seconds.
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
-        /// Install the uploaded file or directory tree as this remote OS user through sudo.
         #[arg(long)]
         as_user: Option<String>,
-        /// Unix file mode for --as-user uploads, interpreted as octal (for example 0644).
         #[arg(long, requires = "as_user")]
         mode: Option<String>,
-        /// Unix directory mode for recursive --as-user uploads (for example 0755).
         #[arg(long, requires_all = ["as_user", "recursive"])]
         dir_mode: Option<String>,
     },
@@ -160,25 +159,18 @@ enum Command {
     Download {
         remote: String,
         local: PathBuf,
-        /// Recursively download a directory tree.
         #[arg(short = 'r', long)]
         recursive: bool,
-        /// Resume from a stable .kaduox.part file when possible.
         #[arg(long)]
         resume: bool,
-        /// Write directly to the destination instead of using an atomic staging file.
         #[arg(long)]
         no_atomic: bool,
-        /// Number of files transferred concurrently during recursive transfers.
         #[arg(long, default_value_t = 4)]
         jobs: usize,
-        /// Maximum pipelined SFTP write requests per file.
         #[arg(long, default_value_t = 16)]
         write_concurrency: usize,
-        /// Requested SFTP packet size; server limits can reduce the effective size.
         #[arg(long, default_value_t = 262_144)]
         packet_size: u32,
-        /// SFTP request timeout in seconds.
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
     },
@@ -186,37 +178,27 @@ enum Command {
     Sync {
         local: PathBuf,
         remote: String,
-        /// Print the synchronization plan without modifying the remote tree.
         #[arg(long)]
         dry_run: bool,
-        /// Delete remote entries absent locally and permit file/directory replacement.
         #[arg(long)]
         delete: bool,
-        /// Compare files only by size instead of size plus modification time.
         #[arg(long)]
         size_only: bool,
-        /// Resume interrupted uploads from stable .kaduox.part files when possible.
         #[arg(long)]
         resume: bool,
-        /// Write directly to destinations instead of atomic staging files.
         #[arg(long)]
         no_atomic: bool,
-        /// Number of files uploaded concurrently.
         #[arg(long, default_value_t = 4)]
         jobs: usize,
-        /// Maximum pipelined SFTP write requests per file.
         #[arg(long, default_value_t = 16)]
         write_concurrency: usize,
-        /// Requested SFTP packet size; server limits can reduce the effective size.
         #[arg(long, default_value_t = 262_144)]
         packet_size: u32,
-        /// SFTP request timeout in seconds.
         #[arg(long, default_value_t = 30)]
         request_timeout: u64,
     },
     /// Show the effective connection configuration without opening a network connection.
     Inspect {
-        /// Show path-level details such as configured identity and known_hosts files.
         #[arg(long)]
         verbose: bool,
     },
@@ -226,14 +208,11 @@ enum Command {
     Ls {
         #[arg(default_value = ".")]
         remote: String,
-        /// Show type, mode, owner/group, size, and modification time.
         #[arg(short = 'l', long)]
         long: bool,
     },
     /// Show lstat-style metadata for a remote path through SFTP.
-    Stat {
-        remote: String,
-    },
+    Stat { remote: String },
     /// Keep only configured -L/-R/-D forwards alive until Ctrl-C.
     Tunnel,
 }
@@ -246,10 +225,38 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
-    let target = ConnectionTarget::parse(&cli.host)?;
-    let target_user = effective_username(cli.user.as_deref(), &target);
-    let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?;
+    let mut raw_args = std::env::args_os().collect::<Vec<_>>();
+    if raw_args.get(1).is_some_and(|value| value == "hosts") {
+        return hosts_cli::run(raw_args.drain(2..));
+    }
+    if raw_args.get(1).is_some_and(|value| value == "chains") {
+        return chains_cli::run(raw_args.drain(2..));
+    }
+    if raw_args.len() == 1 {
+        raw_args.push(OsString::from(host_picker::pick_default_host()?));
+    }
+
+    let mut cli = Cli::parse_from(raw_args);
+    let command = cli
+        .command
+        .take()
+        .unwrap_or(Command::Shell { as_user: None });
+
+    let mut host_store = HostStore::open_default()?;
+    let library_alias = host_store.host(&cli.host).is_some();
+    let mut config = if library_alias {
+        resolve_library_host(
+            host_store.database(),
+            &cli.host,
+            cli.user.as_deref(),
+            cli.port,
+        )?
+        .config
+    } else {
+        let target = ConnectionTarget::parse(&cli.host)?;
+        let target_user = effective_username(cli.user.as_deref(), &target);
+        ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?
+    };
 
     if let Some(port) = cli.port {
         config.port = port;
@@ -274,12 +281,12 @@ async fn main() -> Result<()> {
     }
     config.agent_forwarding = cli.forward_agent;
 
-    if let Command::Inspect { verbose } = &cli.command {
+    if let Command::Inspect { verbose } = &command {
         inspect_connection(&config, &cli, *verbose)?;
         return Ok(());
     }
 
-    if matches!(&cli.command, Command::Probe)
+    if matches!(&command, Command::Probe)
         && (!cli.local_forward.is_empty()
             || !cli.remote_forward.is_empty()
             || !cli.dynamic_forward.is_empty())
@@ -288,24 +295,56 @@ async fn main() -> Result<()> {
     }
 
     let authentication = resolve_authentication(&cli, &config)?;
+    let final_auth_kind = authentication_kind(&authentication);
     let connect_started = Instant::now();
-    let ssh = SshClient::connect(config, authentication).await?;
+    let (progress_tx, progress_rx) = mpsc::unbounded_channel();
+    let progress_task = tokio::spawn(jump_auth_cli::print_progress(progress_rx));
+    let mut jump_auth = InteractiveJumpAuth;
+    let connect_result = SshClient::connect_with_jump_auth(
+        config,
+        authentication,
+        &mut jump_auth,
+        Some(&progress_tx),
+    )
+    .await;
+    drop(progress_tx);
+    let _ = progress_task.await;
+    let ssh = connect_result?;
     let connect_elapsed = connect_started.elapsed();
 
-    if matches!(&cli.command, Command::Probe) {
+    if library_alias {
+        if let Err(error) = host_store
+            .record_success(&cli.host, stored_auth_method(final_auth_kind))
+            .and_then(|_| host_store.save())
+        {
+            eprintln!("warning: connected successfully but failed to persist host statistics: {error:#}");
+        }
+    }
+
+    if matches!(&command, Command::Probe) {
         print_probe(&ssh, connect_elapsed).await?;
         ssh.close().await?;
         return Ok(());
     }
 
     let forward_handles = setup_forwards(&ssh, &cli).await?;
-    let result = run_command(&ssh, cli.command).await;
+    let result = run_command(&ssh, command).await;
     let forward_close_result = forward_handles.close().await;
     let close_result = ssh.close().await;
     result?;
     forward_close_result?;
     close_result?;
     Ok(())
+}
+
+fn stored_auth_method(kind: AuthenticationKind) -> StoredAuthMethod {
+    match kind {
+        AuthenticationKind::Password => StoredAuthMethod::Password,
+        AuthenticationKind::KeyboardInteractive => StoredAuthMethod::KeyboardInteractive,
+        AuthenticationKind::PrivateKey => StoredAuthMethod::PrivateKey,
+        AuthenticationKind::Agent => StoredAuthMethod::Agent,
+        AuthenticationKind::Auto => StoredAuthMethod::Auto,
+    }
 }
 
 fn effective_username<'a>(
@@ -327,11 +366,7 @@ fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Re
     println!("authentication: {}", authentication_mode(cli));
     println!(
         "agent-forwarding: {}",
-        if snapshot.agent_forwarding {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        if snapshot.agent_forwarding { "enabled" } else { "disabled" }
     );
 
     match &snapshot.route {
@@ -452,12 +487,12 @@ async fn print_probe(ssh: &SshClient, elapsed: Duration) -> Result<()> {
 }
 
 fn connection_route(config: &ConnectionConfig) -> String {
-    if config.proxy_command.is_some() {
-        "proxy-command".to_owned()
-    } else if config.jump_hosts.is_empty() {
-        "direct".to_owned()
-    } else {
+    if !config.jump_hosts.is_empty() {
         format!("proxy-jump ({} hop(s))", config.jump_hosts.len())
+    } else if config.proxy_command.is_some() {
+        "proxy-command".to_owned()
+    } else {
+        "direct".to_owned()
     }
 }
 
@@ -1152,13 +1187,19 @@ mod tests {
     #[test]
     fn parses_connection_inspect_subcommand() {
         let cli = Cli::try_parse_from(["kssh", "example.com", "inspect", "--verbose"]).unwrap();
-        assert!(matches!(cli.command, Command::Inspect { verbose: true }));
+        assert!(matches!(cli.command, Some(Command::Inspect { verbose: true })));
     }
 
     #[test]
     fn parses_probe_subcommand() {
         let cli = Cli::try_parse_from(["kssh", "server.example", "probe"]).unwrap();
-        assert!(matches!(cli.command, Command::Probe));
+        assert!(matches!(cli.command, Some(Command::Probe)));
+    }
+
+    #[test]
+    fn host_without_subcommand_defaults_at_runtime() {
+        let cli = Cli::try_parse_from(["kssh", "server.example"]).unwrap();
+        assert!(cli.command.is_none());
     }
 
     #[test]
@@ -1202,11 +1243,11 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Command::Exec {
+            Some(Command::Exec {
                 cwd: Some(ref cwd),
                 ref environment,
                 ..
-            } if cwd == "/srv/app" && environment == &["APP_ENV=prod"]
+            }) if cwd == "/srv/app" && environment == &["APP_ENV=prod"]
         ));
     }
 
