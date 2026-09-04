@@ -2,6 +2,7 @@
 set -euo pipefail
 
 FLEET="${KSSH_FLEET:-target/debug/kssh-fleet}"
+INVENTORY_CLI="${KSSH_INVENTORY:-target/debug/kssh-inventory}"
 TEST_USER="${KADUOX_FLEET_USER:-kaduox-fleet-ci}"
 PORT="${KADUOX_FLEET_PORT:-40433}"
 BAD_PORT="${KADUOX_FLEET_BAD_PORT:-40434}"
@@ -14,7 +15,10 @@ LOG="$WORK/sshd.log"
 CONFIG="$WORK/sshd.conf"
 CLIENT_HOME="$WORK/client-home"
 CLIENT_CONFIG="$CLIENT_HOME/.ssh/config"
+INVENTORY="$WORK/inventory"
+BAD_INVENTORY="$WORK/bad-inventory"
 PREFLIGHT_MARKER="/home/$TEST_USER/kaduox-fleet-preflight-marker"
+GROUP_PREFLIGHT_MARKER="/home/$TEST_USER/kaduox-fleet-group-preflight-marker"
 RUNTIME_MARKER="/home/$TEST_USER/kaduox-fleet-runtime-marker"
 
 mkdir -p "$WORK" "$CLIENT_HOME/.ssh"
@@ -59,6 +63,7 @@ run_fleet() {
 }
 
 [[ -x "$FLEET" ]] || fail "kssh-fleet binary not found at $FLEET"
+[[ -x "$INVENTORY_CLI" ]] || fail "kssh-inventory binary not found at $INVENTORY_CLI"
 
 if id "$TEST_USER" >/dev/null 2>&1; then
   sudo userdel -r "$TEST_USER" >/dev/null 2>&1 || true
@@ -103,14 +108,45 @@ Host fleet-bad
 EOF
 chmod 600 "$CLIENT_CONFIG"
 
+cat >"$INVENTORY" <<EOF
+host fleet-a
+host fleet-b
+host fleet-bad
+group pair fleet-a fleet-b
+group production @pair fleet-a
+EOF
+chmod 600 "$INVENTORY"
+
+cat >"$BAD_INVENTORY" <<EOF
+host fleet-a
+group broken fleet-a missing-host
+EOF
+chmod 600 "$BAD_INVENTORY"
+
 sudo mkdir -p /run/sshd
 sudo /usr/sbin/sshd -t -f "$CONFIG"
 sudo /usr/sbin/sshd -f "$CONFIG" -E "$LOG"
 wait_for_port || fail "fleet sshd did not start on port $PORT"
 
-sudo rm -f "$PREFLIGHT_MARKER" "$RUNTIME_MARKER"
+sudo rm -f "$PREFLIGHT_MARKER" "$GROUP_PREFLIGHT_MARKER" "$RUNTIME_MARKER"
 
-echo '[integration] fleet executes typed command on two aliases concurrently'
+echo '[integration] offline inventory CLI validates and expands nested group deterministically'
+HOME="$CLIENT_HOME" "$INVENTORY_CLI" --inventory "$INVENTORY" check >"$WORK/inventory-check.log" 2>&1 || {
+  cat "$WORK/inventory-check.log" >&2
+  fail 'inventory check failed'
+}
+grep -q 'status=valid' "$WORK/inventory-check.log" || fail 'inventory check did not report valid status'
+HOME="$CLIENT_HOME" "$INVENTORY_CLI" --inventory "$INVENTORY" show production >"$WORK/inventory-show.log" 2>&1 || {
+  cat "$WORK/inventory-show.log" >&2
+  fail 'inventory group expansion failed'
+}
+printf 'fleet-a\nfleet-b\n' >"$WORK/inventory-expected.log"
+cmp -s "$WORK/inventory-expected.log" "$WORK/inventory-show.log" || {
+  cat "$WORK/inventory-show.log" >&2
+  fail 'nested inventory group expansion was not deterministic/deduplicated'
+}
+
+echo '[integration] fleet executes typed command on two direct aliases concurrently'
 run_fleet -H fleet-a -H fleet-b --jobs 2 -- printf '%s' 'fleet hello' >"$WORK/two-hosts.log" 2>&1 || {
   cat "$WORK/two-hosts.log" >&2
   fail 'two-host fleet command failed'
@@ -122,6 +158,57 @@ grep -q 'target=fleet-b' "$WORK/two-hosts.log" || fail 'fleet-b result block mis
   fail 'expected command output from both fleet aliases'
 }
 
+echo '[integration] inventory group executes the same two hosts exactly once'
+run_fleet --inventory "$INVENTORY" -G production --jobs 2 -- printf '%s' 'group hello' >"$WORK/group.log" 2>&1 || {
+  cat "$WORK/group.log" >&2
+  fail 'inventory group fleet command failed'
+}
+[[ "$(grep -c 'target=fleet-a' "$WORK/group.log")" -eq 1 ]] || fail 'fleet-a group result missing or duplicated'
+[[ "$(grep -c 'target=fleet-b' "$WORK/group.log")" -eq 1 ]] || fail 'fleet-b group result missing or duplicated'
+[[ "$(grep -c 'group hello' "$WORK/group.log")" -eq 2 ]] || {
+  cat "$WORK/group.log" >&2
+  fail 'expected group command output from exactly two hosts'
+}
+
+echo '[integration] offline plan expands group without prompting for shared password'
+if ! timeout 5s HOME="$CLIENT_HOME" true 2>/dev/null; then
+  :
+fi
+# env must precede timeout command; this command would hang on a password prompt
+# if --plan ever regressed into authentication setup.
+if ! env HOME="$CLIENT_HOME" timeout 5s "$FLEET" \
+  --inventory "$INVENTORY" \
+  -G production \
+  --plan \
+  --password >"$WORK/plan-password.log" 2>&1; then
+  cat "$WORK/plan-password.log" >&2
+  fail 'offline fleet plan failed or attempted an authentication prompt'
+fi
+grep -q 'auth=password-prompt-on-execute' "$WORK/plan-password.log" || {
+  cat "$WORK/plan-password.log" >&2
+  fail 'plan did not describe deferred password authentication'
+}
+grep -q 'targets=2' "$WORK/plan-password.log" || fail 'plan did not expand production group to two targets'
+
+echo '[integration] plan redacts ProxyCommand text and command environment values'
+PROXY_SECRET='KADUOX_PROXY_SECRET_DO_NOT_PRINT'
+ENV_SECRET='KADUOX_ENV_SECRET_DO_NOT_PRINT'
+env HOME="$CLIENT_HOME" "$FLEET" \
+  -H fleet-a \
+  --plan \
+  --proxy-command "printf '$PROXY_SECRET' %h" \
+  --env "VISIBLE_NAME=$ENV_SECRET" \
+  -- printf '%s' test >"$WORK/plan-redaction.log" 2>&1 || {
+  cat "$WORK/plan-redaction.log" >&2
+  fail 'redacted plan invocation failed'
+}
+grep -Fq 'route=proxy-command(redacted)' "$WORK/plan-redaction.log" || fail 'plan did not report redacted ProxyCommand route'
+grep -Fq 'env-names=VISIBLE_NAME' "$WORK/plan-redaction.log" || fail 'plan did not expose safe environment name metadata'
+if grep -Fq "$PROXY_SECRET" "$WORK/plan-redaction.log" || grep -Fq "$ENV_SECRET" "$WORK/plan-redaction.log"; then
+  cat "$WORK/plan-redaction.log" >&2
+  fail 'fleet plan leaked ProxyCommand or environment secret material'
+fi
+
 echo '[integration] malformed target fails before any remote command side effect'
 if run_fleet \
   -H fleet-a \
@@ -132,6 +219,18 @@ fi
 if sudo test -e "$PREFLIGHT_MARKER"; then
   cat "$WORK/preflight.log" >&2
   fail 'valid fleet target executed before malformed-target preflight completed'
+fi
+
+echo '[integration] malformed inventory fails before any remote command side effect'
+if run_fleet \
+  --inventory "$BAD_INVENTORY" \
+  -G broken \
+  -- sh -c "touch '$GROUP_PREFLIGHT_MARKER'" >"$WORK/group-preflight.log" 2>&1; then
+  fail 'malformed inventory unexpectedly succeeded'
+fi
+if sudo test -e "$GROUP_PREFLIGHT_MARKER"; then
+  cat "$WORK/group-preflight.log" >&2
+  fail 'fleet executed before inventory validation completed'
 fi
 
 echo '[integration] runtime connection failure is isolated from valid target'
