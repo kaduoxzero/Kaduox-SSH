@@ -15,6 +15,7 @@ use kaduox_ssh_core::{
 };
 
 use crate::tui_actions::prompt_line;
+use crate::tui_broadcast::{self, BroadcastTarget};
 use crate::{Cli, build_connection_request, tui_app, tui_picker};
 
 struct WorkspaceSession {
@@ -127,6 +128,50 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                     Err(error) => status = format!("manual session failed: {error:#}"),
                 }
                 resume_result?;
+            }
+            KeyCode::Char('b') => {
+                if sessions.is_empty() {
+                    status = "no open sessions to broadcast to".to_owned();
+                    continue;
+                }
+
+                terminal.suspend()?;
+                let command_result = prompt_line(
+                    "broadcast POSIX command to all open sessions (empty cancels): ".to_owned(),
+                )
+                .await;
+                let broadcast_result = match command_result {
+                    Ok(command) if command.trim().is_empty() => {
+                        Ok((0_usize, 0_usize))
+                    }
+                    Ok(command) => {
+                        // The command text is operator-authored input. No remote
+                        // filename, host label, status text, or other server data
+                        // is interpolated into it.
+                        let targets = sessions
+                            .iter()
+                            .map(|session| BroadcastTarget {
+                                label: session.label.clone(),
+                                client: session.lease.client_arc(),
+                            })
+                            .collect();
+                        tui_broadcast::execute(targets, command).await
+                    }
+                    Err(error) => Err(error),
+                };
+
+                match broadcast_result {
+                    Ok((0, 0)) => status = "broadcast cancelled".to_owned(),
+                    Ok((total, failed)) => {
+                        status = format!("broadcast complete: {total} sessions, {failed} failed");
+                        let _ = prompt_line("press Enter to return to session dashboard: ".to_owned()).await;
+                    }
+                    Err(error) => {
+                        status = format!("broadcast failed: {error:#}");
+                        let _ = prompt_line("press Enter to return to session dashboard: ".to_owned()).await;
+                    }
+                }
+                terminal.resume()?;
             }
             KeyCode::Char('x') | KeyCode::Delete => {
                 if sessions.is_empty() {
@@ -348,7 +393,7 @@ impl DashboardTerminal {
             MoveTo(0, rows - 1),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: j/k select | Enter open | n config-host | a arbitrary-host | x close | r pool | q quit",
+                "keys: j/k select | Enter open | n config-host | a arbitrary-host | b broadcast | x close | r pool | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
