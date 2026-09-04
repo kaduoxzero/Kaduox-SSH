@@ -18,6 +18,10 @@ path = "src/tui_main.rs"
 name = "kssh-fleet"
 path = "src/fleet_main.rs"
 
+[[bin]]
+name = "kssh-inventory"
+path = "src/inventory_main.rs"
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
