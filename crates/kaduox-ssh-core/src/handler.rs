@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use russh::client::{self, ChannelOpenHandle, Msg};
 use russh::keys::PublicKeyOrCertificate;
 use russh::{Channel, ChannelOpenFailure};
@@ -14,6 +14,7 @@ use tokio::time::timeout;
 
 use crate::config::HostKeyPolicy;
 use crate::diagnostics::{HostKeyVerification, ServerHostKeyInfo};
+use crate::host_trust::HostTrustPolicy;
 
 const REMOTE_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AGENT_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -127,6 +128,30 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        if let Some(certificate) = server_public_key.certificate() {
+            if self.host_key_policy == HostKeyPolicy::Insecure {
+                bail!(
+                    "server unexpectedly presented a host certificate while certificate trust is disabled by insecure host-key policy"
+                );
+            }
+            let trust = HostTrustPolicy::load(
+                &self.host,
+                self.port,
+                self.known_hosts_file.as_deref(),
+            )
+            .with_context(|| format!("failed to load host certificate trust for {}", self.host))?;
+            trust
+                .verify_host_certificate(&self.host, certificate)
+                .with_context(|| format!("host certificate for {} was rejected", self.host))?;
+            self.state
+                .record_server_host_key(
+                    server_public_key,
+                    HostKeyVerification::CertificateAuthority,
+                )
+                .await;
+            return Ok(true);
+        }
+
         if self.host_key_policy == HostKeyPolicy::Insecure {
             self.state
                 .record_server_host_key(server_public_key, HostKeyVerification::Insecure)
@@ -135,6 +160,16 @@ impl client::Handler for ClientHandler {
         }
 
         let public_key = server_public_key.public_key();
+        let trust = HostTrustPolicy::load(
+            &self.host,
+            self.port,
+            self.known_hosts_file.as_deref(),
+        )
+        .with_context(|| format!("failed to load host-key revocation policy for {}", self.host))?;
+        if trust.is_revoked(&public_key) {
+            bail!("server host key for {} is marked @revoked", self.host);
+        }
+
         let known = if let Some(path) = &self.known_hosts_file {
             russh::keys::known_hosts::check_known_hosts_path(
                 &self.host,
