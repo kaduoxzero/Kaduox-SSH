@@ -12,6 +12,7 @@ mod inventory;
 mod manager;
 mod privileged;
 mod remote_fs;
+mod remote_mutation;
 mod remote_path;
 mod sync;
 mod target;
