@@ -30,18 +30,22 @@ Environment names, duplicate keys, NUL bytes, working directories, program names
 
 `--as-user root` uses the existing sudo-backed `RemoteUser` boundary on every target.
 
-### Fail-before-side-effect preflight
+### Preflight and runtime boundaries
 
-Before any SSH connection is opened, the frontend validates:
+Before any SSH connection is opened, the frontend validates everything that can be resolved without creating a transport:
 
 - target count and duplicate targets;
 - concurrency/output memory limits;
 - the complete typed command;
 - every target's `user@host` syntax;
 - every target's supported OpenSSH configuration;
-- global ProxyJump/ProxyCommand and host-key overrides.
+- syntax/resolution of global ProxyJump, ProxyCommand, and host-key overrides.
 
-If any target cannot be resolved safely, the whole fleet operation fails before executing the command on another host. Runtime connection, authentication, host-key, or command failures remain isolated per host after preflight succeeds.
+If this configuration preflight fails, no fleet target executes the command.
+
+Some checks intentionally remain at the transport boundary because they depend on the effective target being connected. In particular, ProxyCommand `%h` / `%r` / `%n` expansion values are validated against the portable shell-token grammar immediately before the ProxyCommand process is spawned. Host-key verification and authentication likewise happen during each SSH connection. Those checks remain fail-closed, but once runtime scheduling has started one host may fail after another independent host has already completed.
+
+Runtime connection, authentication, host-key, transport, or command failures are isolated per host after preflight succeeds.
 
 ### Bounded concurrency and output memory
 
@@ -77,6 +81,8 @@ Supported modes:
 - `--keyboard-interactive`, prompted once and reused intentionally for every target.
 
 Because password and keyboard-interactive fleet modes intentionally reuse one supplied secret across targets, they should only be used for host groups that are expected to share that credential. Per-host credentials belong in an external agent or a future credential-provider abstraction rather than command-line automation.
+
+The fleet scheduler keeps one authentication template and creates an `Authentication` value only when a target enters the bounded in-flight window. Pending targets therefore do not each retain another password/passphrase copy.
 
 ### Failure semantics
 
@@ -122,18 +128,22 @@ kssh-fleet -H app-01 -H app-02 \
 
 `--as-user root` 对所有目标复用已有 sudo-backed `RemoteUser` 边界。
 
-### 先预检、后执行
+### 预检与运行期边界
 
-建立任何 SSH 连接之前会先验证：
+建立任何 SSH 连接之前，会先验证所有无需创建 transport 就能确定的内容：
 
 - target 数量与重复 target；
 - 并发和输出内存预算；
 - 完整 typed command；
 - 所有 target 的 `user@host` 语法；
-- 每个 target 的 OpenSSH 配置；
-- ProxyJump / ProxyCommand / Host Key 全局覆盖。
+- 每个 target 的受支持 OpenSSH 配置；
+- ProxyJump / ProxyCommand / Host Key 全局覆盖的语法与配置解析。
 
-任何 target 预检失败时，整批操作在执行其他主机之前结束。预检通过后发生的连接、认证、Host Key 或 command 失败则按主机隔离。
+上述配置预检失败时，不会在任何 fleet target 上执行命令。
+
+另一些检查必须保留在真实 transport 边界。例如 ProxyCommand 的 `%h` / `%r` / `%n` 替换值，会在即将启动 ProxyCommand 进程之前按 portable shell-token grammar 验证；Host Key 与认证也只能在实际 SSH 连接阶段完成。这些检查仍然 fail-closed，但一旦运行期调度已经开始，某台主机失败时，另一台独立主机可能已经执行完成。
+
+因此，预检通过后的连接、认证、Host Key、transport 或 command 失败按主机隔离处理。
 
 ### 有界并发与内存
 
@@ -169,6 +179,8 @@ kssh-fleet -H app-01 -H app-02 \
 - `--keyboard-interactive`，提示一次并明确复用于所有 target。
 
 密码/keyboard-interactive 的 fleet 模式只适合确定共享同一 credential 的主机组。每主机独立 secret 更适合放在 SSH Agent 或未来 credential-provider abstraction 中，而不是批处理命令行参数。
+
+Fleet 调度器只保留一份认证模板；只有 target 真正进入有界 in-flight 窗口时才创建对应 `Authentication`。pending 队列不会为最多 1024 个 target 分别长期保存一份额外密码/passphrase 副本。
 
 ### 失败语义
 
