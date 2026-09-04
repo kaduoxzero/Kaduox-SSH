@@ -271,26 +271,44 @@ def normalize_tar_info(info: tarfile.TarInfo, source: Path) -> tarfile.TarInfo:
 
 
 def iter_archive_paths(source_dir: Path) -> list[Path]:
-    return [source_dir, *sorted(source_dir.rglob("*"), key=lambda path: path.relative_to(source_dir).as_posix())]
+    return [
+        source_dir,
+        *sorted(
+            source_dir.rglob("*"),
+            key=lambda path: path.relative_to(source_dir).as_posix(),
+        ),
+    ]
 
 
 def create_tar_gz(source_dir: Path, archive: Path) -> None:
     with archive.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as compressed:
-            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as output:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9
+        ) as compressed:
+            with tarfile.open(
+                fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
+            ) as output:
                 for source in iter_archive_paths(source_dir):
                     relative = source.relative_to(source_dir)
-                    arcname = source_dir.name if not relative.parts else f"{source_dir.name}/{relative.as_posix()}"
+                    arcname = (
+                        source_dir.name
+                        if not relative.parts
+                        else f"{source_dir.name}/{relative.as_posix()}"
+                    )
                     output.add(
                         source,
                         arcname=arcname,
                         recursive=False,
-                        filter=lambda info, source=source: normalize_tar_info(info, source),
+                        filter=lambda info, source=source: normalize_tar_info(
+                            info, source
+                        ),
                     )
 
 
 def create_zip(source_dir: Path, archive: Path) -> None:
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
+    with zipfile.ZipFile(
+        archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as output:
         for source in iter_archive_paths(source_dir):
             if source.is_dir():
                 continue
@@ -299,9 +317,16 @@ def create_zip(source_dir: Path, archive: Path) -> None:
             info = zipfile.ZipInfo(arcname, date_time=ZIP_FILE_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
-            info.external_attr = normalized_archive_mode(source) << 16
+            info.external_attr = (
+                stat.S_IFREG | normalized_archive_mode(source)
+            ) << 16
             with source.open("rb") as handle:
-                output.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                output.writestr(
+                    info,
+                    handle.read(),
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
 
 
 def create_archive(source_dir: Path, archive: Path, archive_format: str) -> None:
@@ -314,7 +339,13 @@ def create_archive(source_dir: Path, archive: Path, archive_format: str) -> None
     raise ValueError(f"unsupported archive format: {archive_format}")
 
 
-def package_release(tag: str, target: str, archive_format: str, exe_suffix: str, output_dir: Path) -> Path:
+def package_release(
+    tag: str,
+    target: str,
+    archive_format: str,
+    exe_suffix: str,
+    output_dir: Path,
+) -> Path:
     version = check_tag(tag)
     target = safe_component(target, "target")
     exe_suffix = safe_component(exe_suffix, "exe suffix") if exe_suffix else ""
