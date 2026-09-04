@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/kaduox-ssh-core",
+    "crates/kaduox-ssh-hosts",
+    "crates/kaduox-ssh-daemon",
     "crates/kaduox-ssh-cli",
 ]
 resolver = "2"
