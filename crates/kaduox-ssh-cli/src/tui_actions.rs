@@ -108,7 +108,7 @@ pub fn safe_local_filename(remote_name: &str) -> String {
         }
     }
 
-    while output.ends_with([' ', '.']) {
+    while output.ends_with(' ') || output.ends_with('.') {
         output.pop();
         output.push('_');
     }
