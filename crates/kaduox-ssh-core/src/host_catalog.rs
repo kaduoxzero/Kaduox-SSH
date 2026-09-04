@@ -96,7 +96,7 @@ fn host_tokens(arguments: &str) -> Vec<String> {
             Some((before, _)) => (before, true),
             None => (raw, false),
         };
-        let token = token.trim_matches(['\'', '"']);
+        let token = token.trim_matches(|ch| ch == '\'' || ch == '"');
         if !token.is_empty() {
             tokens.push(token.to_owned());
         }
@@ -160,10 +160,7 @@ Host=database\n\
 Host prod\n",
             None,
         );
-        assert_eq!(
-            catalog.aliases,
-            vec!["database", "prod", "staging"]
-        );
+        assert_eq!(catalog.aliases, vec!["database", "prod", "staging"]);
         assert!(!catalog.has_unsupported_structural_directives);
     }
 
