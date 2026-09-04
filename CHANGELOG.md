@@ -4,6 +4,22 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.15.0-rc.1] - Unreleased
+
+### Security
+
+- every OpenSSH user-config file read by the shared resolver — root `~/.ssh/config`, nested `Include`, and Host catalog discovery — now passes through one file-descriptor-bound trust path;
+- Unix config files must be regular files owned by the process real uid or root and must not be writable by group/other (`mode & 0022 == 0`);
+- the trusted uid comes from POSIX `getuid()` rather than `$HOME` ownership, so redirecting HOME cannot redefine the trusted configuration author;
+- metadata verification and configuration reads use the same opened file descriptor, removing the path-based stat/read TOCTOU window;
+- one physical config-file read is capped at 4 MiB before allocation, in addition to the existing cumulative Include input/output budgets;
+- an insecure nested Include fails at the same trust boundary as the root configuration;
+- Windows still requires a regular config file, but NTFS ACL parity is intentionally not claimed until a native Windows trust-policy implementation exists.
+
+### Validation status
+
+`integration/v0.15.0-candidate` is wired into CI, Quality, release-policy, and real OpenSSH push workflows. Promotion remains blocked until GitHub-hosted jobs actually acquire runners and execute checkout, formatting, compilation, tests, Clippy, audit, release-policy tests, and OpenSSH fixtures.
+
 ## [0.14.0-rc.1] - Unreleased
 
 ### Added
