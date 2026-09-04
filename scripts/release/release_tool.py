@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -43,7 +44,7 @@ def workspace_version() -> str:
     except (KeyError, TypeError) as exc:
         raise ValueError("Cargo.toml is missing [workspace.package].version") from exc
     if not isinstance(version, str) or not SEMVER.fullmatch(version):
-        raise ValueError("workspace package version must be a valid SemVer string")
+        raise ValueError("workspace package version must use the supported SemVer syntax")
     return version
 
 
@@ -165,12 +166,14 @@ def replace_lock_versions(text: str, old: str, new: str) -> str:
 
 def write_text_safely(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temp_name, original_mode)
         os.replace(temp_name, path)
     except BaseException:
         try:
@@ -182,7 +185,7 @@ def write_text_safely(path: Path, text: str) -> None:
 
 def set_version(new_version: str) -> tuple[str, str]:
     if not SEMVER.fullmatch(new_version):
-        raise ValueError(f"new version {new_version!r} is not valid SemVer")
+        raise ValueError(f"new version {new_version!r} does not use the supported SemVer syntax")
     old_version = validate_repository()
     if new_version == old_version:
         return old_version, new_version
@@ -198,7 +201,13 @@ def set_version(new_version: str) -> tuple[str, str]:
     new_lock = replace_lock_versions(lock_text, old_version, new_version)
 
     write_text_safely(lock_path, new_lock)
-    write_text_safely(cargo_path, new_cargo)
+    try:
+        write_text_safely(cargo_path, new_cargo)
+    except BaseException:
+        # Best-effort rollback keeps the normal failure path consistent if the
+        # second metadata replacement fails after Cargo.lock was committed.
+        write_text_safely(lock_path, lock_text)
+        raise
     return old_version, new_version
 
 
