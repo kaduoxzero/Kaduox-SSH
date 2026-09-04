@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use anyhow::{Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
@@ -33,6 +36,27 @@ pub enum DaemonShellOutcome {
         exit_status: Option<u32>,
         reused: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonJumpAuthChallenge {
+    pub index: usize,
+    pub total: usize,
+    pub attempt: usize,
+    pub alias: String,
+    pub host: String,
+    pub port: u16,
+    pub previous_failed: bool,
+}
+
+pub type DaemonJumpAuthFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<AuthRequest>>> + Send + 'a>>;
+
+pub trait DaemonJumpAuthProvider: Send {
+    fn authentication<'a>(
+        &'a mut self,
+        challenge: DaemonJumpAuthChallenge,
+    ) -> DaemonJumpAuthFuture<'a>;
 }
 
 pub struct DaemonClient;
@@ -108,6 +132,31 @@ impl DaemonClient {
         WOut: AsyncWrite + Unpin,
         WErr: AsyncWrite + Unpin,
     {
+        Self::exec_with_jump_auth(
+            alias,
+            auth,
+            command,
+            as_user,
+            stdout,
+            stderr,
+            None,
+        )
+        .await
+    }
+
+    pub async fn exec_with_jump_auth<WOut, WErr>(
+        alias: &str,
+        auth: Option<AuthRequest>,
+        command: &str,
+        as_user: Option<&str>,
+        stdout: &mut WOut,
+        stderr: &mut WErr,
+        mut jump_auth: Option<&mut dyn DaemonJumpAuthProvider>,
+    ) -> Result<DaemonExecOutcome>
+    where
+        WOut: AsyncWrite + Unpin,
+        WErr: AsyncWrite + Unpin,
+    {
         let mut stream = connect_default().await?;
         write_client_frame(
             &mut stream,
@@ -125,6 +174,34 @@ impl DaemonClient {
             match read_server_frame(&mut stream).await? {
                 Some(ServerFrame::AuthRequired) => return Ok(DaemonExecOutcome::AuthRequired),
                 Some(ServerFrame::Cache { reused: value }) => reused = value,
+                Some(ServerFrame::JumpAuthChallenge {
+                    index,
+                    total,
+                    attempt,
+                    alias,
+                    host,
+                    port,
+                    previous_failed,
+                }) => {
+                    let challenge = DaemonJumpAuthChallenge {
+                        index,
+                        total,
+                        attempt,
+                        alias,
+                        host,
+                        port,
+                        previous_failed,
+                    };
+                    let response = match jump_auth.as_deref_mut() {
+                        Some(provider) => provider.authentication(challenge).await?,
+                        None => None,
+                    };
+                    write_client_frame(
+                        &mut stream,
+                        &ClientFrame::JumpAuthResponse { auth: response },
+                    )
+                    .await?;
+                }
                 Some(ServerFrame::Stdout(bytes)) => stdout.write_all(&bytes).await?,
                 Some(ServerFrame::Stderr(bytes)) => stderr.write_all(&bytes).await?,
                 Some(ServerFrame::Exit(exit_status)) => {
@@ -154,7 +231,39 @@ impl DaemonClient {
         as_user: Option<&str>,
         input: &mut R,
         output: &mut W,
+        resize: Option<watch::Receiver<(u32, u32)>>,
+    ) -> Result<DaemonShellOutcome>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        Self::shell_with_jump_auth(
+            alias,
+            auth,
+            term,
+            columns,
+            rows,
+            as_user,
+            input,
+            output,
+            resize,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn shell_with_jump_auth<R, W>(
+        alias: &str,
+        auth: Option<AuthRequest>,
+        term: &str,
+        columns: u32,
+        rows: u32,
+        as_user: Option<&str>,
+        input: &mut R,
+        output: &mut W,
         mut resize: Option<watch::Receiver<(u32, u32)>>,
+        mut jump_auth: Option<&mut dyn DaemonJumpAuthProvider>,
     ) -> Result<DaemonShellOutcome>
     where
         R: AsyncRead + Unpin,
@@ -174,14 +283,44 @@ impl DaemonClient {
         )
         .await?;
 
-        let (mut reader, mut writer) = tokio::io::split(stream);
         let mut reused = false;
         loop {
-            match read_server_frame(&mut reader).await? {
+            match read_server_frame(&mut stream).await? {
                 Some(ServerFrame::AuthRequired) => return Ok(DaemonShellOutcome::AuthRequired),
                 Some(ServerFrame::Cache { reused: value }) => {
                     reused = value;
                     break;
+                }
+                Some(ServerFrame::JumpAuthChallenge {
+                    index,
+                    total,
+                    attempt,
+                    alias,
+                    host,
+                    port,
+                    previous_failed,
+                }) => {
+                    let response = match jump_auth.as_deref_mut() {
+                        Some(provider) => {
+                            provider
+                                .authentication(DaemonJumpAuthChallenge {
+                                    index,
+                                    total,
+                                    attempt,
+                                    alias,
+                                    host,
+                                    port,
+                                    previous_failed,
+                                })
+                                .await?
+                        }
+                        None => None,
+                    };
+                    write_client_frame(
+                        &mut stream,
+                        &ClientFrame::JumpAuthResponse { auth: response },
+                    )
+                    .await?;
                 }
                 Some(ServerFrame::Error(error)) => bail!("daemon shell failed: {error}"),
                 Some(ServerFrame::Ok) => {}
@@ -190,6 +329,7 @@ impl DaemonClient {
             }
         }
 
+        let (mut reader, mut writer) = tokio::io::split(stream);
         let mut buffer = vec![0_u8; OUTPUT_CHUNK_BYTES];
         let mut input_closed = false;
         loop {
@@ -230,6 +370,9 @@ impl DaemonClient {
                         Some(ServerFrame::Ok) => {}
                         Some(ServerFrame::AuthRequired) => {
                             bail!("daemon requested authentication after shell streaming started")
+                        }
+                        Some(ServerFrame::JumpAuthChallenge { .. }) => {
+                            bail!("daemon requested jump authentication after shell streaming started")
                         }
                         Some(ServerFrame::Status { .. }) => {
                             bail!("unexpected daemon status frame during shell")
