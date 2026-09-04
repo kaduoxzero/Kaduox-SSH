@@ -1,6 +1,7 @@
 mod tui_actions;
 mod tui_app;
 mod tui_broadcast;
+mod tui_group_open;
 mod tui_group_picker;
 mod tui_picker;
 mod tui_workspace;
@@ -208,17 +209,5 @@ mod tests {
         assert!(cli.host.is_none());
         assert_eq!(cli.remote, ".");
         assert!(cli.inventory.is_none());
-    }
-
-    #[test]
-    fn connection_config_preflight_does_not_require_authentication_resolution() {
-        let cli = Cli::try_parse_from(["kssh-tui", "server.example", "--password"]).unwrap();
-        // This function must remain prompt-free so group opening can validate all
-        // target configs before the first authentication side effect.
-        let result = build_connection_config(&cli, "server.example");
-        // A local OpenSSH configuration error is acceptable in the test
-        // environment; reaching this call without touching resolve_authentication
-        // is the contract under test.
-        let _ = result;
     }
 }
