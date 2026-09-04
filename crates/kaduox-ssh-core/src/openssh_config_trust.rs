@@ -4,13 +4,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+const MAX_CONFIG_FILE_BYTES: usize = 4 * 1024 * 1024;
+
 #[cfg(unix)]
 unsafe extern "C" {
     fn getuid() -> std::os::raw::c_uint;
 }
 
 pub(crate) fn read_user_config_file(path: &Path, home: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)
+    let file = fs::File::open(path)
         .with_context(|| format!("failed to open OpenSSH config {}", path.display()))?;
     let metadata = file
         .metadata()
@@ -21,9 +23,20 @@ pub(crate) fn read_user_config_file(path: &Path, home: &Path) -> Result<String> 
 
     verify_platform_trust(path, home, &metadata)?;
 
+    let read_limit = u64::try_from(MAX_CONFIG_FILE_BYTES)
+        .expect("4 MiB OpenSSH config limit fits u64")
+        + 1;
+    let mut limited = file.take(read_limit);
     let mut contents = String::new();
-    file.read_to_string(&mut contents)
+    limited
+        .read_to_string(&mut contents)
         .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
+    if contents.len() > MAX_CONFIG_FILE_BYTES {
+        bail!(
+            "OpenSSH config {} exceeds the {MAX_CONFIG_FILE_BYTES}-byte per-file safety limit",
+            path.display()
+        );
+    }
     Ok(contents)
 }
 
@@ -108,6 +121,24 @@ mod tests {
         let ssh = home.join(".ssh");
         let config = ssh.join("config");
         fs::create_dir_all(&config).unwrap();
+
+        assert!(read_user_config_file(&config, &home).is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn oversized_config_file_is_rejected_before_unbounded_read() {
+        let home = temp_root("oversized");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        let config = ssh.join("config");
+        fs::write(&config, vec![b'x'; MAX_CONFIG_FILE_BYTES + 1]).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        }
 
         assert!(read_user_config_file(&config, &home).is_err());
         fs::remove_dir_all(home).unwrap();
