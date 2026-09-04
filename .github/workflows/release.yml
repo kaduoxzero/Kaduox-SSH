@@ -5,52 +5,138 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Test release packaging policy
+        run: python -m unittest scripts.release.test_release_tool
+      - name: Verify release metadata and tag
+        run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
+      - name: Require release commit to be reachable from main
+        shell: bash
+        run: |
+          git fetch origin main --no-tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            asset: kssh-linux-x86_64
-            source: target/release/kssh
-          - os: macos-latest
-            asset: kssh-macos
-            source: target/release/kssh
-          - os: windows-latest
-            asset: kssh-windows-x86_64.exe
-            source: target/release/kssh.exe
-    runs-on: ${{ matrix.os }}
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            exe_suffix: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            exe_suffix: ""
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            exe_suffix: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            exe_suffix: .exe
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build release binary
-        run: cargo build -p kaduox-ssh-cli --release --locked
-      - name: Stage release asset
+        with:
+          key: release-${{ matrix.target }}
+      - name: Verify release metadata and tag
+        shell: bash
+        run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
+      - name: Build all release binaries
+        run: cargo build -p kaduox-ssh-cli --release --locked --bins --target ${{ matrix.target }}
+      - name: Smoke-test every release binary
         shell: bash
         run: |
-          mkdir -p dist
-          cp "${{ matrix.source }}" "dist/${{ matrix.asset }}"
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for binary in kssh kssh-tui kssh-fleet kssh-inventory; do
+            path="target/${{ matrix.target }}/release/${binary}${{ matrix.exe_suffix }}"
+            test -f "$path"
+            output="$($path --version)"
+            printf '%s\n' "$output"
+            grep -F -- "$version" <<<"$output" >/dev/null
+          done
+      - name: Package release suite
+        shell: bash
+        run: >-
+          python scripts/release/release_tool.py package
+          --tag "$GITHUB_REF_NAME"
+          --target "${{ matrix.target }}"
+          --format "${{ matrix.archive }}"
+          --exe-suffix "${{ matrix.exe_suffix }}"
+          --output-dir dist
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: release-${{ matrix.target }}
+          path: dist/*
           if-no-files-found: error
+          retention-days: 7
 
   publish:
-    needs: build
+    needs:
+      - preflight
+      - build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: kssh-*
+          pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Verify release archive set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print | sort)
+          if [[ ${#archives[@]} -ne 4 ]]; then
+            printf 'expected 4 release archives, found %s\n' "${#archives[@]}" >&2
+            printf '%s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+          (cd dist && sha256sum *.tar.gz *.zip 2>/dev/null | sort -k2 > SHA256SUMS)
+          test "$(wc -l < dist/SHA256SUMS)" -eq 4
+          cat dist/SHA256SUMS
       - name: Create GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            extra+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --generate-notes \
+            --verify-tag \
+            "${extra[@]}"
