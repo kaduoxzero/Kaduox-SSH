@@ -2,12 +2,12 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core shared by CLI, TUI, and fleet frontends.
+Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core shared by CLI, TUI, inventory, and fleet frontends.
 
 ## Current capabilities
 
 - SSH connection, command execution, and interactive PTY shell
-- OpenSSH `~/.ssh/config` resolution for supported host-scoped directives, with fail-closed handling for unsupported structural directives
+- OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion and fail-closed handling for unsupported structural semantics
 - ProxyJump chains and ProxyCommand transports
 - password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
 - RSA authentication through an external SSH agent while local RSA private-key signing is disabled by security policy
@@ -28,15 +28,16 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - explicit `--delete` policy for destructive sync operations
 - reusable in-process authenticated connection manager with explicit long-lived leases
 - `kssh-tui` multi-host Session Dashboard with persistent authenticated sessions
-- TUI OpenSSH Host picker, remote SFTP workspace, interactive shell/sudo shell, and regular-file upload/download
+- TUI OpenSSH Host picker, remote SFTP workspace, interactive shell/sudo shell, tracked transfers, and remote file actions
 - bounded Dashboard Broadcast across already-open authenticated sessions
 - `kssh-fleet` bounded-concurrency typed command execution across multiple SSH targets
 - per-target fleet failure isolation, capped output retention, and terminal-safe aggregation
+- `kssh-inventory` offline inventory validation, listing, and group expansion
 - real OpenSSH protocol integration fixtures, including fleet execution coverage
-- Linux/macOS/Windows CI, Rust 1.85 MSRV, clippy, audit, and real-OpenSSH workflow gates
+- Linux/macOS/Windows CI, Rust 1.85 MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates
 - committed `Cargo.lock` with `--locked` builds
 - on-demand real-OpenSSH performance benchmark harness
-- tag-driven Linux/macOS/Windows release packaging
+- deterministic four-suite release packaging with per-binary manifests and SHA-256 archive checksums
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
@@ -44,15 +45,16 @@ Privileged upload does not pretend SFTP can change uid. Kaduox-SSH stages files 
 
 ## Frontends
 
-Kaduox-SSH currently ships three frontends over the same core security and transport implementation:
+Kaduox-SSH currently ships four binaries over the same core security and transport implementation:
 
 - `kssh`: single-target CLI for shell, exec, transfer, sync, forwarding, inspection, and diagnostics;
 - `kssh-tui`: multi-host interactive Session Dashboard. Each open host owns an explicit `ConnectionLease`; entering/leaving its remote workspace does not reconnect. The dashboard can also broadcast one operator-authored command over all already-open sessions;
-- `kssh-fleet`: non-interactive bounded-concurrency command execution over an explicit target list. It preflights target/config/typed-command input before opening the first SSH connection and isolates runtime failures per host.
+- `kssh-fleet`: non-interactive bounded-concurrency command execution over explicit targets or inventory groups. It preflights target/config/typed-command input before opening the first SSH connection and isolates runtime failures per host;
+- `kssh-inventory`: offline inventory validation, host/group listing, and deterministic nested-group expansion.
 
 The TUI and fleet frontends do not implement separate SSH stacks. They reuse `kaduox-ssh-core` for authentication, host-key policy, ProxyJump/ProxyCommand, channels, SFTP, privilege switching, and transport limits.
 
-See `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, and `docs/FLEET_EXEC.md` for frontend-specific contracts and resource limits.
+See `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, `docs/INVENTORY.md`, and `docs/OPENSSH_CONFIG.md` for frontend/config-specific contracts and resource limits.
 
 ## RSA security policy
 
@@ -65,28 +67,32 @@ This policy distinguishes private-key signing from public-key compatibility:
 - RSA user authentication remains available through an external SSH agent because the private-key operation stays inside the agent rather than Kaduox-SSH.
 - RSA-only server host keys are currently rejected during key-exchange negotiation. In Russh 0.63.1 the feature needed for RSA host-signature verification is coupled to the affected local RSA signer dependency, so Kaduox-SSH prefers a fail-closed compatibility tradeoff over advertising an algorithm it cannot safely verify. Servers should expose Ed25519 or ECDSA host keys.
 
-The real OpenSSH integration suite continuously verifies direct RSA-key rejection, agent-backed RSA authentication, and early negotiation failure against an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite remains green.
+The real OpenSSH integration suite is designed to verify direct RSA-key rejection, agent-backed RSA authentication, and early negotiation failure against an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite executes green.
 
 ## OpenSSH config compatibility
 
-Kaduox-SSH resolves normal host-scoped OpenSSH settings such as `HostName`, `User`, `Port`, `IdentityFile`, `UserKnownHostsFile`, `ProxyCommand`, and `ProxyJump` from `~/.ssh/config`.
+Kaduox-SSH resolves supported OpenSSH settings such as `HostName`, `User`, `Port`, `IdentityFile`, `UserKnownHostsFile`, `ProxyCommand`, and `ProxyJump` from `~/.ssh/config`.
 
-Configuration resolution is intentionally fail-closed when the current parser cannot preserve OpenSSH semantics safely:
+v0.14 adds bounded `Include` resolution before the downstream host parser. The supported subset includes global or `Host`-scoped includes, multiple/quoted paths, absolute paths, paths relative to `~/.ssh`, current-user `~/...`, `*` and `?` wildcards, lexical processing order, nested includes, OpenSSH-style hidden-file matching, and restoration of the containing global/`Host` scope after every included file. The OpenSSH Host catalog uses the same include graph, so concrete aliases in included files are visible to the TUI picker.
+
+Configuration remains fail-closed where OpenSSH behavior is not yet reproduced exactly:
 
 - A missing `~/.ssh/config` is normal and falls back to direct/default connection settings.
-- Read errors and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
-- `Match` blocks are currently rejected because `russh-config 0.58.0` does not evaluate them correctly and can otherwise allow subordinate settings to bleed into an unrelated `Host` block.
-- `Include` is currently rejected rather than pretending included files were resolved.
+- Read, permission-to-read, expansion, and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
+- `Match` remains rejected for connection resolution because modern OpenSSH conditions depend on host/original host, user/local user, canonical/final passes, command/session context, `exec`, local network, tags, version, and other state that `russh-config 0.58.0` does not evaluate.
+- Include `%` tokens, `${ENV}` expansion, `~other-user` expansion, and full bracket/collation glob expressions are explicitly rejected instead of being treated as literal paths.
+- Include expansion is capped at 16 nesting levels, 256 processed files, a 4 MiB config budget, 64 paths per directive, 16 KiB per include path, and 1024 bytes per wildcard component; recursive include cycles fail explicitly.
+- Kaduox-SSH does not yet reproduce OpenSSH's complete user-config ownership/mode policy across Unix and Windows ACL models.
 - The upstream parser exposes `StrictHostKeyChecking` only as a boolean. Values other than `no` therefore lose their exact OpenSSH policy. Use Kaduox-SSH's explicit `--host-key strict`, `--host-key accept-new`, or `--host-key insecure` when exact behavior matters.
 
-The long-term target is lossless OpenSSH-compatible resolution, including `Include` and correctly evaluated `Match` semantics. Until that is implemented and protocol-tested, unsupported structural configuration fails explicitly instead of guessing.
+OpenSSH host-certificate / `@cert-authority` verification is a separate trust boundary and is not yet claimed as compatible. See `docs/OPENSSH_CONFIG.md` for the exact supported and rejected forms.
 
 ## Architecture
 
 ```text
 crates/
   kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege/manager core
-  kaduox-ssh-cli/    # kssh + kssh-tui + kssh-fleet frontend package
+  kaduox-ssh-cli/    # kssh + kssh-tui + kssh-fleet + kssh-inventory package
 ```
 
 The core is frontend-independent. TUI sessions use explicit connection leases over the same manager, while fleet operations use the same typed command and transport APIs with separate batch scheduling and output policies.
@@ -99,7 +105,7 @@ Rust 1.85+ is the declared MSRV.
 cargo build --release --locked
 ```
 
-The resulting frontend binaries are `kssh`, `kssh-tui`, and `kssh-fleet`.
+The resulting binaries are `kssh`, `kssh-tui`, `kssh-fleet`, and `kssh-inventory`.
 
 ## Examples
 
@@ -157,20 +163,14 @@ kssh server.example.com sync ./dist /srv/www/dist
 # Mirror the local tree, explicitly allowing deletion of remote-only entries
 kssh server.example.com sync ./dist /srv/www/dist --delete
 
-# Faster comparisons when timestamps are unreliable
-kssh server.example.com sync ./dist /srv/www/dist --size-only --jobs 8
-
-# Open the multi-host TUI dashboard with one initial session
+# Open the multi-host TUI dashboard
 kssh-tui production
-
-# Or start an empty dashboard and add hosts interactively
-kssh-tui
 
 # Run one typed command across a bounded fleet
 kssh-fleet -H web-01 -H web-02 -H deploy@web-03 --jobs 3 -- uname -a
 
-# Fleet command with typed cwd/environment and sudo-backed remote user
-kssh-fleet -H app-01 -H app-02 --cwd /srv/app --env APP_ENV=prod --as-user root -- id
+# Validate inventory without connecting
+kssh-inventory check
 ```
 
 By default host keys use `accept-new`: unknown keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing entry. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments.
@@ -193,9 +193,9 @@ Targets and supported OpenSSH configuration are resolved before the first connec
 
 ## Validation and performance
 
-CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution.
+CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
 
-At the time of the v0.7 release-candidate preparation, GitHub Actions successfully creates candidate runs/jobs but the repository's GitHub-hosted jobs are failing before runner allocation: job step lists are empty and logs are not created. Therefore the candidate is **not** claimed to have passed CI, and promotion to `develop`/`main` remains blocked until those jobs actually execute.
+The repository's GitHub-hosted jobs are currently failing before any workflow step executes (`steps=null` and no usable job logs). Therefore candidate branches are **not** claimed to have passed CI, and promotion to `develop`/`main` remains blocked until those jobs actually acquire runners and execute successfully.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
@@ -212,9 +212,9 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 Some features are deliberately not enabled until they can be implemented completely and tested as security boundaries:
 
 - full OpenSSH host-certificate / `@cert-authority` semantics, including CA signature, principals, critical options, host-pattern matching, validity and revocation behavior
-- lossless OpenSSH `Include` / `Match` configuration semantics
+- complete OpenSSH `Match` evaluation and the remaining Include token/environment/`~user`/full-glob semantics, plus OpenSSH-equivalent config ownership/mode validation
 - encrypted persistent credential storage and its key-management model
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol
 - explicit symbolic-link transfer/sync policy
 
-See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
+See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
