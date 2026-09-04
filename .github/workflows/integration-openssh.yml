@@ -8,6 +8,7 @@ on:
       - "release/**"
       - integration/v0.6.0-candidate
       - integration/v0.7.0-candidate
+      - integration/v0.8.0-candidate
   pull_request:
     branches:
       - develop
