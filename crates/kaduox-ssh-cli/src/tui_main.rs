@@ -1,3 +1,4 @@
+mod tui_actions;
 mod tui_app;
 
 use std::path::PathBuf;
