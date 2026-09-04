@@ -9,11 +9,21 @@ The TUI establishes one authenticated SSH connection and presents a full-screen 
 ### Start the TUI
 
 ```bash
+# Choose a concrete Host alias from ~/.ssh/config
+kssh-tui
+
+# Or connect directly
 kssh-tui server.example.com
 kssh-tui deploy@server.example.com --remote /var/log
 kssh-tui production -J bastion.example
 kssh-tui server.example.com --identity ~/.ssh/id_ed25519
 ```
+
+When no host is supplied, `kssh-tui` reads only the local `Host` declarations from `~/.ssh/config` and opens a local full-screen picker before any SSH authentication or network work begins. Select with arrows or `j`/`k`, press `Enter` to connect, or use `q`, `Esc`, or `Ctrl-C` to cancel.
+
+The picker intentionally lists only concrete aliases. Wildcard or negated patterns such as `*`, `*.internal`, `db?`, `[ab]host`, or `!blocked` are not selectable. Duplicate aliases are deduplicated and sorted. The catalog does not expose ProxyCommand text, identity secrets, passwords, or other authentication material.
+
+If the file contains `Include` or `Match`, the picker shows a warning. Those directives are not expanded by the catalog and the current connection resolver still fails closed when it encounters them; selecting an alias does not bypass that safety policy.
 
 The frontend supports the connection primitives needed for normal deployments:
 
@@ -61,9 +71,9 @@ Recursive transfer and destructive remote mutations remain explicit CLI/core ope
 
 The browser uses the SFTP inspection APIs introduced in the v0.5 candidate. Symbolic links are not followed by the metadata action. Directory entry paths are reconstructed from validated entry names rather than trusting server-provided paths.
 
-Remote names, paths, symlink targets, status strings, and error messages are escaped before they are written into the full-screen terminal. Control characters including ESC, CR, LF, and TAB are rendered as visible escape text so a malicious or compromised SSH server cannot inject terminal control sequences through filenames or metadata.
+Remote names, paths, symlink targets, status strings, and error messages are escaped before they are written into the full-screen terminal. Control characters including ESC, CR, LF, and TAB are rendered as visible escape text so a malicious or compromised SSH server cannot inject terminal control sequences through filenames or metadata. The host picker applies the same terminal-text discipline to aliases and local config paths.
 
-The TUI owns raw mode and the alternate screen through an RAII guard with explicit suspend/resume support. Normal return and error unwinding restore the cursor, leave the alternate screen, and disable raw mode.
+The TUI owns raw mode and the alternate screen through RAII guards with explicit suspend/resume support. Normal return and error unwinding restore the cursor, leave the alternate screen, and disable raw mode.
 
 No additional UI framework dependency is introduced in this stage. `kssh-tui` is a separate binary target inside the existing frontend package and uses the already-pinned Crossterm dependency, preserving the current `Cargo.lock --locked` build contract and Rust 1.85 MSRV.
 
@@ -74,11 +84,21 @@ v0.6 新增独立的 `kssh-tui` 二进制程序。它与现有 `kssh` CLI 共用
 TUI 建立一条真实的已认证 SSH 连接，并在其上提供全屏远端工作区。目录浏览通过 SFTP 完成；Shell 与文件传输会在同一条已认证 transport 上继续打开额外 channel，不会重新登录一次 SSH。
 
 ```bash
+# 不带 host 时，从 ~/.ssh/config 中选择具体 Host alias
+kssh-tui
+
+# 也可以继续显式指定目标
 kssh-tui server.example.com
 kssh-tui deploy@server.example.com --remote /var/log
 kssh-tui production -J bastion.example
 kssh-tui server.example.com --identity ~/.ssh/id_ed25519
 ```
+
+无参数启动时，`kssh-tui` 只读取本机 `~/.ssh/config` 里的 `Host` 声明，并在任何网络连接或 SSH 认证之前显示本地全屏主机选择器。使用方向键或 `j`/`k` 选择，`Enter` 连接，`q`、`Esc` 或 `Ctrl-C` 取消。
+
+选择器只展示可以直接使用的具体 alias。`*`、`*.internal`、`db?`、`[ab]host`、`!blocked` 等 wildcard/negation pattern 不会进入可选列表；重复 alias 会去重并排序。Catalog 不会输出 ProxyCommand 原文、认证秘密、密码等敏感字段。
+
+如果配置文件包含 `Include` 或 `Match`，选择器会给出明确警告。Catalog 不会展开这些结构指令，而当前连接解析器依然会对它们 fail-closed；从选择器选择 alias 不会绕过这个安全策略。
 
 连接参数支持 OpenSSH alias、`user@host`、端口/用户/identity 覆盖、密码与 keyboard-interactive、私钥 passphrase、Host Key 策略、ProxyJump、ProxyCommand，以及供 TUI Shell channel 使用的 Agent Forwarding 配置。
 
@@ -117,7 +137,7 @@ TUI 进入 Shell 时会先退出 alternate screen 并关闭自己的 raw mode，
 
 TUI 复用 v0.5 candidate 的只读 SFTP API。symlink 元数据操作不会自动跟随链接，目录项路径由经过验证的文件名重新构造，不信任服务器返回的路径字段。
 
-所有进入全屏终端的远端文件名、路径、symlink target、状态和错误文本都会先做终端安全转义。ESC、换行、回车、TAB 和其他控制字符会显示成可见转义文本，避免恶意或被入侵的 SSH 服务器通过文件名注入终端控制序列。
+所有进入全屏终端的远端文件名、路径、symlink target、状态和错误文本都会先做终端安全转义。ESC、换行、回车、TAB 和其他控制字符会显示成可见转义文本，避免恶意或被入侵的 SSH 服务器通过文件名注入终端控制序列；Host picker 对 alias 与本地配置路径执行相同处理。
 
 raw mode 与 alternate screen 由支持显式 suspend/resume 的 RAII guard 管理；正常退出或错误展开都会恢复光标、退出 alternate screen 并关闭 raw mode。
 
