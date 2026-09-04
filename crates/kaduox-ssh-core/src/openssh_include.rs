@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::openssh_config_trust::verify_user_config_file;
+use crate::openssh_config_trust::read_user_config_file;
 
 const MAX_INCLUDE_DEPTH: usize = 16;
 const MAX_INCLUDE_FILES: usize = 256;
@@ -205,9 +205,7 @@ impl<'a> ExpansionState<'a> {
     }
 
     fn read_config(&mut self, path: &Path) -> Result<String> {
-        verify_user_config_file(path, self.home)?;
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
+        let contents = read_user_config_file(path, self.home)?;
         self.account_input_bytes(contents.len())?;
         Ok(contents)
     }
