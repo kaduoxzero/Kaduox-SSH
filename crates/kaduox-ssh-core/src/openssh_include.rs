@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::openssh_config_trust::read_user_config_file;
+
 const MAX_INCLUDE_DEPTH: usize = 16;
 const MAX_INCLUDE_FILES: usize = 256;
 const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
@@ -203,8 +205,7 @@ impl<'a> ExpansionState<'a> {
     }
 
     fn read_config(&mut self, path: &Path) -> Result<String> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
+        let contents = read_user_config_file(path, self.home)?;
         self.account_input_bytes(contents.len())?;
         Ok(contents)
     }
@@ -812,6 +813,25 @@ mod tests {
         .unwrap();
         fs::write(ssh.join("config"), "Host prod\n  Include nested.conf\n").unwrap();
         assert!(expand_user_config(&ssh.join("config"), &home).is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn insecure_included_file_permissions_fail_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = temp_root("insecure-include");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        let root = ssh.join("config");
+        let included = ssh.join("nested.conf");
+        fs::write(&root, "Host prod\n  Include nested.conf\n").unwrap();
+        fs::write(&included, "  User deploy\n").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&included, fs::Permissions::from_mode(0o666)).unwrap();
+
+        assert!(expand_user_config(&root, &home).is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
