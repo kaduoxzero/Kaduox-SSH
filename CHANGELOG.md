@@ -4,6 +4,42 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.7.0-rc.1] - Unreleased
+
+### Added
+
+- multi-host `kssh-tui` Session Dashboard backed by `ConnectionManager` and explicit `ConnectionLease` ownership;
+- no-target TUI startup into an empty dashboard, with OpenSSH Host catalog selection and arbitrary target entry;
+- persistent authenticated sessions that survive entering/leaving the existing remote SFTP/shell workspace;
+- per-session close/disconnect plus visible connection-pool, in-use, lease, and capacity counters;
+- bounded Dashboard Broadcast (`b`) that executes one operator-authored command across all currently open authenticated sessions without reconnecting;
+- dedicated `kssh-fleet` binary for bounded-concurrency command execution across multiple SSH targets;
+- fleet typed-command support for `--cwd`, repeatable `--env NAME=VALUE`, `--as-user`, `user@host`, OpenSSH aliases, ProxyJump/ProxyCommand, and the existing host-key/authentication policies;
+- dedicated real-OpenSSH fleet integration fixture covering multi-target success, preflight no-side-effect behavior, runtime failure isolation, output truncation, and terminal-control escaping.
+
+### Changed
+
+- v0.7 TUI connection ownership is explicit: every open dashboard session owns a lease, preventing idle pruning until the session is closed;
+- opening an already-present logical TUI target selects the existing session instead of silently creating another login;
+- fleet command/config preflight resolves all targets before opening the first SSH connection, so malformed target syntax or unsupported OpenSSH configuration cannot produce a partially executed fleet operation;
+- fleet scheduling keeps at most `--jobs` active SSH tasks and prints completed host results immediately rather than retaining every target's output until the end;
+- fleet authentication now keeps one secret-bearing template and creates concrete authentication values only for targets entering the bounded in-flight window;
+- CI, Quality, and OpenSSH workflows explicitly trigger on `integration/v0.7.0-candidate` pushes.
+
+### Resource and security boundaries
+
+- `kssh-fleet` defaults to 8 concurrent targets, hard-limits concurrency to 64, and limits one invocation to 1024 targets;
+- fleet retained output defaults to 1 MiB stdout + 1 MiB stderr per in-flight target, caps each stream at 16 MiB, and rejects configurations where `jobs × output-limit × 2` exceeds 512 MiB;
+- fleet output beyond the retention cap is still drained from SSH to avoid remote-process deadlock and is marked `truncated` locally;
+- Dashboard Broadcast retains at most 256 KiB stdout + 256 KiB stderr per open session, for about 32 MiB at the manager's 64-connection default;
+- aggregated fleet and broadcast output escape ESC, carriage-return, and other terminal-control characters by default;
+- Dashboard Broadcast never interpolates remote filenames, paths, host labels, status text, or other server-controlled values into the operator-authored command;
+- fleet preflight documentation now distinguishes configuration-time checks from transport-time ProxyCommand expansion safety, host-key verification, and authentication; all remain fail-closed without falsely claiming those transport checks happen before every independent host begins execution.
+
+### Validation status
+
+The v0.7 candidate has CI, Quality, and real OpenSSH workflows wired directly to candidate pushes, including the new fleet integration suite. GitHub Actions creates the runs and jobs, but the repository is still experiencing platform/runner-allocation failures before any step executes (`steps=[]` / no job logs). This is not a passing validation and is also not a compiler/test failure. Promotion to `develop` or `main` remains blocked until the jobs actually acquire runners and complete successfully.
+
 ## [0.6.0-rc.1] - Unreleased
 
 ### Added
