@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{ConnectionConfig, HostKeyPolicy, JumpHost};
 
@@ -121,9 +119,6 @@ fn overlay_record(
 }
 
 fn jump_from_host_record(record: &HostRecord) -> Result<JumpHost> {
-    // A stored jump node owns its endpoint/user/port/host-key policy. OpenSSH is
-    // used only to fill fields this P0 model deliberately leaves optional, such
-    // as UserKnownHostsFile and fallback IdentityFile.
     let fallback = ConnectionConfig::from_openssh(&record.alias, None, None)
         .with_context(|| format!("OpenSSH fallback for jump host {} failed", record.alias))?;
     let identity_files = match &record.identity_file {
@@ -169,7 +164,7 @@ fn jump_from_inline(jump: &InlineJump) -> JumpHost {
         identity_files: jump
             .identity_file
             .as_ref()
-            .map(|path| vec![PathBuf::from(path)])
+            .map(|path| vec![path.clone()])
             .unwrap_or_default(),
         host_key_policy: map_host_key_policy(jump.host_key_policy),
         known_hosts_file: None,
