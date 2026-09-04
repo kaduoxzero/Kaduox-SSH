@@ -8,6 +8,7 @@ mod diagnostics;
 mod forward;
 mod handler;
 mod host_catalog;
+mod host_trust;
 mod inventory;
 mod manager;
 mod openssh_config_trust;
