@@ -21,6 +21,7 @@ mod transfer_engine;
 mod transfer_download_policy;
 mod transfer_facade;
 mod transfer_task;
+mod transfer_task_manager;
 pub(crate) mod transfer_policy;
 pub(crate) use transfer_facade as transfer;
 
@@ -55,3 +56,4 @@ pub use transfer_task::{
     TransferTaskId, TransferTaskKind, TransferTaskProgress, TransferTaskRegistration,
     TransferTaskRegistry, TransferTaskSnapshot, TransferTaskState,
 };
+pub use transfer_task_manager::TransferTaskManager;
