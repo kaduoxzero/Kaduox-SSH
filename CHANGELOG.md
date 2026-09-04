@@ -4,6 +4,55 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.14.0-rc.1] - Unreleased
+
+### Added
+
+- bounded user-config OpenSSH `Include` expansion before host-scoped configuration resolution;
+- support for absolute, `~/.ssh`-relative, current-user `~/...`, quoted/multiple Include paths, `*`/`?` wildcard expansion, lexical processing order, nested includes, and no-match continuation;
+- OpenSSH-compatible restoration of the containing global/`Host` scope after every included file, preventing an included `Host` block from capturing later parent-file directives;
+- implicit global user-config defaults are represented internally as `Host *` so the host-only downstream parser can preserve first-value-wins behavior;
+- Host catalog discovery across the same bounded Include graph, allowing concrete aliases from included files to appear in the TUI host picker;
+- `docs/OPENSSH_CONFIG.md` with the exact supported/rejected configuration and host-trust boundaries.
+
+### Compatibility and safety boundaries
+
+- wildcard Include patterns do not match leading-dot files unless the pattern begins with an explicit `.`, matching pathname glob behavior;
+- Include nesting is capped at 16 levels, processed files at 256, total input/expanded configuration at 4 MiB, paths per directive at 64, one Include path at 16 KiB, and one wildcard component at 1024 bytes;
+- active canonical paths are tracked to detect recursive Include cycles;
+- filesystem read/metadata errors fail closed instead of being converted into an empty include;
+- `Match` remains rejected for connection resolution; the read-only Host catalog may retain it only as an unsupported-structure marker;
+- `%` token expansion, `${ENV}` expansion, `~other-user` expansion, and full bracket/collation glob expressions remain fail-closed until their OpenSSH semantics are reproduced exactly;
+- OpenSSH-equivalent user-config owner/mode validation is not yet claimed across Unix ownership and Windows ACL models;
+- OpenSSH host certificates and `known_hosts` `@cert-authority` remain a separate unsupported trust boundary.
+
+### Validation status
+
+`integration/v0.14.0-candidate` is wired into CI, Quality, release-policy, and real OpenSSH push workflows. Promotion remains blocked until GitHub-hosted jobs actually acquire runners and execute checkout, formatting, compilation, tests, Clippy, audit, release-policy tests, and OpenSSH fixtures.
+
+## [0.13.0-rc.1] - Unreleased
+
+### Added
+
+- fail-closed release metadata validation covering workspace SemVer, local Cargo.lock package versions, exact tag identity, and the four-binary release suite;
+- `scripts/release/release_tool.py` with coordinated workspace/Cargo.lock version synchronization and deterministic release packaging;
+- Linux x86_64, macOS Intel, macOS Apple Silicon, and Windows x86_64 release archives containing `kssh`, `kssh-tui`, `kssh-fleet`, and `kssh-inventory`;
+- post-build `--version` smoke tests for every released binary;
+- per-suite JSON manifests with binary SHA-256/byte length plus a top-level `SHA256SUMS` covering all four archives;
+- normalized archive ordering, timestamps, ownership metadata, and executable modes with repeatability tests;
+- release-policy tests in the normal Quality workflow and a documented fail-closed release process in `docs/RELEASE.md`.
+
+### Release security boundary
+
+- release tags must exactly equal `v<workspace-version>` and the tagged commit must be reachable from `main`;
+- SHA-256 integrity checks are not treated as publisher authentication;
+- Windows Authenticode, macOS Developer ID signing/notarization, and final provenance/SBOM policy remain V1 release-security work;
+- the repository workspace version intentionally remains `0.6.0-rc.1` until the lock-aware `set-version` path can be executed and reviewed in a runnable checkout.
+
+### Validation status
+
+The v0.13 candidate created CI, Quality, release-policy, and real OpenSSH jobs, but all jobs ended before any step executed (`steps=null`). That state is neither passing validation nor evidence of a source failure.
+
 ## [0.12.0-rc.1] - Unreleased
 
 ### Added
