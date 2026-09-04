@@ -8,6 +8,7 @@ same validation and packaging logic on Linux, macOS, and Windows.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -25,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_BINARIES = ("kssh", "kssh-tui", "kssh-fleet", "kssh-inventory")
 LOCAL_PACKAGES = ("kaduox-ssh-core", "kaduox-ssh-cli")
 MAX_MANIFEST_BYTES = 16 * 1024
+ARCHIVE_FILE_MTIME = 0
+ZIP_FILE_TIME = (1980, 1, 1, 0, 0, 0)
 SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
@@ -245,16 +248,68 @@ def build_manifest(tag: str, target: str, package_dir: Path, exe_suffix: str) ->
     }
 
 
+def normalized_archive_mode(path: Path) -> int:
+    if path.is_dir():
+        return 0o755
+    name = path.name
+    if name in EXPECTED_BINARIES or (
+        name.endswith(".exe") and name[:-4] in EXPECTED_BINARIES
+    ):
+        return 0o755
+    return 0o644
+
+
+def normalize_tar_info(info: tarfile.TarInfo, source: Path) -> tarfile.TarInfo:
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    info.mtime = ARCHIVE_FILE_MTIME
+    info.mode = normalized_archive_mode(source)
+    info.pax_headers = {}
+    return info
+
+
+def iter_archive_paths(source_dir: Path) -> list[Path]:
+    return [source_dir, *sorted(source_dir.rglob("*"), key=lambda path: path.relative_to(source_dir).as_posix())]
+
+
+def create_tar_gz(source_dir: Path, archive: Path) -> None:
+    with archive.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as output:
+                for source in iter_archive_paths(source_dir):
+                    relative = source.relative_to(source_dir)
+                    arcname = source_dir.name if not relative.parts else f"{source_dir.name}/{relative.as_posix()}"
+                    output.add(
+                        source,
+                        arcname=arcname,
+                        recursive=False,
+                        filter=lambda info, source=source: normalize_tar_info(info, source),
+                    )
+
+
+def create_zip(source_dir: Path, archive: Path) -> None:
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
+        for source in iter_archive_paths(source_dir):
+            if source.is_dir():
+                continue
+            relative = source.relative_to(source_dir)
+            arcname = f"{source_dir.name}/{relative.as_posix()}"
+            info = zipfile.ZipInfo(arcname, date_time=ZIP_FILE_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = normalized_archive_mode(source) << 16
+            with source.open("rb") as handle:
+                output.writestr(info, handle.read(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+
 def create_archive(source_dir: Path, archive: Path, archive_format: str) -> None:
     if archive_format == "tar.gz":
-        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as output:
-            output.add(source_dir, arcname=source_dir.name)
+        create_tar_gz(source_dir, archive)
         return
     if archive_format == "zip":
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
-            for path in sorted(source_dir.rglob("*")):
-                if path.is_file():
-                    output.write(path, arcname=Path(source_dir.name) / path.relative_to(source_dir))
+        create_zip(source_dir, archive)
         return
     raise ValueError(f"unsupported archive format: {archive_format}")
 
