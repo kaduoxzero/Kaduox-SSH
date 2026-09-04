@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{Stdout, Write, stdout};
 
 use anyhow::{Context, Result};
@@ -10,21 +11,14 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use kaduox_ssh_core::{
-    ConnectionLease, ConnectionManager, ConnectionManagerSnapshot, HostKeyVerification,
-    discover_openssh_hosts,
+    ConnectionManager, ConnectionManagerSnapshot, HostInventory, HostKeyVerification,
+    discover_inventory, discover_openssh_hosts, load_inventory,
 };
 
 use crate::tui_actions::prompt_line;
 use crate::tui_broadcast::{self, BroadcastTarget};
-use crate::{Cli, build_connection_request, tui_app, tui_picker};
-
-struct WorkspaceSession {
-    manager_name: String,
-    label: String,
-    lease: ConnectionLease,
-    remote_root: String,
-    host_key: String,
-}
+use crate::tui_group_open::{self, WorkspaceSession};
+use crate::{Cli, build_connection_request, tui_app, tui_group_picker, tui_picker};
 
 pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
     let manager = ConnectionManager::default();
@@ -82,7 +76,7 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                     }
                     resume_result?;
                 } else {
-                    status = "no session selected; press n or a to open one".to_owned();
+                    status = "no session selected; press n, a, or g to open one".to_owned();
                 }
             }
             KeyCode::Char('n') => {
@@ -107,9 +101,12 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
             }
             KeyCode::Char('a') => {
                 terminal.suspend()?;
-                let host_result = prompt_line("host / alias / user@host (empty cancels): ".to_owned()).await;
+                let host_result =
+                    prompt_line("host / alias / user@host (empty cancels): ".to_owned()).await;
                 let connect_result = match host_result {
-                    Ok(host) if host.trim().is_empty() => Ok("manual host entry cancelled".to_owned()),
+                    Ok(host) if host.trim().is_empty() => {
+                        Ok("manual host entry cancelled".to_owned())
+                    }
                     Ok(host) => {
                         connect_session(
                             &manager,
@@ -129,6 +126,58 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                 }
                 resume_result?;
             }
+            KeyCode::Char('g') => {
+                terminal.suspend()?;
+                let selection = select_inventory_group(cli);
+                let group_result = match selection {
+                    Ok(Some((group_name, targets))) => {
+                        let already_open = sessions
+                            .iter()
+                            .map(|session| session.label.clone())
+                            .collect::<HashSet<_>>();
+                        let existing_count = targets
+                            .iter()
+                            .filter(|target| already_open.contains(*target))
+                            .count();
+                        let open_result = tui_group_open::open_group(
+                            &manager,
+                            cli,
+                            &group_name,
+                            &targets,
+                            &already_open,
+                        )
+                        .await;
+                        match open_result {
+                            Ok(opened) => {
+                                let new_count = opened.len();
+                                if new_count != 0 {
+                                    let first_new = sessions.len();
+                                    sessions.extend(opened);
+                                    selected = first_new;
+                                } else if let Some(index) = targets.iter().find_map(|target| {
+                                    sessions
+                                        .iter()
+                                        .position(|session| &session.label == target)
+                                }) {
+                                    selected = index;
+                                }
+                                Ok(format!(
+                                    "inventory group {group_name}: opened {new_count} new sessions, reused {existing_count} already-open sessions"
+                                ))
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Ok(None) => Ok("inventory group selection cancelled or empty".to_owned()),
+                    Err(error) => Err(error),
+                };
+                let resume_result = terminal.resume();
+                match group_result {
+                    Ok(message) => status = message,
+                    Err(error) => status = format!("inventory group open failed: {error:#}"),
+                }
+                resume_result?;
+            }
             KeyCode::Char('b') => {
                 if sessions.is_empty() {
                     status = "no open sessions to broadcast to".to_owned();
@@ -141,9 +190,7 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                 )
                 .await;
                 let broadcast_result = match command_result {
-                    Ok(command) if command.trim().is_empty() => {
-                        Ok((0_usize, 0_usize))
-                    }
+                    Ok(command) if command.trim().is_empty() => Ok((0_usize, 0_usize)),
                     Ok(command) => {
                         // The command text is operator-authored input. No remote
                         // filename, host label, status text, or other server data
@@ -163,12 +210,19 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                 match broadcast_result {
                     Ok((0, 0)) => status = "broadcast cancelled".to_owned(),
                     Ok((total, failed)) => {
-                        status = format!("broadcast complete: {total} sessions, {failed} failed");
-                        let _ = prompt_line("press Enter to return to session dashboard: ".to_owned()).await;
+                        status =
+                            format!("broadcast complete: {total} sessions, {failed} failed");
+                        let _ = prompt_line(
+                            "press Enter to return to session dashboard: ".to_owned(),
+                        )
+                        .await;
                     }
                     Err(error) => {
                         status = format!("broadcast failed: {error:#}");
-                        let _ = prompt_line("press Enter to return to session dashboard: ".to_owned()).await;
+                        let _ = prompt_line(
+                            "press Enter to return to session dashboard: ".to_owned(),
+                        )
+                        .await;
                     }
                 }
                 terminal.resume()?;
@@ -185,15 +239,23 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                 selected = selected.min(sessions.len().saturating_sub(1));
                 match manager.remove(&manager_name).await {
                     Ok(true) => status = format!("closed {label}"),
-                    Ok(false) => status = format!("closed {label}; manager binding was already absent"),
-                    Err(error) => status = format!("closed dashboard lease for {label}, disconnect failed: {error:#}"),
+                    Ok(false) => {
+                        status = format!("closed {label}; manager binding was already absent")
+                    }
+                    Err(error) => {
+                        status = format!(
+                            "closed dashboard lease for {label}, disconnect failed: {error:#}"
+                        )
+                    }
                 }
             }
             KeyCode::Char('r') => {
                 let snapshot = manager.snapshot().await;
                 status = format!(
                     "pool: {} connected, {} leased, {} capacity available",
-                    snapshot.total_connections, snapshot.active_leases, snapshot.available_capacity
+                    snapshot.total_connections,
+                    snapshot.active_leases,
+                    snapshot.available_capacity
                 );
             }
             _ => {}
@@ -252,6 +314,25 @@ fn select_catalog_host() -> Result<Option<String>> {
         return Ok(None);
     }
     tui_picker::select_host(&catalog)
+}
+
+fn select_inventory_group(cli: &Cli) -> Result<Option<(String, Vec<String>)>> {
+    let inventory = load_selected_inventory(cli)?;
+    if inventory.groups().is_empty() {
+        return Ok(None);
+    }
+    let Some(group_name) = tui_group_picker::select_group(&inventory)? else {
+        return Ok(None);
+    };
+    let targets = inventory.expand_group(&group_name)?;
+    Ok(Some((group_name, targets)))
+}
+
+fn load_selected_inventory(cli: &Cli) -> Result<HostInventory> {
+    match cli.inventory.as_deref() {
+        Some(path) => load_inventory(path),
+        None => discover_inventory(),
+    }
 }
 
 async fn read_event() -> Result<Event> {
@@ -327,7 +408,10 @@ impl DashboardTerminal {
         queue!(
             &mut self.stdout,
             SetAttribute(Attribute::Bold),
-            Print(truncate_cells("Kaduox-SSH TUI | multi-host session dashboard", width)),
+            Print(truncate_cells(
+                "Kaduox-SSH TUI | multi-host session dashboard",
+                width
+            )),
             SetAttribute(Attribute::Reset),
             MoveTo(0, 1),
             Print(truncate_cells(
@@ -379,7 +463,9 @@ impl DashboardTerminal {
             queue!(
                 &mut self.stdout,
                 MoveTo(0, 3),
-                Print("No open sessions. Press n for ~/.ssh/config or a for an arbitrary host.")
+                Print(
+                    "No open sessions. Press n for ~/.ssh/config, g for Inventory, or a for an arbitrary host."
+                )
             )?;
         }
 
@@ -393,7 +479,7 @@ impl DashboardTerminal {
             MoveTo(0, rows - 1),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: j/k select | Enter open | n config-host | a arbitrary-host | b broadcast | x close | r pool | q quit",
+                "keys: j/k select | Enter open | n config-host | g inventory-group | a arbitrary-host | b broadcast | x close | r pool | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
