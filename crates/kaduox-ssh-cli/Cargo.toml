@@ -27,6 +27,7 @@ anyhow.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 kaduox-ssh-core = { path = "../kaduox-ssh-core" }
+kaduox-ssh-hosts = { path = "../kaduox-ssh-hosts" }
 rpassword.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
