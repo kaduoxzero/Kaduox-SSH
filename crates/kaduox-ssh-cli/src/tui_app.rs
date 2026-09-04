@@ -11,14 +11,15 @@ use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use kaduox_ssh_core::{
-    ConnectionConfig, HostKeyVerification, RemoteDirEntry, RemoteFileMetadata, RemoteFileType,
-    RemoteUser, ServerHostKeyInfo, SshClient, TransferEvent, TransferOptions,
+    ConnectionConfig, HostKeyVerification, RemoteDeleteOptions, RemoteDirEntry, RemoteFileMetadata,
+    RemoteFileType, RemoteUser, ServerHostKeyInfo, SshClient, TransferEvent, TransferOptions,
 };
 
 use crate::tui_actions::{
-    download_regular_file, join_remote_child, prompt_line, run_shell, safe_local_filename,
-    upload_regular_file, validate_remote_leaf,
+    download_regular_file_with_options, join_remote_child, prompt_line, run_shell,
+    safe_local_filename, upload_regular_file_with_options, validate_remote_leaf,
 };
+use crate::tui_transfer_control::TransferCancelListener;
 
 pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
     let mut terminal = TerminalSession::enter()?;
@@ -61,6 +62,15 @@ pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
             }
             KeyCode::Char('x') | KeyCode::Delete => {
                 remove_selected(&mut terminal, ssh, &mut state).await?;
+            }
+            KeyCode::Char('X') => {
+                remove_selected_tree(
+                    &mut terminal,
+                    ssh,
+                    host_key.as_ref(),
+                    &mut state,
+                )
+                .await?;
             }
             KeyCode::Char('s') => {
                 run_shell_action(&mut terminal, ssh, &mut state, RemoteUser::Current).await?;
@@ -249,7 +259,7 @@ async fn remove_selected(
     }
 
     let detail = match entry.metadata.file_type {
-        RemoteFileType::Directory => "empty directory only; recursive deletion is disabled",
+        RemoteFileType::Directory => "empty directory only; use X for a planned recursive delete",
         RemoteFileType::Symlink => "the symlink itself, not its target",
         RemoteFileType::File => "one regular file",
         RemoteFileType::Other => unreachable!(),
@@ -282,8 +292,79 @@ async fn remove_selected(
     Ok(())
 }
 
+async fn remove_selected_tree(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let Some(entry) = state.selected_entry().cloned() else {
+        state.status = "directory is empty".to_owned();
+        return Ok(());
+    };
+    if entry.metadata.file_type != RemoteFileType::Directory {
+        state.status = "recursive remote deletion requires a selected directory".to_owned();
+        return Ok(());
+    }
+
+    let options = RemoteDeleteOptions::default();
+    state.status = format!("planning recursive deletion for {} ...", entry.path);
+    terminal.render(ssh.config(), host_key, state)?;
+    let plan = match ssh.plan_remote_tree_removal(&entry.path, options).await {
+        Ok(plan) => plan,
+        Err(error) => {
+            state.status = format!("recursive delete planning failed: {error:#}");
+            return Ok(());
+        }
+    };
+
+    let confirmation = prompt_with_terminal(
+        terminal,
+        format!(
+            "recursive delete {}: {} files, {} directories, {} symlinks, {} total entries. The tree is re-scanned before the first write; deletion is non-transactional after mutation starts and cannot be user-cancelled. Type DELETE TREE to continue: ",
+            terminal_safe(&plan.root),
+            plan.files,
+            plan.directories,
+            plan.symlinks,
+            plan.total_entries()
+        ),
+    )
+    .await?;
+    if !is_tree_delete_confirmed(&confirmation) {
+        state.status = "recursive remote delete cancelled before mutation".to_owned();
+        return Ok(());
+    }
+
+    state.status = format!(
+        "revalidating and recursively deleting {} ({} entries) ...",
+        plan.root,
+        plan.total_entries()
+    );
+    terminal.render(ssh.config(), host_key, state)?;
+    match ssh.remove_remote_tree(&plan, options).await {
+        Ok(summary) => {
+            let removed_root = plan.root.clone();
+            state.reload(ssh).await;
+            state.status = format!(
+                "recursive delete complete: {} files, {} directories, {} symlinks removed from {}",
+                summary.files, summary.directories, summary.symlinks, removed_root
+            );
+        }
+        Err(error) => {
+            state.status = format!(
+                "recursive delete failed: {error:#}; if mutation had already started, re-list before retrying"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn is_delete_confirmed(value: &str) -> bool {
     value.trim() == "DELETE"
+}
+
+fn is_tree_delete_confirmed(value: &str) -> bool {
+    value.trim() == "DELETE TREE"
 }
 
 async fn run_shell_action(
@@ -334,13 +415,34 @@ async fn download_selected(
         PathBuf::from(input)
     };
 
-    state.status = format!("downloading {} ...", entry.path);
+    let cancel_listener = TransferCancelListener::start();
+    let options = TransferOptions {
+        cancellation: cancel_listener.cancellation(),
+        ..TransferOptions::default()
+    };
+    state.status = format!("downloading {} ... Esc/Ctrl-C cancels transfer", entry.path);
     terminal.render(ssh.config(), host_key, state)?;
-    match download_regular_file(ssh, &entry.path, &local).await {
-        Ok(bytes) => {
+    let result = download_regular_file_with_options(ssh, &entry.path, &local, options).await;
+    let cancelled = cancel_listener.is_cancelled();
+    let listener_result = cancel_listener.stop().await;
+
+    match (result, cancelled, listener_result) {
+        (_, _, Err(error)) => {
+            state.status = format!("transfer input listener failed: {error:#}");
+        }
+        (Ok(bytes), true, Ok(())) => {
+            state.status = format!(
+                "download completed before cancellation took effect: {bytes} bytes to {}",
+                local.display()
+            );
+        }
+        (Ok(bytes), false, Ok(())) => {
             state.status = format!("downloaded {bytes} bytes to {}", local.display());
         }
-        Err(error) => {
+        (Err(_), true, Ok(())) => {
+            state.status = format!("download cancelled; partial staging may remain at {}", local.display());
+        }
+        (Err(error), false, Ok(())) => {
             state.status = format!("download failed: {error:#}");
         }
     }
@@ -390,12 +492,17 @@ async fn download_selected_directory(
         return Ok(());
     }
 
+    let cancel_listener = TransferCancelListener::start();
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
     let options = TransferOptions {
+        cancellation: cancel_listener.cancellation(),
         progress: Some(progress_tx),
         ..TransferOptions::default()
     };
-    state.status = format!("recursively downloading {} ...", entry.path);
+    state.status = format!(
+        "recursively downloading {} ... Esc/Ctrl-C cancels transfer",
+        entry.path
+    );
     terminal.render(ssh.config(), host_key, state)?;
 
     let mut transfer = Box::pin(ssh.download_recursive(&entry.path, &local, options));
@@ -406,7 +513,10 @@ async fn download_selected_directory(
             event = progress_rx.recv(), if progress_open => {
                 match event {
                     Some(event) => {
-                        state.status = format_transfer_event("download", &event);
+                        state.status = format!(
+                            "{} | Esc/Ctrl-C cancels transfer",
+                            format_transfer_event("download", &event)
+                        );
                         terminal.render(ssh.config(), host_key, state)?;
                     }
                     None => progress_open = false,
@@ -414,9 +524,24 @@ async fn download_selected_directory(
             }
         }
     };
+    let cancelled = cancel_listener.is_cancelled();
+    let listener_result = cancel_listener.stop().await;
 
-    match result {
-        Ok(summary) => {
+    match (result, cancelled, listener_result) {
+        (_, _, Err(error)) => {
+            state.status = format!("transfer input listener failed: {error:#}");
+        }
+        (Ok(summary), true, Ok(())) => {
+            state.status = format!(
+                "recursive download completed before cancellation took effect: {} files, {} directories, {} bytes, {} skipped -> {}",
+                summary.files,
+                summary.directories,
+                summary.bytes,
+                summary.skipped,
+                local.display()
+            );
+        }
+        (Ok(summary), false, Ok(())) => {
             state.status = format!(
                 "recursive download complete: {} files, {} directories, {} bytes, {} symlinks/entries skipped -> {}",
                 summary.files,
@@ -426,7 +551,15 @@ async fn download_selected_directory(
                 local.display()
             );
         }
-        Err(error) => state.status = format!("recursive download failed: {error:#}"),
+        (Err(_), true, Ok(())) => {
+            state.status = format!(
+                "recursive download cancelled; completed files and atomic staging may remain under {}",
+                local.display()
+            );
+        }
+        (Err(error), false, Ok(())) => {
+            state.status = format!("recursive download failed: {error:#}");
+        }
     }
     Ok(())
 }
@@ -492,14 +625,40 @@ async fn upload_to_current(
     }
     let remote_path = join_remote_child(&state.path, &remote_name);
 
-    state.status = format!("uploading {} -> {remote_path} ...", local_path.display());
+    let cancel_listener = TransferCancelListener::start();
+    let options = TransferOptions {
+        cancellation: cancel_listener.cancellation(),
+        ..TransferOptions::default()
+    };
+    state.status = format!(
+        "uploading {} -> {remote_path} ... Esc/Ctrl-C cancels transfer",
+        local_path.display()
+    );
     terminal.render(ssh.config(), host_key, state)?;
-    match upload_regular_file(ssh, &local_path, &remote_path).await {
-        Ok(bytes) => {
+    let result = upload_regular_file_with_options(ssh, &local_path, &remote_path, options).await;
+    let cancelled = cancel_listener.is_cancelled();
+    let listener_result = cancel_listener.stop().await;
+
+    match (result, cancelled, listener_result) {
+        (_, _, Err(error)) => {
+            state.status = format!("transfer input listener failed: {error:#}");
+        }
+        (Ok(bytes), true, Ok(())) => {
+            state.status = format!(
+                "upload completed before cancellation took effect: {bytes} bytes to {remote_path}"
+            );
+            state.reload_preserving_name(ssh, &remote_name).await;
+        }
+        (Ok(bytes), false, Ok(())) => {
             state.status = format!("uploaded {bytes} bytes to {remote_path}");
             state.reload_preserving_name(ssh, &remote_name).await;
         }
-        Err(error) => {
+        (Err(_), true, Ok(())) => {
+            state.status = format!(
+                "upload cancelled; remote atomic staging may remain for {remote_path}"
+            );
+        }
+        (Err(error), false, Ok(())) => {
             state.status = format!("upload failed: {error:#}");
         }
     }
@@ -577,12 +736,17 @@ async fn upload_directory_to_current(
         return Ok(());
     }
 
+    let cancel_listener = TransferCancelListener::start();
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
     let options = TransferOptions {
+        cancellation: cancel_listener.cancellation(),
         progress: Some(progress_tx),
         ..TransferOptions::default()
     };
-    state.status = format!("recursively uploading {} -> {remote_path} ...", local.display());
+    state.status = format!(
+        "recursively uploading {} -> {remote_path} ... Esc/Ctrl-C cancels transfer",
+        local.display()
+    );
     terminal.render(ssh.config(), host_key, state)?;
 
     let mut transfer = Box::pin(ssh.upload_recursive(&local, &remote_path, options));
@@ -593,7 +757,10 @@ async fn upload_directory_to_current(
             event = progress_rx.recv(), if progress_open => {
                 match event {
                     Some(event) => {
-                        state.status = format_transfer_event("upload", &event);
+                        state.status = format!(
+                            "{} | Esc/Ctrl-C cancels transfer",
+                            format_transfer_event("upload", &event)
+                        );
                         terminal.render(ssh.config(), host_key, state)?;
                     }
                     None => progress_open = false,
@@ -601,16 +768,35 @@ async fn upload_directory_to_current(
             }
         }
     };
+    let cancelled = cancel_listener.is_cancelled();
+    let listener_result = cancel_listener.stop().await;
 
-    match result {
-        Ok(summary) => {
+    match (result, cancelled, listener_result) {
+        (_, _, Err(error)) => {
+            state.status = format!("transfer input listener failed: {error:#}");
+        }
+        (Ok(summary), true, Ok(())) => {
+            state.status = format!(
+                "recursive upload completed before cancellation took effect: {} files, {} directories, {} bytes, {} skipped -> {remote_path}",
+                summary.files, summary.directories, summary.bytes, summary.skipped
+            );
+            state.reload_preserving_name(ssh, &remote_name).await;
+        }
+        (Ok(summary), false, Ok(())) => {
             state.status = format!(
                 "recursive upload complete: {} files, {} directories, {} bytes, {} symlinks/entries skipped -> {remote_path}",
                 summary.files, summary.directories, summary.bytes, summary.skipped
             );
             state.reload_preserving_name(ssh, &remote_name).await;
         }
-        Err(error) => state.status = format!("recursive upload failed: {error:#}"),
+        (Err(_), true, Ok(())) => {
+            state.status = format!(
+                "recursive upload cancelled; completed files/directories and atomic staging may remain under {remote_path}"
+            );
+        }
+        (Err(error), false, Ok(())) => {
+            state.status = format!("recursive upload failed: {error:#}");
+        }
     }
     Ok(())
 }
@@ -929,7 +1115,7 @@ impl TerminalSession {
             MoveTo(0, help_row),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: j/k nav | Enter open/stat | ← parent | p path | m mkdir | R rename | x/Delete remove | i info | r refresh | s shell | S sudo | d/D download | u/U upload | q quit",
+                "keys: j/k nav | Enter open/stat | ← parent | p path | m mkdir | R rename | x remove | X delete tree | i info | r refresh | s/S shell | d/D download | u/U upload | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
@@ -1179,6 +1365,14 @@ mod tests {
         assert!(is_delete_confirmed(" DELETE \n"));
         assert!(!is_delete_confirmed("delete"));
         assert!(!is_delete_confirmed("DEL"));
+    }
+
+    #[test]
+    fn recursive_delete_confirmation_is_distinct_and_exact() {
+        assert!(is_tree_delete_confirmed("DELETE TREE"));
+        assert!(is_tree_delete_confirmed(" DELETE TREE \n"));
+        assert!(!is_tree_delete_confirmed("DELETE"));
+        assert!(!is_tree_delete_confirmed("delete tree"));
     }
 
     #[test]
