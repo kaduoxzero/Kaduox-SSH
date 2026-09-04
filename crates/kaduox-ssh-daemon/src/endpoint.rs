@@ -1,11 +1,10 @@
 use std::io;
 
-use anyhow::{Context, Result, bail};
-
 #[cfg(unix)]
 mod platform {
     use std::fs;
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    use std::os::unix::net::UnixStream as StdUnixStream;
     use std::path::{Path, PathBuf};
 
     use anyhow::{Context, Result, bail};
@@ -43,9 +42,28 @@ mod platform {
                     if metadata.uid() != owner_uid {
                         bail!("existing daemon socket {} has a different owner", path.display());
                     }
-                    fs::remove_file(&path).with_context(|| {
-                        format!("failed to remove stale daemon socket {}", path.display())
-                    })?;
+                    match StdUnixStream::connect(&path) {
+                        Ok(_) => bail!("kssh-daemon is already running at {}", path.display()),
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::ConnectionRefused
+                                    | std::io::ErrorKind::NotFound
+                            ) =>
+                        {
+                            fs::remove_file(&path).with_context(|| {
+                                format!("failed to remove stale daemon socket {}", path.display())
+                            })?;
+                        }
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "failed to determine whether daemon socket {} is active",
+                                    path.display()
+                                )
+                            });
+                        }
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
@@ -174,7 +192,8 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use std::ffi::c_void;
+    use std::ffi::{OsStr, c_void};
+    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
     use std::time::Duration;
@@ -183,7 +202,9 @@ mod platform {
     use tokio::net::windows::named_pipe::{
         ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
     };
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_BUSY, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_PIPE_BUSY, GetLastError, HANDLE,
+    };
     use windows_sys::Win32::Security::{
         EqualSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
@@ -191,16 +212,31 @@ mod platform {
         GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+        CreateMutexW, GetCurrentProcess, OpenProcess, OpenProcessToken,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     const PIPE_NAME: &str = r"\\.\pipe\kaduox-ssh-daemon-v1";
+    const SINGLETON_NAME: &str = r"Local\KaduoxSSHDaemon-v1";
 
-    pub struct ServerEndpoint;
+    pub struct ServerEndpoint {
+        singleton: HANDLE,
+    }
 
     impl ServerEndpoint {
         pub fn bind_default() -> Result<Self> {
-            Ok(Self)
+            let name = wide_null(SINGLETON_NAME);
+            let singleton = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+            if singleton.is_null() {
+                bail!("failed to create kssh-daemon singleton mutex");
+            }
+            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                unsafe {
+                    let _ = CloseHandle(singleton);
+                }
+                bail!("kssh-daemon is already running for this Windows session");
+            }
+            Ok(Self { singleton })
         }
 
         pub async fn accept(&self) -> Result<NamedPipeServer> {
@@ -218,6 +254,14 @@ mod platform {
                     continue;
                 }
                 return Ok(server);
+            }
+        }
+    }
+
+    impl Drop for ServerEndpoint {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.singleton);
             }
         }
     }
@@ -305,6 +349,10 @@ mod platform {
             bail!("failed to read process token user for daemon peer verification");
         }
         Ok(buffer)
+    }
+
+    fn wide_null(value: &str) -> Vec<u16> {
+        OsStr::new(value).encode_wide().chain(Some(0)).collect()
     }
 }
 
