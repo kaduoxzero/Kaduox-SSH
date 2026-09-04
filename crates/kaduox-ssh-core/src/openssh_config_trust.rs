@@ -48,7 +48,7 @@ fn current_real_uid() -> u32 {
     // arguments or pointer requirements. Linux and macOS expose uid_t as an
     // unsigned integer compatible with c_uint, which are the Unix targets in
     // the supported CI/release matrix.
-    unsafe { getuid() as u32 }
+    unsafe { getuid() }
 }
 
 #[cfg(not(unix))]
