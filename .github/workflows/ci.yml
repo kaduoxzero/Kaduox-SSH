@@ -6,6 +6,7 @@ on:
       - develop
       - main
       - "release/**"
+      - integration/v0.6.0-candidate
   pull_request:
     branches:
       - develop
