@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKeyVerification {
     Known,
+    CertificateAuthority,
     Learned,
     Insecure,
 }
