@@ -13,18 +13,24 @@ use crossterm::terminal::{
 use kaduox_ssh_core::{
     ConnectionConfig, HostKeyVerification, RemoteDeleteOptions, RemoteDirEntry, RemoteFileMetadata,
     RemoteFileType, RemoteUser, ServerHostKeyInfo, SshClient, TransferEvent, TransferOptions,
+    TransferTaskId, TransferTaskKind, TransferTaskManager, TransferTaskRegistry,
 };
 
 use crate::tui_actions::{
     download_regular_file_with_options, join_remote_child, prompt_line, run_shell,
     safe_local_filename, upload_regular_file_with_options, validate_remote_leaf,
 };
+use crate::tui_task_panel::{self, TaskPanelAction};
 use crate::tui_transfer_control::TransferCancelListener;
 
-pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
+pub async fn run(
+    ssh: &SshClient,
+    initial_path: &str,
+    transfer_tasks: TransferTaskRegistry,
+) -> Result<()> {
     let mut terminal = TerminalSession::enter()?;
     let host_key = ssh.server_host_key().await;
-    let mut state = BrowserState::new(initial_path);
+    let mut state = BrowserState::new(initial_path, transfer_tasks);
     state.reload(ssh).await;
 
     loop {
@@ -65,6 +71,15 @@ pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
             }
             KeyCode::Char('X') => {
                 remove_selected_tree(
+                    &mut terminal,
+                    ssh,
+                    host_key.as_ref(),
+                    &mut state,
+                )
+                .await?;
+            }
+            KeyCode::Char('t') => {
+                open_transfer_tasks(
                     &mut terminal,
                     ssh,
                     host_key.as_ref(),
@@ -143,6 +158,130 @@ async fn prompt_with_terminal(terminal: &mut TerminalSession, prompt: String) ->
     let value = prompt_result?;
     resume_result?;
     Ok(value)
+}
+
+async fn open_transfer_tasks(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+) -> Result<()> {
+    terminal.suspend()?;
+    let action_result = tui_task_panel::choose_action(state.transfer_tasks.clone()).await;
+    let resume_result = terminal.resume();
+    let action = action_result?;
+    resume_result?;
+
+    match action {
+        TaskPanelAction::Return => {
+            state.status = "transfer task panel closed".to_owned();
+        }
+        TaskPanelAction::Cleared(count) => {
+            state.status = format!("cleared {count} finished transfer task records");
+        }
+        TaskPanelAction::Retry(id) => {
+            retry_transfer_task(terminal, ssh, host_key, state, id).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn retry_transfer_task(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+    id: TransferTaskId,
+) -> Result<()> {
+    let Some(previous) = state.transfer_tasks.get(id)? else {
+        state.status = format!("transfer task {} is no longer retained", id.get());
+        return Ok(());
+    };
+
+    let cancel_listener = TransferCancelListener::start();
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+    let options = TransferOptions {
+        cancellation: cancel_listener.cancellation(),
+        progress: Some(progress_tx),
+        ..TransferOptions::default()
+    };
+    let transfers = TransferTaskManager::new(ssh, state.transfer_tasks.clone());
+    state.status = format!(
+        "resuming transfer task {} with checkpoint policy ... Esc/Ctrl-C cancels transfer",
+        id.get()
+    );
+    terminal.render(ssh.config(), host_key, state)?;
+
+    let mut transfer = Box::pin(transfers.retry(id, options));
+    let mut progress_open = true;
+    let result = loop {
+        tokio::select! {
+            result = &mut transfer => break result,
+            event = progress_rx.recv(), if progress_open => {
+                match event {
+                    Some(event) => {
+                        state.status = format!(
+                            "task {} resume | {} | Esc/Ctrl-C cancels transfer",
+                            id.get(),
+                            format_transfer_event("transfer", &event)
+                        );
+                        terminal.render(ssh.config(), host_key, state)?;
+                    }
+                    None => progress_open = false,
+                }
+            }
+        }
+    };
+    let cancelled = cancel_listener.is_cancelled();
+    let listener_result = cancel_listener.stop().await;
+
+    match (result, cancelled, listener_result) {
+        (_, _, Err(error)) => {
+            state.status = format!("transfer input listener failed: {error:#}");
+        }
+        (Ok(summary), true, Ok(())) => {
+            if matches!(
+                previous.kind,
+                TransferTaskKind::UploadFile | TransferTaskKind::UploadDirectory
+            ) {
+                state.reload(ssh).await;
+            }
+            state.status = format!(
+                "task {} resume completed before cancellation took effect: {} files, {} directories, {} bytes, {} skipped",
+                id.get(),
+                summary.files,
+                summary.directories,
+                summary.bytes,
+                summary.skipped
+            );
+        }
+        (Ok(summary), false, Ok(())) => {
+            if matches!(
+                previous.kind,
+                TransferTaskKind::UploadFile | TransferTaskKind::UploadDirectory
+            ) {
+                state.reload(ssh).await;
+            }
+            state.status = format!(
+                "task {} resumed successfully: {} files, {} directories, {} bytes, {} skipped",
+                id.get(),
+                summary.files,
+                summary.directories,
+                summary.bytes,
+                summary.skipped
+            );
+        }
+        (Err(_), true, Ok(())) => {
+            state.status = format!(
+                "task {} resume cancelled; completed files or staging/part checkpoints may remain",
+                id.get()
+            );
+        }
+        (Err(error), false, Ok(())) => {
+            state.status = format!("task {} resume failed: {error:#}", id.get());
+        }
+    }
+    Ok(())
 }
 
 async fn jump_to_path(
@@ -420,9 +559,11 @@ async fn download_selected(
         cancellation: cancel_listener.cancellation(),
         ..TransferOptions::default()
     };
+    let transfers = TransferTaskManager::new(ssh, state.transfer_tasks.clone());
     state.status = format!("downloading {} ... Esc/Ctrl-C cancels transfer", entry.path);
     terminal.render(ssh.config(), host_key, state)?;
-    let result = download_regular_file_with_options(ssh, &entry.path, &local, options).await;
+    let result =
+        download_regular_file_with_options(&transfers, &entry.path, &local, options).await;
     let cancelled = cancel_listener.is_cancelled();
     let listener_result = cancel_listener.stop().await;
 
@@ -440,10 +581,13 @@ async fn download_selected(
             state.status = format!("downloaded {bytes} bytes to {}", local.display());
         }
         (Err(_), true, Ok(())) => {
-            state.status = format!("download cancelled; partial staging may remain at {}", local.display());
+            state.status = format!(
+                "download cancelled; partial staging may remain at {}; press t to resume",
+                local.display()
+            );
         }
         (Err(error), false, Ok(())) => {
-            state.status = format!("download failed: {error:#}");
+            state.status = format!("download failed: {error:#}; press t to inspect/retry task");
         }
     }
     Ok(())
@@ -499,13 +643,14 @@ async fn download_selected_directory(
         progress: Some(progress_tx),
         ..TransferOptions::default()
     };
+    let transfers = TransferTaskManager::new(ssh, state.transfer_tasks.clone());
     state.status = format!(
         "recursively downloading {} ... Esc/Ctrl-C cancels transfer",
         entry.path
     );
     terminal.render(ssh.config(), host_key, state)?;
 
-    let mut transfer = Box::pin(ssh.download_recursive(&entry.path, &local, options));
+    let mut transfer = Box::pin(transfers.download_directory(&entry.path, &local, options));
     let mut progress_open = true;
     let result = loop {
         tokio::select! {
@@ -553,12 +698,14 @@ async fn download_selected_directory(
         }
         (Err(_), true, Ok(())) => {
             state.status = format!(
-                "recursive download cancelled; completed files and atomic staging may remain under {}",
+                "recursive download cancelled; completed files and atomic staging may remain under {}; press t to resume",
                 local.display()
             );
         }
         (Err(error), false, Ok(())) => {
-            state.status = format!("recursive download failed: {error:#}");
+            state.status = format!(
+                "recursive download failed: {error:#}; press t to inspect/retry task"
+            );
         }
     }
     Ok(())
@@ -630,12 +777,14 @@ async fn upload_to_current(
         cancellation: cancel_listener.cancellation(),
         ..TransferOptions::default()
     };
+    let transfers = TransferTaskManager::new(ssh, state.transfer_tasks.clone());
     state.status = format!(
         "uploading {} -> {remote_path} ... Esc/Ctrl-C cancels transfer",
         local_path.display()
     );
     terminal.render(ssh.config(), host_key, state)?;
-    let result = upload_regular_file_with_options(ssh, &local_path, &remote_path, options).await;
+    let result =
+        upload_regular_file_with_options(&transfers, &local_path, &remote_path, options).await;
     let cancelled = cancel_listener.is_cancelled();
     let listener_result = cancel_listener.stop().await;
 
@@ -655,11 +804,11 @@ async fn upload_to_current(
         }
         (Err(_), true, Ok(())) => {
             state.status = format!(
-                "upload cancelled; remote atomic staging may remain for {remote_path}"
+                "upload cancelled; remote atomic staging may remain for {remote_path}; press t to resume"
             );
         }
         (Err(error), false, Ok(())) => {
-            state.status = format!("upload failed: {error:#}");
+            state.status = format!("upload failed: {error:#}; press t to inspect/retry task");
         }
     }
     Ok(())
@@ -743,13 +892,14 @@ async fn upload_directory_to_current(
         progress: Some(progress_tx),
         ..TransferOptions::default()
     };
+    let transfers = TransferTaskManager::new(ssh, state.transfer_tasks.clone());
     state.status = format!(
         "recursively uploading {} -> {remote_path} ... Esc/Ctrl-C cancels transfer",
         local.display()
     );
     terminal.render(ssh.config(), host_key, state)?;
 
-    let mut transfer = Box::pin(ssh.upload_recursive(&local, &remote_path, options));
+    let mut transfer = Box::pin(transfers.upload_directory(&local, &remote_path, options));
     let mut progress_open = true;
     let result = loop {
         tokio::select! {
@@ -791,11 +941,13 @@ async fn upload_directory_to_current(
         }
         (Err(_), true, Ok(())) => {
             state.status = format!(
-                "recursive upload cancelled; completed files/directories and atomic staging may remain under {remote_path}"
+                "recursive upload cancelled; completed files/directories and atomic staging may remain under {remote_path}; press t to resume"
             );
         }
         (Err(error), false, Ok(())) => {
-            state.status = format!("recursive upload failed: {error:#}");
+            state.status = format!(
+                "recursive upload failed: {error:#}; press t to inspect/retry task"
+            );
         }
     }
     Ok(())
@@ -820,10 +972,11 @@ struct BrowserState {
     entries: Vec<RemoteDirEntry>,
     selected: usize,
     status: String,
+    transfer_tasks: TransferTaskRegistry,
 }
 
 impl BrowserState {
-    fn new(initial_path: &str) -> Self {
+    fn new(initial_path: &str, transfer_tasks: TransferTaskRegistry) -> Self {
         Self {
             path: if initial_path.is_empty() {
                 ".".to_owned()
@@ -833,6 +986,7 @@ impl BrowserState {
             entries: Vec::new(),
             selected: 0,
             status: "loading remote directory...".to_owned(),
+            transfer_tasks,
         }
     }
 
@@ -1115,7 +1269,7 @@ impl TerminalSession {
             MoveTo(0, help_row),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: j/k nav | Enter open/stat | ← parent | p path | m mkdir | R rename | x remove | X delete tree | i info | r refresh | s/S shell | d/D download | u/U upload | q quit",
+                "keys: j/k nav | Enter open/stat | ← parent | p path | m mkdir | R rename | x remove | X delete tree | t tasks | i info | r refresh | s/S shell | d/D download | u/U upload | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
