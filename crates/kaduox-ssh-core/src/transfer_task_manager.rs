@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+use tokio::time::{MissedTickBehavior, interval};
 
 use crate::client::SshClient;
 use crate::transfer::{TransferEvent, TransferOptions, TransferSummary};
@@ -223,6 +223,9 @@ fn spawn_tracking_bridge(
     caller_cancellation: crate::transfer::TransferCancellation,
 ) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
+        let mut cancellation_poll = interval(CALLER_CANCELLATION_POLL);
+        cancellation_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 event = progress_rx.recv() => {
@@ -231,10 +234,12 @@ fn spawn_tracking_bridge(
                     };
                     registry.record_progress(id, &event)?;
                     if let Some(sender) = downstream_progress.as_ref() {
+                        // Progress is advisory and stays bounded. A slow or closed
+                        // downstream observer must never backpressure SFTP work.
                         let _ = sender.try_send(event);
                     }
                 }
-                _ = sleep(CALLER_CANCELLATION_POLL) => {
+                _ = cancellation_poll.tick() => {
                     if caller_cancellation.is_cancelled() {
                         let _ = registry.request_cancel(id)?;
                     }
