@@ -11,11 +11,15 @@ use russh::{ChannelMsg, Disconnect, Preferred};
 use russh_sftp::client::{Config as SftpConfig, SftpSession};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
 use crate::auth::{Authentication, authenticate};
 use crate::config::{ConnectionConfig, JumpHost};
+use crate::connect::{
+    AutoJumpAuthProvider, ConnectionProgress, JumpAuthProvider, JumpAuthRequest,
+    MAX_JUMP_AUTH_ATTEMPTS, authentication_kind, emit_progress,
+};
 use crate::diagnostics::ServerHostKeyInfo;
 use crate::forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle,
@@ -97,6 +101,23 @@ pub struct SshClient {
 
 impl SshClient {
     pub async fn connect(config: ConnectionConfig, authentication: Authentication) -> Result<Self> {
+        let mut jump_auth = AutoJumpAuthProvider;
+        Self::connect_with_jump_auth(config, authentication, &mut jump_auth, None).await
+    }
+
+    /// Connect with a frontend-supplied per-hop authentication provider.
+    ///
+    /// Jump sessions are established strictly in chain order. Authentication of
+    /// hop N completes before any network connection to hop N+1 is attempted.
+    /// The provider may supply a different in-memory credential on a retry; core
+    /// never persists it. `progress` is observational and may be dropped without
+    /// failing the connection.
+    pub async fn connect_with_jump_auth(
+        config: ConnectionConfig,
+        authentication: Authentication,
+        jump_auth: &mut dyn JumpAuthProvider,
+        progress: Option<&mpsc::UnboundedSender<ConnectionProgress>>,
+    ) -> Result<Self> {
         config.validate_timeouts()?;
         let state = HandlerState {
             agent_forwarding: config.agent_forwarding,
@@ -104,8 +125,16 @@ impl SshClient {
         };
         let ssh_config = ssh_config(&config);
         let (mut session, jump_sessions) = if !config.jump_hosts.is_empty() {
-            connect_via_jumps(&config, ssh_config, &state).await?
+            connect_via_jumps(&config, ssh_config, &state, jump_auth, progress).await?
         } else if let Some(proxy_command) = config.proxy_command.as_deref() {
+            emit_progress(
+                progress,
+                ConnectionProgress::FinalConnecting {
+                    alias: config.alias.clone(),
+                    host: config.host.clone(),
+                    port: config.port,
+                },
+            );
             let stream = ProxyCommandStream::spawn(proxy_command, &config)?;
             let handler = handler_for(&config, state.clone());
             (
@@ -124,6 +153,14 @@ impl SshClient {
                 Vec::new(),
             )
         } else {
+            emit_progress(
+                progress,
+                ConnectionProgress::FinalConnecting {
+                    alias: config.alias.clone(),
+                    host: config.host.clone(),
+                    port: config.port,
+                },
+            );
             let handler = handler_for(&config, state.clone());
             (
                 timeout(
@@ -144,6 +181,14 @@ impl SshClient {
             )
         };
 
+        emit_progress(
+            progress,
+            ConnectionProgress::FinalAuthenticating {
+                alias: config.alias.clone(),
+                user: config.username.clone(),
+                method: authentication_kind(&authentication),
+            },
+        );
         let authenticated = timeout(
             config.authentication_timeout,
             authenticate(&mut session, &config.username, &authentication),
@@ -159,6 +204,12 @@ impl SshClient {
         if !authenticated {
             bail!("SSH authentication failed for user {}", config.username);
         }
+        emit_progress(
+            progress,
+            ConnectionProgress::Connected {
+                alias: config.alias.clone(),
+            },
+        );
 
         Ok(Self {
             session: Arc::new(session),
@@ -560,14 +611,27 @@ async fn connect_via_jumps(
     config: &ConnectionConfig,
     final_ssh_config: Arc<client::Config>,
     final_state: &HandlerState,
+    jump_auth: &mut dyn JumpAuthProvider,
+    progress: Option<&mpsc::UnboundedSender<ConnectionProgress>>,
 ) -> Result<(
     client::Handle<ClientHandler>,
     Vec<Arc<client::Handle<ClientHandler>>>,
 )> {
-    let mut keepalive = Vec::with_capacity(config.jump_hosts.len());
+    let total = config.jump_hosts.len();
+    let mut keepalive = Vec::with_capacity(total);
     let mut current: Option<client::Handle<ClientHandler>> = None;
 
-    for jump in &config.jump_hosts {
+    for (index, jump) in config.jump_hosts.iter().enumerate() {
+        emit_progress(
+            progress,
+            ConnectionProgress::JumpConnecting {
+                index,
+                total,
+                alias: jump.alias.clone(),
+                host: jump.host.clone(),
+                port: jump.port,
+            },
+        );
         let mut next = if let Some(previous) = current.take() {
             let channel = timeout(
                 config.channel_open_timeout,
@@ -581,12 +645,25 @@ async fn connect_via_jumps(
             .await
             .with_context(|| {
                 format!(
-                    "timed out after {} seconds opening tunnel to jump host {}",
-                    config.channel_open_timeout.as_secs(),
-                    jump.alias
+                    "jump {}/{} {} ({}:{}): tunnel open timed out after {} seconds",
+                    index + 1,
+                    total,
+                    jump.alias,
+                    jump.host,
+                    jump.port,
+                    config.channel_open_timeout.as_secs()
                 )
             })?
-            .with_context(|| format!("failed to open tunnel to jump host {}", jump.alias))?;
+            .with_context(|| {
+                format!(
+                    "jump {}/{} {} ({}:{}): failed to open tunnel",
+                    index + 1,
+                    total,
+                    jump.alias,
+                    jump.host,
+                    jump.port
+                )
+            })?;
             keepalive.push(Arc::new(previous));
             timeout(
                 config.connect_timeout,
@@ -599,12 +676,25 @@ async fn connect_via_jumps(
             .await
             .with_context(|| {
                 format!(
-                    "SSH handshake for jump host {} timed out after {} seconds",
+                    "jump {}/{} {} ({}:{}): SSH handshake timed out after {} seconds",
+                    index + 1,
+                    total,
                     jump.alias,
+                    jump.host,
+                    jump.port,
                     config.connect_timeout.as_secs()
                 )
             })?
-            .with_context(|| format!("SSH handshake failed for jump host {}", jump.alias))?
+            .with_context(|| {
+                format!(
+                    "jump {}/{} {} ({}:{}): SSH handshake failed",
+                    index + 1,
+                    total,
+                    jump.alias,
+                    jump.host,
+                    jump.port
+                )
+            })?
         } else {
             timeout(
                 config.connect_timeout,
@@ -617,37 +707,139 @@ async fn connect_via_jumps(
             .await
             .with_context(|| {
                 format!(
-                    "connection to jump host {} timed out after {} seconds",
+                    "jump {}/{} {} ({}:{}): connection timed out after {} seconds",
+                    index + 1,
+                    total,
                     jump.alias,
+                    jump.host,
+                    jump.port,
                     config.connect_timeout.as_secs()
                 )
             })?
-            .with_context(|| format!("failed to connect to jump host {}", jump.alias))?
+            .with_context(|| {
+                format!(
+                    "jump {}/{} {} ({}:{}): connection failed",
+                    index + 1,
+                    total,
+                    jump.alias,
+                    jump.host,
+                    jump.port
+                )
+            })?
         };
+        emit_progress(
+            progress,
+            ConnectionProgress::JumpConnected {
+                index,
+                total,
+                alias: jump.alias.clone(),
+            },
+        );
 
-        let jump_auth = Authentication::Auto {
-            identity_files: jump.identity_files.clone(),
-            passphrase: None,
-        };
-        let authenticated = timeout(
-            config.authentication_timeout,
-            authenticate(&mut next, &jump.username, &jump_auth),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "authentication for jump host {} timed out after {} seconds",
-                jump.alias,
-                config.authentication_timeout.as_secs()
+        let mut previous_failed = false;
+        let mut authenticated = false;
+        for attempt in 1..=MAX_JUMP_AUTH_ATTEMPTS {
+            let request = JumpAuthRequest {
+                index,
+                total,
+                attempt,
+                jump: jump.clone(),
+                previous_failed,
+            };
+            let Some(authentication) = jump_auth.authentication(request).await? else {
+                if previous_failed {
+                    bail!(
+                        "jump {}/{} {} ({}:{}): authentication failed; credential provider declined retry",
+                        index + 1,
+                        total,
+                        jump.alias,
+                        jump.host,
+                        jump.port
+                    );
+                }
+                bail!(
+                    "jump {}/{} {} ({}:{}): authentication cancelled before attempt {attempt}",
+                    index + 1,
+                    total,
+                    jump.alias,
+                    jump.host,
+                    jump.port
+                );
+            };
+            let method = authentication_kind(&authentication);
+            emit_progress(
+                progress,
+                ConnectionProgress::JumpAuthenticating {
+                    index,
+                    total,
+                    alias: jump.alias.clone(),
+                    attempt,
+                    method,
+                },
+            );
+            let accepted = timeout(
+                config.authentication_timeout,
+                authenticate(&mut next, &jump.username, &authentication),
             )
-        })??;
+            .await
+            .with_context(|| {
+                format!(
+                    "jump {}/{} {} ({}:{}): authentication attempt {attempt} timed out after {} seconds",
+                    index + 1,
+                    total,
+                    jump.alias,
+                    jump.host,
+                    jump.port,
+                    config.authentication_timeout.as_secs()
+                )
+            })??;
+            if accepted {
+                emit_progress(
+                    progress,
+                    ConnectionProgress::JumpAuthenticated {
+                        index,
+                        total,
+                        alias: jump.alias.clone(),
+                        method,
+                    },
+                );
+                authenticated = true;
+                break;
+            }
+            previous_failed = true;
+            emit_progress(
+                progress,
+                ConnectionProgress::JumpAuthenticationFailed {
+                    index,
+                    total,
+                    alias: jump.alias.clone(),
+                    attempt,
+                },
+            );
+        }
         if !authenticated {
-            bail!("authentication failed for jump host {}", jump.alias);
+            bail!(
+                "jump {}/{} {} ({}:{}): authentication failed after {} attempts",
+                index + 1,
+                total,
+                jump.alias,
+                jump.host,
+                jump.port,
+                MAX_JUMP_AUTH_ATTEMPTS
+            );
         }
         current = Some(next);
     }
 
     let last = current.context("ProxyJump chain is empty")?;
+    emit_progress(
+        progress,
+        ConnectionProgress::FinalConnecting {
+            alias: config.alias.clone(),
+            host: config.host.clone(),
+            port: config.port,
+        },
+    );
     let channel = timeout(
         config.channel_open_timeout,
         last.channel_open_direct_tcpip(
@@ -660,11 +852,18 @@ async fn connect_via_jumps(
     .await
     .with_context(|| {
         format!(
-            "final ProxyJump tunnel timed out after {} seconds",
+            "final ProxyJump tunnel to {}:{} timed out after {} seconds",
+            config.host,
+            config.port,
             config.channel_open_timeout.as_secs()
         )
     })?
-    .context("failed to open final ProxyJump tunnel")?;
+    .with_context(|| {
+        format!(
+            "failed to open final ProxyJump tunnel to {}:{}",
+            config.host, config.port
+        )
+    })?;
     keepalive.push(Arc::new(last));
 
     let final_session = timeout(
