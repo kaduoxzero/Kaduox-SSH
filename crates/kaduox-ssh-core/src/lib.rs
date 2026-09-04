@@ -10,6 +10,7 @@ mod handler;
 mod host_catalog;
 mod inventory;
 mod manager;
+mod openssh_config_trust;
 mod openssh_include;
 mod privileged;
 mod remote_fs;
