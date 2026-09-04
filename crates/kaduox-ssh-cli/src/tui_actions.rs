@@ -52,14 +52,6 @@ pub async fn run_shell(ssh: &SshClient, remote_user: RemoteUser) -> Result<Optio
     result
 }
 
-pub async fn download_regular_file(
-    ssh: &SshClient,
-    remote_path: &str,
-    local_path: &Path,
-) -> Result<u64> {
-    download_regular_file_with_options(ssh, remote_path, local_path, TransferOptions::default()).await
-}
-
 pub async fn download_regular_file_with_options(
     ssh: &SshClient,
     remote_path: &str,
@@ -74,14 +66,6 @@ pub async fn download_regular_file_with_options(
                 local_path.display()
             )
         })
-}
-
-pub async fn upload_regular_file(
-    ssh: &SshClient,
-    local_path: &Path,
-    remote_path: &str,
-) -> Result<u64> {
-    upload_regular_file_with_options(ssh, local_path, remote_path, TransferOptions::default()).await
 }
 
 pub async fn upload_regular_file_with_options(
