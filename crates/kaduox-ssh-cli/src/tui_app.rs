@@ -1,4 +1,5 @@
 use std::io::{Stdout, Write, stdout};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
@@ -11,7 +12,12 @@ use crossterm::terminal::{
 };
 use kaduox_ssh_core::{
     ConnectionConfig, HostKeyVerification, RemoteDirEntry, RemoteFileMetadata, RemoteFileType,
-    ServerHostKeyInfo, SshClient,
+    RemoteUser, ServerHostKeyInfo, SshClient,
+};
+
+use crate::tui_actions::{
+    download_regular_file, join_remote_child, prompt_line, run_shell, safe_local_filename,
+    upload_regular_file, validate_remote_leaf,
 };
 
 pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
@@ -44,6 +50,33 @@ pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
             KeyCode::Backspace | KeyCode::Left => state.go_parent(ssh).await,
             KeyCode::Char('r') => state.reload(ssh).await,
             KeyCode::Char('i') => state.inspect_selected(ssh).await,
+            KeyCode::Char('s') => {
+                run_shell_action(&mut terminal, ssh, &mut state, RemoteUser::Current).await?;
+            }
+            KeyCode::Char('S') => {
+                let user = prompt_with_terminal(
+                    &mut terminal,
+                    "sudo shell user (empty cancels): ".to_owned(),
+                )
+                .await?;
+                if user.is_empty() {
+                    state.status = "sudo shell cancelled".to_owned();
+                } else {
+                    run_shell_action(
+                        &mut terminal,
+                        ssh,
+                        &mut state,
+                        RemoteUser::Sudo(user),
+                    )
+                    .await?;
+                }
+            }
+            KeyCode::Char('d') => {
+                download_selected(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
+            }
+            KeyCode::Char('u') => {
+                upload_to_current(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
+            }
             _ => {}
         }
     }
@@ -61,6 +94,150 @@ async fn read_event() -> Result<Event> {
         .await
         .context("terminal input task failed")?
         .context("failed to read terminal input")
+}
+
+async fn prompt_with_terminal(terminal: &mut TerminalSession, prompt: String) -> Result<String> {
+    terminal.suspend()?;
+    let prompt_result = prompt_line(prompt).await;
+    let resume_result = terminal.resume();
+    let value = prompt_result?;
+    resume_result?;
+    Ok(value)
+}
+
+async fn run_shell_action(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    state: &mut BrowserState,
+    remote_user: RemoteUser,
+) -> Result<()> {
+    terminal.suspend()?;
+    let shell_result = run_shell(ssh, remote_user).await;
+    let resume_result = terminal.resume();
+    let status = shell_result?;
+    resume_result?;
+    state.status = match status {
+        Some(0) => "interactive shell exited successfully".to_owned(),
+        Some(code) => format!("interactive shell exited with status {code}"),
+        None => "interactive shell closed without an SSH exit status".to_owned(),
+    };
+    Ok(())
+}
+
+async fn download_selected(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let Some(entry) = state.selected_entry().cloned() else {
+        state.status = "directory is empty".to_owned();
+        return Ok(());
+    };
+    if entry.metadata.file_type != RemoteFileType::File {
+        state.status = "TUI download currently accepts regular files only".to_owned();
+        return Ok(());
+    }
+
+    let default_name = safe_local_filename(&entry.name);
+    let prompt = format!(
+        "download {} to local path [{}]: ",
+        terminal_safe(&entry.path),
+        terminal_safe(&default_name)
+    );
+    let input = prompt_with_terminal(terminal, prompt).await?;
+    let local = if input.is_empty() {
+        PathBuf::from(default_name)
+    } else {
+        PathBuf::from(input)
+    };
+
+    state.status = format!("downloading {} ...", entry.path);
+    terminal.render(ssh.config(), host_key, state)?;
+    match download_regular_file(ssh, &entry.path, &local).await {
+        Ok(bytes) => {
+            state.status = format!("downloaded {bytes} bytes to {}", local.display());
+        }
+        Err(error) => {
+            state.status = format!("download failed: {error:#}");
+        }
+    }
+    Ok(())
+}
+
+async fn upload_to_current(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+) -> Result<()> {
+    terminal.suspend()?;
+    let local_result = prompt_line("local file to upload (empty cancels): ".to_owned()).await;
+    let mut remote_result: Option<Result<String>> = None;
+    let mut local_path = None;
+
+    if let Ok(local) = &local_result {
+        if !local.is_empty() {
+            let path = PathBuf::from(local);
+            let default_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned);
+            if let Some(default_name) = default_name {
+                remote_result = Some(
+                    prompt_line(format!(
+                        "remote file name [{}]: ",
+                        terminal_safe(&default_name)
+                    ))
+                    .await,
+                );
+                local_path = Some((path, default_name));
+            }
+        }
+    }
+
+    let resume_result = terminal.resume();
+    let local = local_result?;
+    resume_result?;
+    if local.is_empty() {
+        state.status = "upload cancelled".to_owned();
+        return Ok(());
+    }
+
+    let Some((local_path, default_name)) = local_path else {
+        state.status = "local upload filename must be valid UTF-8".to_owned();
+        return Ok(());
+    };
+    let remote_input = match remote_result {
+        Some(result) => result?,
+        None => {
+            state.status = "remote upload name could not be resolved".to_owned();
+            return Ok(());
+        }
+    };
+    let remote_name = if remote_input.is_empty() {
+        default_name
+    } else {
+        remote_input
+    };
+    if let Err(error) = validate_remote_leaf(&remote_name) {
+        state.status = format!("invalid remote upload name: {error:#}");
+        return Ok(());
+    }
+    let remote_path = join_remote_child(&state.path, &remote_name);
+
+    state.status = format!("uploading {} -> {remote_path} ...", local_path.display());
+    terminal.render(ssh.config(), host_key, state)?;
+    match upload_regular_file(ssh, &local_path, &remote_path).await {
+        Ok(bytes) => {
+            state.status = format!("uploaded {bytes} bytes to {remote_path}");
+            state.reload_preserving_name(ssh, &remote_name).await;
+        }
+        Err(error) => {
+            state.status = format!("upload failed: {error:#}");
+        }
+    }
+    Ok(())
 }
 
 struct BrowserState {
@@ -93,6 +270,23 @@ impl BrowserState {
             }
             Err(error) => {
                 self.status = format!("list failed: {error:#}");
+            }
+        }
+    }
+
+    async fn reload_preserving_name(&mut self, ssh: &SshClient, name: &str) {
+        match ssh.list_remote_directory(&self.path).await {
+            Ok(entries) => {
+                self.entries = entries;
+                self.selected = self
+                    .entries
+                    .iter()
+                    .position(|entry| entry.name == name)
+                    .unwrap_or_else(|| self.selected.min(self.entries.len().saturating_sub(1)));
+                self.status = format!("loaded {} entries", self.entries.len());
+            }
+            Err(error) => {
+                self.status = format!("refresh after upload failed: {error:#}");
             }
         }
     }
@@ -171,6 +365,10 @@ impl BrowserState {
         self.change_path(ssh, parent).await;
     }
 
+    fn selected_entry(&self) -> Option<&RemoteDirEntry> {
+        self.entries.get(self.selected)
+    }
+
     fn move_up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
     }
@@ -221,6 +419,7 @@ impl BrowserState {
 
 struct TerminalSession {
     stdout: Stdout,
+    active: bool,
 }
 
 impl TerminalSession {
@@ -231,7 +430,34 @@ impl TerminalSession {
             let _ = terminal::disable_raw_mode();
             return Err(error).context("failed to enter alternate terminal screen");
         }
-        Ok(Self { stdout })
+        Ok(Self {
+            stdout,
+            active: true,
+        })
+    }
+
+    fn suspend(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        execute!(&mut self.stdout, Show, LeaveAlternateScreen)
+            .context("failed to suspend TUI alternate screen")?;
+        terminal::disable_raw_mode().context("failed to suspend TUI raw mode")?;
+        self.active = false;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        if self.active {
+            return Ok(());
+        }
+        terminal::enable_raw_mode().context("failed to resume TUI raw mode")?;
+        if let Err(error) = execute!(&mut self.stdout, EnterAlternateScreen, Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(error).context("failed to resume TUI alternate screen");
+        }
+        self.active = true;
+        Ok(())
     }
 
     fn render(
@@ -253,7 +479,7 @@ impl TerminalSession {
         }
 
         let width = usize::from(columns);
-        let title = "Kaduox-SSH TUI | read-only remote browser";
+        let title = "Kaduox-SSH TUI | remote workspace";
         queue!(
             &mut self.stdout,
             SetAttribute(Attribute::Bold),
@@ -314,7 +540,7 @@ impl TerminalSession {
             MoveTo(0, help_row),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: ↑/↓ or j/k select | Enter/→ open/stat | Backspace/← parent | i stat | r refresh | q/Esc quit",
+                "keys: j/k nav | Enter open/stat | ← parent | i info | r refresh | s shell | S sudo-shell | d download | u upload | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
@@ -326,8 +552,10 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        let _ = execute!(&mut self.stdout, Show, LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        if self.active {
+            let _ = execute!(&mut self.stdout, Show, LeaveAlternateScreen);
+            let _ = terminal::disable_raw_mode();
+        }
     }
 }
 
