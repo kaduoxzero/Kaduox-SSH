@@ -1,14 +1,14 @@
 mod tui_actions;
 mod tui_app;
 mod tui_picker;
+mod tui_workspace;
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, ConnectionTarget, HostKeyPolicy, SshClient,
-    discover_openssh_hosts, resolve_jump_hosts,
+    Authentication, ConnectionConfig, ConnectionTarget, HostKeyPolicy, resolve_jump_hosts,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -18,11 +18,11 @@ use tracing_subscriber::EnvFilter;
     version,
     about = "Interactive terminal UI for Kaduox-SSH"
 )]
-struct Cli {
-    /// Host alias, hostname, IP, or user@host. Omit to choose from ~/.ssh/config.
+pub(crate) struct Cli {
+    /// Host alias, hostname, IP, or user@host. Omit to start in the session dashboard.
     host: Option<String>,
 
-    /// Initial remote directory shown by the file browser.
+    /// Initial remote directory used by newly opened sessions.
     #[arg(long, default_value = ".")]
     remote: String,
 
@@ -42,11 +42,11 @@ struct Cli {
     #[arg(long, requires = "identity")]
     ask_key_passphrase: bool,
 
-    /// Prompt for an SSH login password.
+    /// Prompt for an SSH login password for each newly authenticated session.
     #[arg(long, conflicts_with_all = ["identity", "keyboard_interactive"])]
     password: bool,
 
-    /// Use keyboard-interactive authentication and prompt for the response secret.
+    /// Use keyboard-interactive authentication and prompt for each new session.
     #[arg(long, conflicts_with_all = ["identity", "password"])]
     keyboard_interactive: bool,
 
@@ -62,7 +62,7 @@ struct Cli {
     #[arg(long, conflicts_with = "jump")]
     proxy_command: Option<String>,
 
-    /// Enable OpenSSH agent forwarding for operations launched from the TUI.
+    /// Enable OpenSSH agent forwarding for shell channels launched from sessions.
     #[arg(short = 'A', long)]
     forward_agent: bool,
 }
@@ -93,28 +93,14 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let host = match cli.host.clone() {
-        Some(host) => host,
-        None => {
-            let catalog = discover_openssh_hosts()?;
-            if catalog.aliases.is_empty() {
-                let path = catalog
-                    .config_path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "~/.ssh/config".to_owned());
-                bail!(
-                    "no concrete OpenSSH Host aliases found in {path}; pass a host explicitly to kssh-tui"
-                );
-            }
-            let Some(host) = tui_picker::select_host(&catalog)? else {
-                return Ok(());
-            };
-            host
-        }
-    };
+    tui_workspace::run(&cli, cli.host.clone()).await
+}
 
-    let target = ConnectionTarget::parse(&host)?;
+pub(crate) fn build_connection_request(
+    cli: &Cli,
+    host: &str,
+) -> Result<(String, ConnectionConfig, Authentication)> {
+    let target = ConnectionTarget::parse(host)?;
     let target_user = cli.user.as_deref().or(target.username.as_deref());
     let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?;
 
@@ -141,13 +127,8 @@ async fn main() -> Result<()> {
     }
     config.agent_forwarding = cli.forward_agent;
 
-    let authentication = resolve_authentication(&cli, &config)?;
-    let ssh = SshClient::connect(config, authentication).await?;
-    let result = tui_app::run(&ssh, &cli.remote).await;
-    let close_result = ssh.close().await;
-    result?;
-    close_result?;
-    Ok(())
+    let authentication = resolve_authentication(cli, &config)?;
+    Ok((host.to_owned(), config, authentication))
 }
 
 fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authentication> {
@@ -206,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_host_is_optional_for_picker_mode() {
+    fn tui_host_is_optional_for_dashboard_mode() {
         let cli = Cli::try_parse_from(["kssh-tui"]).unwrap();
         assert!(cli.host.is_none());
         assert_eq!(cli.remote, ".");
