@@ -1,2 +1,12 @@
 # Ensure GitHub Linguist counts Rust sources in repository language statistics.
 *.rs linguist-language=Rust linguist-detectable=true
+
+# Release/version tooling performs fail-closed structural edits. Keep the files it
+# owns on LF across developer platforms so Cargo.lock and workflow/script checks
+# have one canonical byte representation.
+*.toml text eol=lf
+Cargo.lock text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
