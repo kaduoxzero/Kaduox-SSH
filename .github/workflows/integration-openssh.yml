@@ -15,6 +15,7 @@ on:
       - integration/v0.12.0-candidate
       - integration/v0.13.0-candidate
       - integration/v0.14.0-candidate
+      - integration/v0.15.0-candidate
   pull_request:
     branches:
       - develop
