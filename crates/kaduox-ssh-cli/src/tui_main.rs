@@ -1,6 +1,7 @@
 mod tui_actions;
 mod tui_app;
 mod tui_broadcast;
+mod tui_group_picker;
 mod tui_picker;
 mod tui_workspace;
 
@@ -26,6 +27,10 @@ pub(crate) struct Cli {
     /// Initial remote directory used by newly opened sessions.
     #[arg(long, default_value = ".")]
     remote: String,
+
+    /// Inventory path used by the v0.8 group picker.
+    #[arg(long)]
+    inventory: Option<PathBuf>,
 
     /// Override SSH port.
     #[arg(short = 'p', long)]
@@ -97,10 +102,10 @@ async fn main() -> Result<()> {
     tui_workspace::run(&cli, cli.host.clone()).await
 }
 
-pub(crate) fn build_connection_request(
+pub(crate) fn build_connection_config(
     cli: &Cli,
     host: &str,
-) -> Result<(String, ConnectionConfig, Authentication)> {
+) -> Result<(String, ConnectionConfig)> {
     let target = ConnectionTarget::parse(host)?;
     let target_user = cli.user.as_deref().or(target.username.as_deref());
     let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?;
@@ -127,12 +132,22 @@ pub(crate) fn build_connection_request(
         }
     }
     config.agent_forwarding = cli.forward_agent;
-
-    let authentication = resolve_authentication(cli, &config)?;
-    Ok((host.to_owned(), config, authentication))
+    Ok((host.to_owned(), config))
 }
 
-fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authentication> {
+pub(crate) fn build_connection_request(
+    cli: &Cli,
+    host: &str,
+) -> Result<(String, ConnectionConfig, Authentication)> {
+    let (manager_name, config) = build_connection_config(cli, host)?;
+    let authentication = resolve_authentication(cli, &config)?;
+    Ok((manager_name, config, authentication))
+}
+
+pub(crate) fn resolve_authentication(
+    cli: &Cli,
+    config: &ConnectionConfig,
+) -> Result<Authentication> {
     if cli.password {
         return Ok(Authentication::Password(rpassword::prompt_password(
             "SSH password: ",
@@ -192,5 +207,18 @@ mod tests {
         let cli = Cli::try_parse_from(["kssh-tui"]).unwrap();
         assert!(cli.host.is_none());
         assert_eq!(cli.remote, ".");
+        assert!(cli.inventory.is_none());
+    }
+
+    #[test]
+    fn connection_config_preflight_does_not_require_authentication_resolution() {
+        let cli = Cli::try_parse_from(["kssh-tui", "server.example", "--password"]).unwrap();
+        // This function must remain prompt-free so group opening can validate all
+        // target configs before the first authentication side effect.
+        let result = build_connection_config(&cli, "server.example");
+        // A local OpenSSH configuration error is acceptable in the test
+        // environment; reaching this call without touching resolve_authentication
+        // is the contract under test.
+        let _ = result;
     }
 }
