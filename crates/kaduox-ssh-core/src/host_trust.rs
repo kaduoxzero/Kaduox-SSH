@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use russh::keys::ssh_key::PublicKey;
 
-const MAX_KNOWN_HOSTS_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_KNOWN_HOSTS_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HostTrustPolicy {
@@ -27,16 +27,8 @@ impl HostTrustPolicy {
     }
 
     pub(crate) fn load_path(host: &str, port: u16, path: &Path) -> Result<Self> {
-        let contents = match read_known_hosts_bounded(path) {
-            Ok(contents) => contents,
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                return Ok(Self::default());
-            }
-            Err(error) => return Err(error),
+        let Some(contents) = read_known_hosts_bounded(path)? else {
+            return Ok(Self::default());
         };
         Self::parse(host, port, &contents)
             .with_context(|| format!("failed to parse host trust markers in {}", path.display()))
@@ -54,6 +46,14 @@ impl HostTrustPolicy {
 
             let mut fields = line.split_ascii_whitespace();
             let marker = fields.next().unwrap_or_default();
+            match marker {
+                "@cert-authority" | "@revoked" => {}
+                _ => bail!(
+                    "unsupported known_hosts marker {marker:?} on line {}; refusing ambiguous trust policy",
+                    line_index + 1
+                ),
+            }
+
             let patterns = fields.next().with_context(|| {
                 format!("known_hosts marker on line {} is missing host patterns", line_index + 1)
             })?;
@@ -82,10 +82,7 @@ impl HostTrustPolicy {
             match marker {
                 "@cert-authority" => policy.trusted_certificate_authorities.push(key),
                 "@revoked" => policy.revoked_keys.push(key),
-                _ => bail!(
-                    "unsupported known_hosts marker {marker:?} on line {}; refusing ambiguous trust policy",
-                    line_index + 1
-                ),
+                _ => unreachable!("marker was validated above"),
             }
         }
 
@@ -107,43 +104,36 @@ impl HostTrustPolicy {
     }
 }
 
-fn read_known_hosts_bounded(path: &Path) -> Result<String> {
-    let file = fs::File::open(path)
-        .with_context(|| format!("failed to open known_hosts file {}", path.display()))?;
+fn read_known_hosts_bounded(path: &Path) -> Result<Option<String>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to open known_hosts file {}", path.display()));
+        }
+    };
     let mut contents = String::new();
-    file.take(MAX_KNOWN_HOSTS_BYTES + 1)
+    file.take((MAX_KNOWN_HOSTS_BYTES + 1) as u64)
         .read_to_string(&mut contents)
         .with_context(|| format!("failed to read known_hosts file {}", path.display()))?;
-    if contents.len() as u64 > MAX_KNOWN_HOSTS_BYTES {
+    if contents.len() > MAX_KNOWN_HOSTS_BYTES {
         bail!(
             "known_hosts file {} exceeds the {MAX_KNOWN_HOSTS_BYTES}-byte safety limit",
             path.display()
         );
     }
-    Ok(contents)
+    Ok(Some(contents))
 }
 
+#[allow(deprecated)]
 fn default_known_hosts_path() -> Result<PathBuf> {
-    user_home_dir()
+    // Mirror the home-directory lookup used by russh::keys::known_hosts so the
+    // certificate-policy layer and the existing ordinary-key layer inspect the
+    // same default file.
+    std::env::home_dir()
         .map(|home| home.join(".ssh").join("known_hosts"))
         .context("failed to resolve home directory for known_hosts")
-}
-
-#[cfg(not(windows))]
-fn user_home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-#[cfg(windows)]
-fn user_home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| {
-            let mut home = std::env::var_os("HOMEDRIVE")?;
-            home.push(std::env::var_os("HOMEPATH")?);
-            Some(home)
-        })
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
 }
 
 fn known_hosts_target(host: &str, port: u16) -> String {
@@ -241,6 +231,12 @@ mod tests {
     }
 
     #[test]
+    fn matching_is_ascii_case_insensitive() {
+        assert!(host_patterns_match("PROD.EXAMPLE", "prod.example").unwrap());
+        assert!(host_patterns_match("prod.example", "*.EXAMPLE").unwrap());
+    }
+
+    #[test]
     fn nonstandard_port_uses_openssh_bracket_form() {
         assert_eq!(known_hosts_target("Example.COM", 22), "example.com");
         assert_eq!(known_hosts_target("Example.COM", 2222), "[example.com]:2222");
@@ -269,8 +265,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_markers_fail_closed_when_they_match() {
-        let contents = format!("@future-marker prod.example {KEY}\n");
+    fn unknown_markers_fail_closed_even_for_other_hosts() {
+        let contents = format!("@future-marker other.example {KEY}\n");
         assert!(HostTrustPolicy::parse("prod.example", 22, &contents).is_err());
     }
 
