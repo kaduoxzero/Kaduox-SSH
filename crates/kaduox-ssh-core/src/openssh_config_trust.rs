@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -8,14 +9,22 @@ unsafe extern "C" {
     fn getuid() -> std::os::raw::c_uint;
 }
 
-pub(crate) fn verify_user_config_file(path: &Path, home: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)
+pub(crate) fn read_user_config_file(path: &Path, home: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open OpenSSH config {}", path.display()))?;
+    let metadata = file
+        .metadata()
         .with_context(|| format!("failed to inspect OpenSSH config {}", path.display()))?;
     if !metadata.is_file() {
         bail!("OpenSSH config path is not a regular file: {}", path.display());
     }
 
-    verify_platform_trust(path, home, &metadata)
+    verify_platform_trust(path, home, &metadata)?;
+
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .with_context(|| format!("failed to read OpenSSH config {}", path.display()))?;
+    Ok(contents)
 }
 
 #[cfg(unix)]
@@ -89,7 +98,7 @@ mod tests {
             fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        verify_user_config_file(&config, &home).unwrap();
+        assert_eq!(read_user_config_file(&config, &home).unwrap(), "Host prod\n");
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -100,7 +109,7 @@ mod tests {
         let config = ssh.join("config");
         fs::create_dir_all(&config).unwrap();
 
-        assert!(verify_user_config_file(&config, &home).is_err());
+        assert!(read_user_config_file(&config, &home).is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -118,14 +127,14 @@ mod tests {
         for mode in [0o620, 0o602, 0o666] {
             fs::set_permissions(&config, fs::Permissions::from_mode(mode)).unwrap();
             assert!(
-                verify_user_config_file(&config, &home).is_err(),
+                read_user_config_file(&config, &home).is_err(),
                 "mode {mode:#o}"
             );
         }
 
         for mode in [0o600, 0o640, 0o644] {
             fs::set_permissions(&config, fs::Permissions::from_mode(mode)).unwrap();
-            verify_user_config_file(&config, &home).unwrap();
+            assert!(read_user_config_file(&config, &home).is_ok());
         }
 
         fs::remove_dir_all(home).unwrap();
