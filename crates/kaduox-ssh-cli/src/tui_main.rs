@@ -1,5 +1,6 @@
 mod tui_actions;
 mod tui_app;
+mod tui_broadcast;
 mod tui_picker;
 mod tui_workspace;
 
