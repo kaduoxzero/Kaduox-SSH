@@ -7,6 +7,7 @@ mod config;
 mod diagnostics;
 mod forward;
 mod handler;
+mod host_catalog;
 mod manager;
 mod privileged;
 mod remote_fs;
@@ -31,6 +32,7 @@ pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,
 };
+pub use host_catalog::{OpenSshHostCatalog, discover_openssh_hosts};
 pub use manager::{
     ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
     ConnectionSnapshot,
