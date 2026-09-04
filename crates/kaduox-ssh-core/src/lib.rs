@@ -8,6 +8,7 @@ mod diagnostics;
 mod forward;
 mod handler;
 mod host_catalog;
+mod inventory;
 mod manager;
 mod privileged;
 mod remote_fs;
@@ -33,6 +34,10 @@ pub use forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,
 };
 pub use host_catalog::{OpenSshHostCatalog, discover_openssh_hosts};
+pub use inventory::{
+    HostInventory, InventoryGroup, InventoryMember, default_inventory_path, discover_inventory,
+    load_inventory,
+};
 pub use manager::{
     ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
     ConnectionSnapshot,
