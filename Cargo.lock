@@ -177,7 +177,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "bcrypt-pbkdf"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "144e573728da132683b9488acd528274c790e07fc06ff81ee29f9d8f8b1041e0"
+checksum = "144e573728da132683b9488acd528274c790e07fc06ff81ee29d9d8f8b1041e0"
 dependencies = [
  "blowfish",
  "pbkdf2",
@@ -245,7 +245,7 @@ dependencies = [
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e09d11336e87da8649"
 
 [[package]]
 name = "byteorder"
@@ -648,7 +648,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 name = "ecdsa"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0681a4fc24c767085329728d8dfba959af91228aa4610cca4f8ce317ba46ae0"
+checksum = "c0681a4fc24c767085329728d8dfba959af91228aa4610cca4f8ce317ba46e0"
 dependencies = [
  "der",
  "digest",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-cli"
-version = "0.3.0"
+version = "0.6.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "0.3.0"
+version = "0.6.0-rc.1"
 dependencies = [
  "anyhow",
  "russh",
@@ -1124,7 +1124,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 name = "libredox"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d8f1ea3f21fd3405dcaf6c9b5c1630af9afc422d9073ea39c5f6d6c772e08ed"
+checksum = "8d8f1ea3f21fd3405dc66b6f6d6c772e08ed"
 dependencies = [
  "bitflags",
  "libc",
@@ -2381,7 +2381,7 @@ checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
 name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+checksum = "712e227841d057c1ee2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows"
@@ -2517,7 +2517,7 @@ dependencies = [
 name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64"
 
 [[package]]
 name = "zlib-rs"
