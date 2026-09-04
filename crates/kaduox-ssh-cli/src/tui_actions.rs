@@ -2,7 +2,9 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use kaduox_ssh_core::{RemoteUser, SshClient, TerminalSize, TerminalSpec, TransferOptions};
+use kaduox_ssh_core::{
+    RemoteUser, SshClient, TerminalSize, TerminalSpec, TransferOptions, TransferTaskManager,
+};
 use tokio::sync::watch;
 
 pub async fn prompt_line(prompt: String) -> Result<String> {
@@ -53,12 +55,13 @@ pub async fn run_shell(ssh: &SshClient, remote_user: RemoteUser) -> Result<Optio
 }
 
 pub async fn download_regular_file_with_options(
-    ssh: &SshClient,
+    transfers: &TransferTaskManager<'_>,
     remote_path: &str,
     local_path: &Path,
     options: TransferOptions,
 ) -> Result<u64> {
-    ssh.download_with_options(remote_path, local_path, options)
+    transfers
+        .download_file(remote_path, local_path, options)
         .await
         .with_context(|| {
             format!(
@@ -69,7 +72,7 @@ pub async fn download_regular_file_with_options(
 }
 
 pub async fn upload_regular_file_with_options(
-    ssh: &SshClient,
+    transfers: &TransferTaskManager<'_>,
     local_path: &Path,
     remote_path: &str,
     options: TransferOptions,
@@ -90,7 +93,8 @@ pub async fn upload_regular_file_with_options(
         );
     }
 
-    ssh.upload_with_options(local_path, remote_path, options)
+    transfers
+        .upload_file(local_path, remote_path, options)
         .await
         .with_context(|| {
             format!(
