@@ -51,3 +51,5 @@ jobs:
         run: bash scripts/ci/openssh-probe-integration.sh
       - name: Run typed command integration suite
         run: bash scripts/ci/openssh-command-spec-integration.sh
+      - name: Run fleet execution integration suite
+        run: bash scripts/ci/openssh-fleet-integration.sh
