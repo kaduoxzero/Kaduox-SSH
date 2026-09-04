@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use kaduox_ssh_core::{RemoteUser, SshClient, TerminalSize, TerminalSpec};
+use kaduox_ssh_core::{RemoteUser, SshClient, TerminalSize, TerminalSpec, TransferOptions};
 use tokio::sync::watch;
 
 pub async fn prompt_line(prompt: String) -> Result<String> {
@@ -57,7 +57,16 @@ pub async fn download_regular_file(
     remote_path: &str,
     local_path: &Path,
 ) -> Result<u64> {
-    ssh.download(remote_path, local_path)
+    download_regular_file_with_options(ssh, remote_path, local_path, TransferOptions::default()).await
+}
+
+pub async fn download_regular_file_with_options(
+    ssh: &SshClient,
+    remote_path: &str,
+    local_path: &Path,
+    options: TransferOptions,
+) -> Result<u64> {
+    ssh.download_with_options(remote_path, local_path, options)
         .await
         .with_context(|| {
             format!(
@@ -71,6 +80,15 @@ pub async fn upload_regular_file(
     ssh: &SshClient,
     local_path: &Path,
     remote_path: &str,
+) -> Result<u64> {
+    upload_regular_file_with_options(ssh, local_path, remote_path, TransferOptions::default()).await
+}
+
+pub async fn upload_regular_file_with_options(
+    ssh: &SshClient,
+    local_path: &Path,
+    remote_path: &str,
+    options: TransferOptions,
 ) -> Result<u64> {
     let metadata = tokio::fs::symlink_metadata(local_path)
         .await
@@ -88,7 +106,7 @@ pub async fn upload_regular_file(
         );
     }
 
-    ssh.upload(local_path, remote_path)
+    ssh.upload_with_options(local_path, remote_path, options)
         .await
         .with_context(|| {
             format!(
