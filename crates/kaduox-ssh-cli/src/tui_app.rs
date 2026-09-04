@@ -12,7 +12,7 @@ use crossterm::terminal::{
 };
 use kaduox_ssh_core::{
     ConnectionConfig, HostKeyVerification, RemoteDirEntry, RemoteFileMetadata, RemoteFileType,
-    RemoteUser, ServerHostKeyInfo, SshClient,
+    RemoteUser, ServerHostKeyInfo, SshClient, TransferEvent, TransferOptions,
 };
 
 use crate::tui_actions::{
@@ -50,6 +50,9 @@ pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
             KeyCode::Backspace | KeyCode::Left => state.go_parent(ssh).await,
             KeyCode::Char('r') => state.reload(ssh).await,
             KeyCode::Char('i') => state.inspect_selected(ssh).await,
+            KeyCode::Char('p') => {
+                jump_to_path(&mut terminal, ssh, &mut state).await?;
+            }
             KeyCode::Char('s') => {
                 run_shell_action(&mut terminal, ssh, &mut state, RemoteUser::Current).await?;
             }
@@ -74,8 +77,26 @@ pub async fn run(ssh: &SshClient, initial_path: &str) -> Result<()> {
             KeyCode::Char('d') => {
                 download_selected(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
             }
+            KeyCode::Char('D') => {
+                download_selected_directory(
+                    &mut terminal,
+                    ssh,
+                    host_key.as_ref(),
+                    &mut state,
+                )
+                .await?;
+            }
             KeyCode::Char('u') => {
                 upload_to_current(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
+            }
+            KeyCode::Char('U') => {
+                upload_directory_to_current(
+                    &mut terminal,
+                    ssh,
+                    host_key.as_ref(),
+                    &mut state,
+                )
+                .await?;
             }
             _ => {}
         }
@@ -103,6 +124,28 @@ async fn prompt_with_terminal(terminal: &mut TerminalSession, prompt: String) ->
     let value = prompt_result?;
     resume_result?;
     Ok(value)
+}
+
+async fn jump_to_path(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let path = prompt_with_terminal(
+        terminal,
+        format!(
+            "remote directory path [{}] (empty cancels): ",
+            terminal_safe(&state.path)
+        ),
+    )
+    .await?;
+    let path = path.trim();
+    if path.is_empty() {
+        state.status = "remote path jump cancelled".to_owned();
+        return Ok(());
+    }
+    state.change_path(ssh, path.to_owned()).await;
+    Ok(())
 }
 
 async fn run_shell_action(
@@ -135,7 +178,8 @@ async fn download_selected(
         return Ok(());
     };
     if entry.metadata.file_type != RemoteFileType::File {
-        state.status = "TUI download currently accepts regular files only".to_owned();
+        state.status = "TUI download currently accepts regular files only; use D for directories"
+            .to_owned();
         return Ok(());
     }
 
@@ -161,6 +205,90 @@ async fn download_selected(
         Err(error) => {
             state.status = format!("download failed: {error:#}");
         }
+    }
+    Ok(())
+}
+
+async fn download_selected_directory(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let Some(entry) = state.selected_entry().cloned() else {
+        state.status = "directory is empty".to_owned();
+        return Ok(());
+    };
+    if entry.metadata.file_type != RemoteFileType::Directory {
+        state.status = "recursive download requires a selected remote directory".to_owned();
+        return Ok(());
+    }
+
+    let default_name = safe_local_filename(&entry.name);
+    let input = prompt_with_terminal(
+        terminal,
+        format!(
+            "recursively download {} to local directory [{}]: ",
+            terminal_safe(&entry.path),
+            terminal_safe(&default_name)
+        ),
+    )
+    .await?;
+    let local = if input.trim().is_empty() {
+        PathBuf::from(default_name)
+    } else {
+        PathBuf::from(input.trim())
+    };
+    let confirmation = prompt_with_terminal(
+        terminal,
+        format!(
+            "recursive download to {} uses bounded concurrency and skips symlinks; type YES to continue: ",
+            terminal_safe(&local.display().to_string())
+        ),
+    )
+    .await?;
+    if !is_confirmed(&confirmation) {
+        state.status = "recursive download cancelled".to_owned();
+        return Ok(());
+    }
+
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+    let options = TransferOptions {
+        progress: Some(progress_tx),
+        ..TransferOptions::default()
+    };
+    state.status = format!("recursively downloading {} ...", entry.path);
+    terminal.render(ssh.config(), host_key, state)?;
+
+    let mut transfer = Box::pin(ssh.download_recursive(&entry.path, &local, options));
+    let mut progress_open = true;
+    let result = loop {
+        tokio::select! {
+            result = &mut transfer => break result,
+            event = progress_rx.recv(), if progress_open => {
+                match event {
+                    Some(event) => {
+                        state.status = format_transfer_event("download", &event);
+                        terminal.render(ssh.config(), host_key, state)?;
+                    }
+                    None => progress_open = false,
+                }
+            }
+        }
+    };
+
+    match result {
+        Ok(summary) => {
+            state.status = format!(
+                "recursive download complete: {} files, {} directories, {} bytes, {} symlinks/entries skipped -> {}",
+                summary.files,
+                summary.directories,
+                summary.bytes,
+                summary.skipped,
+                local.display()
+            );
+        }
+        Err(error) => state.status = format!("recursive download failed: {error:#}"),
     }
     Ok(())
 }
@@ -240,6 +368,129 @@ async fn upload_to_current(
     Ok(())
 }
 
+async fn upload_directory_to_current(
+    terminal: &mut TerminalSession,
+    ssh: &SshClient,
+    host_key: Option<&ServerHostKeyInfo>,
+    state: &mut BrowserState,
+) -> Result<()> {
+    let input = prompt_with_terminal(
+        terminal,
+        "local directory to upload recursively (empty cancels): ".to_owned(),
+    )
+    .await?;
+    let input = input.trim();
+    if input.is_empty() {
+        state.status = "recursive upload cancelled".to_owned();
+        return Ok(());
+    }
+
+    let local = PathBuf::from(input);
+    let metadata = match tokio::fs::symlink_metadata(&local).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            state.status = format!("failed to stat local directory {}: {error}", local.display());
+            return Ok(());
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        state.status = "recursive upload source must be a real local directory, not a symlink"
+            .to_owned();
+        return Ok(());
+    }
+
+    let Some(default_name) = local
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+    else {
+        state.status = "local upload directory name must be valid UTF-8".to_owned();
+        return Ok(());
+    };
+    let remote_input = prompt_with_terminal(
+        terminal,
+        format!(
+            "remote directory name [{}]: ",
+            terminal_safe(&default_name)
+        ),
+    )
+    .await?;
+    let remote_name = if remote_input.trim().is_empty() {
+        default_name
+    } else {
+        remote_input.trim().to_owned()
+    };
+    if let Err(error) = validate_remote_leaf(&remote_name) {
+        state.status = format!("invalid remote directory name: {error:#}");
+        return Ok(());
+    }
+    let remote_path = join_remote_child(&state.path, &remote_name);
+    let confirmation = prompt_with_terminal(
+        terminal,
+        format!(
+            "recursively upload {} -> {} using bounded concurrency; symlinks are skipped and atomic file policy remains enabled; type YES to continue: ",
+            terminal_safe(&local.display().to_string()),
+            terminal_safe(&remote_path)
+        ),
+    )
+    .await?;
+    if !is_confirmed(&confirmation) {
+        state.status = "recursive upload cancelled".to_owned();
+        return Ok(());
+    }
+
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+    let options = TransferOptions {
+        progress: Some(progress_tx),
+        ..TransferOptions::default()
+    };
+    state.status = format!("recursively uploading {} -> {remote_path} ...", local.display());
+    terminal.render(ssh.config(), host_key, state)?;
+
+    let mut transfer = Box::pin(ssh.upload_recursive(&local, &remote_path, options));
+    let mut progress_open = true;
+    let result = loop {
+        tokio::select! {
+            result = &mut transfer => break result,
+            event = progress_rx.recv(), if progress_open => {
+                match event {
+                    Some(event) => {
+                        state.status = format_transfer_event("upload", &event);
+                        terminal.render(ssh.config(), host_key, state)?;
+                    }
+                    None => progress_open = false,
+                }
+            }
+        }
+    };
+
+    match result {
+        Ok(summary) => {
+            state.status = format!(
+                "recursive upload complete: {} files, {} directories, {} bytes, {} symlinks/entries skipped -> {remote_path}",
+                summary.files, summary.directories, summary.bytes, summary.skipped
+            );
+            state.reload_preserving_name(ssh, &remote_name).await;
+        }
+        Err(error) => state.status = format!("recursive upload failed: {error:#}"),
+    }
+    Ok(())
+}
+
+fn is_confirmed(value: &str) -> bool {
+    value.trim() == "YES"
+}
+
+fn format_transfer_event(action: &str, event: &TransferEvent) -> String {
+    let progress = match event.total_bytes {
+        Some(total) if total != 0 => format!("{}/{} bytes", event.bytes_transferred, total),
+        Some(_) => "0/0 bytes".to_owned(),
+        None => format!("{} bytes", event.bytes_transferred),
+    };
+    let completion = if event.completed { " complete" } else { "" };
+    format!("{action}: {} | {progress}{completion}", event.path)
+}
+
 struct BrowserState {
     path: String,
     entries: Vec<RemoteDirEntry>,
@@ -286,7 +537,7 @@ impl BrowserState {
                 self.status = format!("loaded {} entries", self.entries.len());
             }
             Err(error) => {
-                self.status = format!("refresh after upload failed: {error:#}");
+                self.status = format!("refresh after transfer failed: {error:#}");
             }
         }
     }
@@ -540,7 +791,7 @@ impl TerminalSession {
             MoveTo(0, help_row),
             SetAttribute(Attribute::Bold),
             Print(truncate_cells(
-                "keys: j/k nav | Enter open/stat | ← parent | i info | r refresh | s shell | S sudo-shell | d download | u upload | q quit",
+                "keys: j/k nav | Enter open/stat | ← parent | p path | i info | r refresh | s shell | S sudo | d/D download file/dir | u/U upload file/dir | q quit",
                 width
             )),
             SetAttribute(Attribute::Reset)
@@ -735,6 +986,7 @@ fn char_cells(ch: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kaduox_ssh_core::TransferDirection;
 
     #[test]
     fn parent_navigation_handles_root_absolute_and_relative_paths() {
@@ -773,5 +1025,28 @@ mod tests {
             KeyCode::Char('q'),
             KeyModifiers::NONE
         )));
+    }
+
+    #[test]
+    fn recursive_transfer_confirmation_is_exact() {
+        assert!(is_confirmed("YES"));
+        assert!(is_confirmed(" YES \n"));
+        assert!(!is_confirmed("yes"));
+        assert!(!is_confirmed("Y"));
+    }
+
+    #[test]
+    fn transfer_progress_status_is_bounded_to_metadata() {
+        let event = TransferEvent {
+            direction: TransferDirection::Download,
+            path: "/srv/releases/app.tar.zst".to_owned(),
+            bytes_transferred: 512,
+            total_bytes: Some(1024),
+            completed: false,
+        };
+        assert_eq!(
+            format_transfer_event("download", &event),
+            "download: /srv/releases/app.tar.zst | 512/1024 bytes"
+        );
     }
 }
