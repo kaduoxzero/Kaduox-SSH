@@ -32,6 +32,32 @@ jobs:
           git fetch origin main --no-tags
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
+  sbom:
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Generate deterministic SPDX lockfile inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          python scripts/release/sbom_tool.py \
+            --tag "$GITHUB_REF_NAME" \
+            --source-date-epoch "$source_date_epoch" \
+            --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-sbom
+          path: dist/*.spdx.json
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     needs: preflight
     permissions:
@@ -94,13 +120,6 @@ jobs:
           --format "${{ matrix.archive }}"
           --exe-suffix "${{ matrix.exe_suffix }}"
           --output-dir dist
-      - name: Generate deterministic SPDX SBOM
-        shell: bash
-        run: >-
-          python scripts/release/sbom_tool.py
-          --tag "$GITHUB_REF_NAME"
-          --target "${{ matrix.target }}"
-          --output-dir dist
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -109,7 +128,9 @@ jobs:
           retention-days: 7
 
   attest:
-    needs: build
+    needs:
+      - build
+      - sbom
     if: ${{ vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -133,12 +154,16 @@ jobs:
         with:
           name: release-${{ matrix.target }}
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-sbom
+          path: dist
       - name: Attest release archive provenance
         uses: actions/attest@v4
         with:
           subject-path: ${{ matrix.archive_pattern }}
           create-storage-record: false
-      - name: Bind SPDX SBOM to release archive
+      - name: Bind lockfile SPDX inventory to release archive
         uses: actions/attest@v4
         with:
           subject-path: ${{ matrix.archive_pattern }}
@@ -148,9 +173,10 @@ jobs:
   publish:
     needs:
       - preflight
+      - sbom
       - build
       - attest
-    if: ${{ always() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
+    if: ${{ always() && needs.preflight.result == 'success' && needs.sbom.result == 'success' && needs.build.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -171,13 +197,13 @@ jobs:
             printf '%s\n' "${archives[@]}" >&2
             exit 1
           fi
-          if [[ ${#sboms[@]} -ne 4 ]]; then
-            printf 'expected 4 SPDX SBOMs, found %s\n' "${#sboms[@]}" >&2
+          if [[ ${#sboms[@]} -ne 1 ]]; then
+            printf 'expected 1 release-wide SPDX SBOM, found %s\n' "${#sboms[@]}" >&2
             printf '%s\n' "${sboms[@]}" >&2
             exit 1
           fi
           (cd dist && sha256sum *.tar.gz *.zip *.spdx.json 2>/dev/null | sort -k2 > SHA256SUMS)
-          test "$(wc -l < dist/SHA256SUMS)" -eq 8
+          test "$(wc -l < dist/SHA256SUMS)" -eq 5
           cat dist/SHA256SUMS
       - name: Create GitHub Release
         shell: bash
