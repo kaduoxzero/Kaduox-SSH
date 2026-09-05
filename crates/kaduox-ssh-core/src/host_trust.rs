@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use russh::keys::ssh_key::certificate::CertType;
-use russh::keys::ssh_key::{Certificate, HashAlg, PublicKey};
+use russh::keys::ssh_key::{Algorithm, Certificate, HashAlg, PublicKey};
 
 const MAX_KNOWN_HOSTS_BYTES: usize = 8 * 1024 * 1024;
 
@@ -92,8 +92,10 @@ impl HostTrustPolicy {
         Ok(policy)
     }
 
-    pub(crate) fn has_certificate_authority(&self) -> bool {
-        !self.trusted_certificate_authorities.is_empty()
+    pub(crate) fn has_verifiable_certificate_authority(&self) -> bool {
+        self.trusted_certificate_authorities
+            .iter()
+            .any(is_verifiable_certificate_authority)
     }
 
     pub(crate) fn is_revoked(&self, key: &PublicKey) -> bool {
@@ -108,9 +110,6 @@ impl HostTrustPolicy {
         if certificate.cert_type() != CertType::Host {
             bail!("server presented a user certificate where a host certificate is required");
         }
-        if self.trusted_certificate_authorities.is_empty() {
-            bail!("server presented a host certificate but no matching @cert-authority is trusted");
-        }
 
         let certified_key = PublicKey::from(certificate.public_key().clone());
         let signing_ca = PublicKey::from(certificate.signature_key().clone());
@@ -120,12 +119,23 @@ impl HostTrustPolicy {
         if self.is_revoked(&signing_ca) {
             bail!("server host certificate signing CA is marked @revoked");
         }
+        if !is_verifiable_certificate_authority(&signing_ca) {
+            bail!(
+                "server host certificate uses a CA algorithm that is not enabled by the current verifier"
+            );
+        }
 
         let ca_fingerprints = self
             .trusted_certificate_authorities
             .iter()
+            .filter(|key| is_verifiable_certificate_authority(key))
             .map(|key| key.fingerprint(HashAlg::Sha256))
             .collect::<Vec<_>>();
+        if ca_fingerprints.is_empty() {
+            bail!(
+                "server presented a host certificate but no matching verifiable @cert-authority is trusted"
+            );
+        }
         certificate
             .validate(ca_fingerprints.iter())
             .context("server host certificate signature, authority, or validity window is invalid")?;
@@ -145,6 +155,13 @@ impl HostTrustPolicy {
 
         Ok(())
     }
+}
+
+fn is_verifiable_certificate_authority(key: &PublicKey) -> bool {
+    matches!(
+        key.algorithm(),
+        Algorithm::Ed25519 | Algorithm::Ecdsa { .. }
+    )
 }
 
 fn read_known_hosts_bounded(path: &Path) -> Result<Option<String>> {
@@ -231,8 +248,7 @@ fn wildcard_match(pattern: &[u8], candidate: &[u8]) -> bool {
     while candidate_index < candidate.len() {
         if pattern_index < pattern.len()
             && (pattern[pattern_index] == b'?'
-                || pattern[pattern_index].to_ascii_lowercase()
-                    == candidate[candidate_index].to_ascii_lowercase())
+                || pattern[pattern_index].eq_ignore_ascii_case(&candidate[candidate_index]))
         {
             pattern_index += 1;
             candidate_index += 1;
@@ -307,11 +323,11 @@ mod tests {
             "@cert-authority *.example.com {KEY}\n@revoked bad.example.com {OTHER_KEY}\n"
         );
         let prod = HostTrustPolicy::parse("prod.example.com", 22, &contents).unwrap();
-        assert!(prod.has_certificate_authority());
+        assert!(prod.has_verifiable_certificate_authority());
         assert!(!prod.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
 
         let bad = HostTrustPolicy::parse("bad.example.com", 22, &contents).unwrap();
-        assert!(bad.has_certificate_authority());
+        assert!(bad.has_verifiable_certificate_authority());
         assert!(bad.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
     }
 
@@ -319,7 +335,7 @@ mod tests {
     fn unrelated_marker_entries_do_not_apply() {
         let contents = format!("@cert-authority other.example {KEY}\n");
         let policy = HostTrustPolicy::parse("prod.example", 22, &contents).unwrap();
-        assert!(!policy.has_certificate_authority());
+        assert!(!policy.has_verifiable_certificate_authority());
     }
 
     #[test]
