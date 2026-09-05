@@ -89,7 +89,7 @@ fn evaluate_supported_match(arguments: &[String], original_host: &str) -> Result
         }
         [] => bail!("Match requires a criterion"),
         _ => bail!(
-            "only standalone 'Match all' and single-criterion 'Match originalhost <pattern-list>' are supported; canonical/final/exec/localnetwork/host/tagged/command/user/localuser/version, criterion negation, criterion=value syntax, and combined criteria remain fail-closed"
+            "only standalone 'Match all' and single-criterion 'Match originalhost <pattern-list>' are supported; canonical/final/exec/localnetwork/host/tagged/command/user/localuser/version, criterion negation, criterion=value syntax, quoted/escaped arguments, and combined criteria remain fail-closed"
         ),
     }
 }
@@ -219,55 +219,19 @@ fn directive_arguments(line: &str, key: &str) -> Result<Vec<String>> {
 }
 
 fn parse_arguments(input: &str) -> Result<Vec<String>> {
-    let mut output = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-
-    for ch in input.chars() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && quote != Some('\'') {
-            escaped = true;
-            continue;
-        }
-        if let Some(active) = quote {
-            if ch == active {
-                quote = None;
-            } else {
-                current.push(ch);
-            }
-            continue;
-        }
-        if ch == '\'' || ch == '"' {
-            quote = Some(ch);
-            continue;
-        }
-        if ch == '#' {
-            break;
-        }
-        if ch.is_ascii_whitespace() {
-            if !current.is_empty() {
-                output.push(std::mem::take(&mut current));
-            }
-            continue;
-        }
-        current.push(ch);
+    let input = input.split_once('#').map_or(input, |(head, _)| head);
+    if input
+        .chars()
+        .any(|ch| matches!(ch, '\\' | '\'' | '"'))
+    {
+        bail!(
+            "quoted or backslash-escaped Match arguments are not supported in the v0.19 subset"
+        );
     }
-
-    if escaped {
-        bail!("Match ends with an incomplete escape");
-    }
-    if quote.is_some() {
-        bail!("Match contains an unterminated quote");
-    }
-    if !current.is_empty() {
-        output.push(current);
-    }
-    Ok(output)
+    Ok(input
+        .split_ascii_whitespace()
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 fn push_line_bounded(output: &mut String, line: &str) -> Result<()> {
@@ -347,6 +311,8 @@ mod tests {
             "Match originalhost=prod",
             "Match final",
             "Match exec true",
+            r#"Match originalhost "prod""#,
+            r"Match originalhost prod\*",
         ] {
             let config = format!("Host prod\n  User deploy\n{line}\n  Port 2222\n");
             assert!(
