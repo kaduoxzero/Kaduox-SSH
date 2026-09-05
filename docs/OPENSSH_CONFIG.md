@@ -125,17 +125,42 @@ catalog is read-only: it may still list concrete `Host` aliases from the
 expanded include graph while marking the catalog as containing unsupported
 structural configuration.
 
-## Host-key trust boundary
+## Host-key and host-certificate trust boundary
 
-OpenSSH host certificates and `known_hosts` `@cert-authority` entries are a
-separate trust-model boundary. The current client handler receives a
-`PublicKeyOrCertificate` from Russh but verifies the extracted public key with
-the ordinary known-hosts path. Kaduox-SSH therefore does not yet claim
-OpenSSH-equivalent host-certificate CA validation.
+v0.16 adds a separate fail-closed policy layer for clear-text `known_hosts`
+`@cert-authority` and `@revoked` markers while preserving Russh's existing
+ordinary unmarked host-key verification path.
 
-Until that work is implemented, deployments that require host certificates,
-CA principals/validity/revocation semantics, or `@cert-authority` must not
-assume Kaduox-SSH is equivalent to `ssh(1)` for that trust policy.
+Certificate algorithms are not advertised by default. Kaduox-SSH enables
+certificate variants only when the effective `UserKnownHostsFile` contains a
+matching `@cert-authority` for the specific target and host-key policy is not
+`insecure`. This decision is made separately for the final target and every
+ProxyJump hop. RSA host-key algorithms remain excluded by the existing
+hardening policy, so RSA host-certificate variants are not advertised either.
+
+A presented certificate is accepted only if it is a Host certificate, is
+signed by one of the target's matching authorities, has a valid signature and
+current validity interval, has no unsupported critical options, and either has
+no principal restriction or contains a hostname principal matching the target.
+Certificate principals use the hostname itself, not the non-default-port
+`[host]:port` known-hosts representation. `*` and `?` principal wildcards are
+supported.
+
+Applicable `@revoked` entries reject an ordinary host key before normal
+known-hosts or explicit-insecure acceptance. For certificates, both the
+certified subject key and the signing CA are checked for revocation. A
+certificate validation failure is never downgraded to ordinary embedded-key
+verification.
+
+The v0.16 marker-policy reader supports comma-separated clear-text patterns,
+`*`, `?`, `!` negation, ASCII case-insensitive matching, and OpenSSH
+`[host]:port` formatting for non-default ports. Reads are bounded to 8 MiB.
+Hashed marker patterns (`|1|...`) are intentionally rejected rather than
+silently dropping CA/revocation policy. Ordinary unmarked hashed known-hosts
+entries continue through Russh's existing ordinary host-key path.
+
+See `HOST_CERTIFICATES.md` for the detailed certificate contract and current
+limits.
 
 ## Validation boundary
 
@@ -143,7 +168,14 @@ Unit coverage includes include ordering, global/Host scope restoration, nested
 cycles, hidden-file wildcard behavior, unsupported expansion rejection,
 catalog discovery, regular-file enforcement, accepted Unix 0600/0640/0644
 modes, rejected group/other-writable modes, an insecure nested Include fixture,
-and oversized single-file rejection. Candidate promotion still requires the
-repository's real CI, Clippy, audit, release-policy, and OpenSSH jobs to acquire
-runners and execute; a workflow that ends with no steps executed is not
-considered validation.
+oversized single-file rejection, marker host-pattern matching, CA/revocation
+classification, and certificate-principal matching.
+
+The real OpenSSH workflow also contains a v0.16 host-certificate fixture that
+creates an Ed25519 CA and `HostCertificate` with `ssh-keygen`/`sshd`, then tests
+trusted-CA success, principal mismatch, revoked CA rejection, and ordinary
+host-key revocation overriding explicit insecure policy.
+
+Candidate promotion still requires the repository's real CI, Clippy, audit,
+release-policy, and OpenSSH jobs to acquire runners and execute; a workflow
+that ends with no steps executed is not considered validation.
