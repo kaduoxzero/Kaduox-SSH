@@ -17,6 +17,7 @@ mod privileged;
 mod remote_fs;
 mod remote_mutation;
 mod remote_path;
+mod symlink_policy;
 mod sync;
 mod target;
 #[path = "transfer.rs"]
@@ -50,6 +51,7 @@ pub use manager::{
 };
 pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
 pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary};
+pub use symlink_policy::SymlinkPolicy;
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
 pub use target::ConnectionTarget;
 pub use transfer::{
