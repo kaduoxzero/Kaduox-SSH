@@ -8,6 +8,9 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 
 - SSH 远程连接、命令执行与交互式 PTY Shell
 - OpenSSH `~/.ssh/config` Host 解析，以及受限、fail-closed 的用户配置 `Include` 展开
+- Unix OpenSSH 用户配置 owner/mode 校验，并把 metadata 校验与读取绑定到同一个已打开文件描述符
+- 基于当前目标匹配的明文 `known_hosts` `@cert-authority` 进行 OpenSSH Host Certificate 验证
+- 对普通主机密钥、证书 subject key 和证书签发 CA 执行明文 `@revoked` 吊销检查
 - ProxyJump 链与 ProxyCommand 传输
 - 密码、keyboard-interactive、Ed25519/ECDSA 私钥、OpenSSH Agent、Pageant/Windows Agent 认证
 - 本地 RSA 私钥签名因安全策略禁用，但仍支持通过外部 SSH Agent 使用 RSA 认证
@@ -37,7 +40,7 @@ SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 
 - `kssh-fleet`：面向显式目标或 Inventory group 的非交互式有界并发命令执行；
 - `kssh-inventory`：不建立网络连接的 Inventory 校验、host/group 列表和确定性 group 展开。
 
-这些前端不维护第二套 SSH 栈；认证、主机密钥策略、ProxyJump/ProxyCommand、channel、SFTP、权限切换和资源限制都来自 `kaduox-ssh-core`。
+这些前端不维护第二套 SSH 栈；认证、主机密钥/证书策略、ProxyJump/ProxyCommand、channel、SFTP、权限切换和资源限制都来自 `kaduox-ssh-core`。
 
 ## RSA 安全策略
 
@@ -47,38 +50,41 @@ SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 
 - 本地 RSA 私钥文件会 fail-closed，并给出明确的替代方案提示。
 - RSA 用户认证仍可通过外部 SSH Agent 使用，因为私钥运算发生在 Agent 内部，而不是 Kaduox-SSH 进程中。
 - 当前会在密钥交换阶段拒绝仅提供 RSA 主机密钥的服务器。服务器应提供 Ed25519 或 ECDSA 主机密钥。
+- v0.16 不广告 RSA Host Certificate variant；真实证书 fixture 使用 Ed25519 CA + Ed25519 主机证书。Russh `rsa` feature 仍关闭时，不宣称 RSA CA/证书签名兼容。
 
 在该安全公告获得可接受的上游修复并且完整安全测试实际执行通过之前，不应重新启用 Russh 的 `rsa` feature。
 
-## OpenSSH 配置兼容性
+## OpenSSH 配置与主机信任兼容性
 
 Kaduox-SSH 会从 `~/.ssh/config` 解析受支持的 `HostName`、`User`、`Port`、`IdentityFile`、`UserKnownHostsFile`、`ProxyCommand`、`ProxyJump` 等配置。
 
-v0.14 新增受控的 `Include` 展开。当前支持：
+v0.14 新增受控 `Include` 展开，包括全局/`Host` 作用域、一行多路径、引号/转义、绝对路径、相对 `~/.ssh`、当前用户 `~/...`、`*`/`?`、lexical 顺序、嵌套 Include、隐藏文件规则，以及每个 included 文件结束后恢复父 global/`Host` 作用域。Host catalog 使用同一 Include 图。
 
-- 全局作用域或 `Host` block 内的 `Include`；
-- 一行多个路径、单双引号和反斜杠转义；
-- 绝对路径；
-- 相对 `~/.ssh` 的路径；
-- 当前用户的 `~/...`；
-- `*` 和 `?` 通配符；
-- 匹配结果按确定性的 lexical 顺序处理；
-- 未匹配到文件时继续执行；
-- 隐藏文件必须由 pattern 开头的显式 `.` 匹配，因此 `conf.d/*` 不会意外加载 `conf.d/.hidden`；
-- 嵌套 Include；
-- 每个 included 文件处理完成后恢复父文件的 global/`Host` 作用域，避免 include 文件内部的 `Host` 错误捕获父文件后续配置；
-- Host catalog 使用相同 Include 图，因此 included 文件中的具体 alias 也能出现在 TUI Host picker。
+v0.15 把根配置和所有嵌套 Include 统一放到同一配置文件信任边界。Unix 上要求实际打开文件为 regular file、owner 为当前进程 real uid 或 root、group/other 不可写；metadata 校验和解析读取使用同一个已打开 fd，避免独立 stat/read 的路径 TOCTOU。Windows 当前仍只要求 regular file，NTFS ACL 与 OpenSSH 等价校验仍是 V1 前工作。
+
+v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语义：
+
+- 证书算法默认不广告；只有最终目标或某个 ProxyJump hop 自己的 `UserKnownHostsFile` 中存在匹配的明文 `@cert-authority` 时才为该目标开启；
+- Host Certificate 必须是 Host 类型；
+- CA 必须属于当前目标匹配的受信 `@cert-authority`；
+- 校验证书签名和当前有效期；
+- principal 为空时不额外限制 hostname；存在 principal 时至少一个必须匹配目标 hostname，可使用 `*` / `?`；
+- 当前不解释任何 certificate critical option，因此只要存在 critical option 就拒绝；
+- 证书 subject key 或签发 CA 任一命中当前目标的 `@revoked` 都拒绝；
+- 普通主机密钥也会在 known-hosts / explicit insecure 接受之前检查 `@revoked`；
+- 证书验证失败不会降级成 embedded ordinary public key 再尝试接受。
 
 仍然采用 fail-closed 的部分：
 
 - `Match` 继续禁止用于连接解析，因为现代 OpenSSH 的条件依赖 host/originalhost、user/localuser、canonical/final pass、command/session、`exec`、local network、tag、version 等上下文；
 - Include 的 `%` token、`${ENV}`、`~other-user` 和完整 bracket/collation glob 暂不实现，会明确报错而不是当成普通字符串；
 - Include 最大 16 层、256 个处理文件、4 MiB 配置预算、单行 64 个路径、单路径 16 KiB、单 wildcard component 1024 bytes，并检测循环 include；
-- 配置文件实际读取/权限错误不会静默降级为直连；
-- 尚未在 Unix owner/mode 与 Windows ACL 上完整复刻 OpenSSH 的用户配置权限策略；
+- hashed `@cert-authority` / `@revoked` marker host pattern（`|1|...`）当前明确拒绝，不会静默忽略 CA/吊销策略；普通未带 marker 的 hashed known_hosts 继续走 Russh 原有普通 host-key 路径；
+- RSA Host Certificate 与 RSA CA/证书签名兼容性当前不宣称支持；
+- Windows 用户配置 ACL 与 OpenSSH 等价校验仍未实现；
 - 上游解析器只以布尔值暴露 `StrictHostKeyChecking`，需要精确行为时请使用 `--host-key strict`、`--host-key accept-new` 或 `--host-key insecure`。
 
-OpenSSH host certificate / `known_hosts` `@cert-authority` 属于独立信任边界，目前仍不宣称与 `ssh(1)` 等价。完整契约见 `docs/OPENSSH_CONFIG.md`。
+完整契约见 `docs/OPENSSH_CONFIG.md` 和 `docs/HOST_CERTIFICATES.md`。
 
 ## 架构
 
@@ -146,7 +152,7 @@ kssh-fleet -H web-01 -H web-02 --jobs 2 -- uname -a
 kssh-inventory check
 ```
 
-主机密钥默认采用 `accept-new`：未知密钥会写入标准 OpenSSH `known_hosts`，变化的主机密钥会被拒绝。`--host-key strict` 要求条目预先存在；`--host-key insecure` 只适合一次性/测试环境。
+普通主机密钥默认采用 `accept-new`：未知普通 key 会写入标准 OpenSSH `known_hosts`，变化的 key 会被拒绝。`--host-key strict` 要求普通 key 预先存在，或者服务端 Host Certificate 可由当前目标匹配的 CA 完整验证。`--host-key insecure` 只适合一次性/测试环境；当前目标匹配的明文 `@revoked` 仍优先拒绝。
 
 ## 文件传输与同步设计
 
@@ -158,9 +164,11 @@ kssh-inventory check
 
 ## 验证与发布
 
-CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `-D warnings`、依赖审计和 release-policy；Linux OpenSSH workflow 会启动真实 `sshd` fixture 覆盖认证、跳板机、Agent、SFTP、同步、权限切换、转发、typed command、diagnostics 和 fleet。
+CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `-D warnings`、依赖审计和 release-policy；Linux OpenSSH workflow 会启动真实 `sshd` fixture 覆盖认证、跳板机、Agent、Host Certificate/吊销、SFTP、同步、权限切换、转发、typed command、diagnostics 和 fleet。
 
-当前 GitHub-hosted job 仍在任何 workflow step 执行前失败（`steps=null`，没有可用 job log）。因此 candidate **不能宣称 CI 已通过**，也不会在这种状态下晋升到 `develop` 或 `main`。
+v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签发 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
+
+当前 GitHub-hosted job 仍在任何 workflow step 执行前失败（历史状态为 `steps=null`，没有可用 job log）。因此 candidate **不能宣称 CI 已通过**，也不会在这种状态下晋升到 `develop` 或 `main`。每个新 candidate HEAD 仍需重新检查实际 job 执行情况。
 
 v0.13 起的 release pipeline 会构建 Linux x86_64、macOS Intel、macOS Apple Silicon、Windows x86_64 四套完整包，每套包含四个前端，并生成 manifest 和 `SHA256SUMS`。平台代码签名/公证仍属于 V1 前发行安全工作。
 
@@ -174,11 +182,11 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 
 ## 尚未完成的安全敏感能力
 
-- 完整 OpenSSH host certificate / `@cert-authority` 语义，包括 CA 签名、principals、critical options、主机 pattern、有效期和吊销行为；
-- 完整 `Match` 计算，以及剩余 Include token/环境变量/`~user`/完整 glob 和 OpenSSH 等价的配置 owner/mode 校验；
+- 完整 `Match` 计算，以及剩余 Include token/环境变量/`~user`/完整 glob；
+- hashed `@cert-authority` / `@revoked` marker 匹配、Windows ACL 等价配置信任，以及 RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
 - 加密持久凭据存储及密钥管理模型；
 - 通过本地 daemon/IPC 实现跨进程 ControlMaster 风格连接复用；
 - 显式符号链接传输/同步策略；
 - Windows Authenticode、macOS Developer ID/notarization 和最终 provenance/SBOM 策略。
 
-更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。
+更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/HOST_CERTIFICATES.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。
