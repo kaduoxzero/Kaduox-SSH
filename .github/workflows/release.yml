@@ -36,8 +36,6 @@ jobs:
     needs: preflight
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -103,11 +101,6 @@ jobs:
           --tag "$GITHUB_REF_NAME"
           --target "${{ matrix.target }}"
           --output-dir dist
-      - name: Attest release archive and SBOM
-        if: ${{ vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -115,10 +108,49 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  attest:
+    needs: build
+    if: ${{ vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            archive_pattern: dist/*.tar.gz
+          - target: x86_64-apple-darwin
+            archive_pattern: dist/*.tar.gz
+          - target: aarch64-apple-darwin
+            archive_pattern: dist/*.tar.gz
+          - target: x86_64-pc-windows-msvc
+            archive_pattern: dist/*.zip
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist
+      - name: Attest release archive provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.archive_pattern }}
+          create-storage-record: false
+      - name: Bind SPDX SBOM to release archive
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.archive_pattern }}
+          sbom-path: dist/*.spdx.json
+          create-storage-record: false
+
   publish:
     needs:
       - preflight
       - build
+      - attest
+    if: ${{ always() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
