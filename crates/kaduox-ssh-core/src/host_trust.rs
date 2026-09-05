@@ -92,7 +92,7 @@ impl HostTrustPolicy {
         Ok(policy)
     }
 
-    pub(crate) fn has_verifiable_certificate_authority(&self) -> bool {
+    pub(crate) fn has_certificate_authority(&self) -> bool {
         self.trusted_certificate_authorities
             .iter()
             .any(is_verifiable_certificate_authority)
@@ -323,11 +323,11 @@ mod tests {
             "@cert-authority *.example.com {KEY}\n@revoked bad.example.com {OTHER_KEY}\n"
         );
         let prod = HostTrustPolicy::parse("prod.example.com", 22, &contents).unwrap();
-        assert!(prod.has_verifiable_certificate_authority());
+        assert!(prod.has_certificate_authority());
         assert!(!prod.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
 
         let bad = HostTrustPolicy::parse("bad.example.com", 22, &contents).unwrap();
-        assert!(bad.has_verifiable_certificate_authority());
+        assert!(bad.has_certificate_authority());
         assert!(bad.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
     }
 
@@ -335,7 +335,7 @@ mod tests {
     fn unrelated_marker_entries_do_not_apply() {
         let contents = format!("@cert-authority other.example {KEY}\n");
         let policy = HostTrustPolicy::parse("prod.example", 22, &contents).unwrap();
-        assert!(!policy.has_verifiable_certificate_authority());
+        assert!(!policy.has_certificate_authority());
     }
 
     #[test]
