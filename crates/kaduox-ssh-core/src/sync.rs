@@ -1,4 +1,5 @@
 mod preflight;
+mod source_preflight;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -10,6 +11,7 @@ use russh_sftp::client::SftpSession;
 use tokio::task::JoinSet;
 
 use self::preflight::preflight_atomic_sync;
+use self::source_preflight::preflight_local_sync_sources;
 use crate::client::SshClient;
 use crate::remote_path::{
     join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
@@ -114,6 +116,12 @@ impl SshClient {
         if !metadata.is_dir() {
             bail!("sync source {} must be a directory", local_root.display());
         }
+
+        // A public or stale SyncPlan must not be allowed to mutate the remote
+        // tree before all local UploadFile sources are proven to still be
+        // regular files beneath ordinary, non-link parent directories. This
+        // also verifies the planned byte count before destructive actions.
+        preflight_local_sync_sources(local_root, plan).await?;
 
         let sftp = Arc::new(self.open_sftp_for_transfer(&options.transfer).await?);
         if options.transfer.atomic {
