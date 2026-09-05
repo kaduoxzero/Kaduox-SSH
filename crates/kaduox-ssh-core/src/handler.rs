@@ -144,17 +144,7 @@ impl client::Handler for ClientHandler {
                 .verify_host_certificate(&self.host, certificate)
                 .with_context(|| format!("host certificate for {} was rejected", self.host))?;
             self.state
-                .record_server_host_key(
-                    server_public_key,
-                    HostKeyVerification::CertificateAuthority,
-                )
-                .await;
-            return Ok(true);
-        }
-
-        if self.host_key_policy == HostKeyPolicy::Insecure {
-            self.state
-                .record_server_host_key(server_public_key, HostKeyVerification::Insecure)
+                .record_server_host_key(server_public_key, HostKeyVerification::Known)
                 .await;
             return Ok(true);
         }
@@ -168,6 +158,13 @@ impl client::Handler for ClientHandler {
         .with_context(|| format!("failed to load host-key revocation policy for {}", self.host))?;
         if trust.is_revoked(&public_key) {
             bail!("server host key for {} is marked @revoked", self.host);
+        }
+
+        if self.host_key_policy == HostKeyPolicy::Insecure {
+            self.state
+                .record_server_host_key(server_public_key, HostKeyVerification::Insecure)
+                .await;
+            return Ok(true);
         }
 
         let known = if let Some(path) = &self.known_hosts_file {
