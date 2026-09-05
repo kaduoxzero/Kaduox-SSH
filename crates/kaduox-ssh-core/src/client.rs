@@ -15,13 +15,14 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use crate::auth::{Authentication, authenticate};
-use crate::config::{ConnectionConfig, JumpHost};
+use crate::config::{ConnectionConfig, HostKeyPolicy, JumpHost};
 use crate::diagnostics::ServerHostKeyInfo;
 use crate::forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle,
     start_dynamic_forward, start_local_forward, start_remote_forward, start_remote_forward_managed,
 };
 use crate::handler::{ClientHandler, HandlerState};
+use crate::host_trust::HostTrustPolicy;
 use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, list_directory, stat_path};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
@@ -102,7 +103,7 @@ impl SshClient {
             agent_forwarding: config.agent_forwarding,
             ..Default::default()
         };
-        let ssh_config = ssh_config(&config);
+        let ssh_config = ssh_config(&config)?;
         let (mut session, jump_sessions) = if !config.jump_hosts.is_empty() {
             connect_via_jumps(&config, ssh_config, &state).await?
         } else if let Some(proxy_command) = config.proxy_command.as_deref() {
@@ -512,25 +513,35 @@ async fn wait_for_resize(
     }
 }
 
-fn ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
-    Arc::new(client::Config {
+fn ssh_config(config: &ConnectionConfig) -> Result<Arc<client::Config>> {
+    Ok(Arc::new(client::Config {
         connection_timeout: Some(config.connect_timeout),
         inactivity_timeout: config.inactivity_timeout,
         keepalive_interval: config.keepalive_interval,
         keepalive_max: 3,
         nodelay: true,
-        preferred: hardened_preferred(),
+        preferred: preferred_for_target(
+            &config.host,
+            config.port,
+            config.host_key_policy,
+            config.known_hosts_file.as_deref(),
+        )?,
         ..Default::default()
-    })
+    }))
 }
 
-fn jump_ssh_config(config: &ConnectionConfig) -> Arc<client::Config> {
-    Arc::new(client::Config {
+fn jump_ssh_config(config: &ConnectionConfig, jump: &JumpHost) -> Result<Arc<client::Config>> {
+    Ok(Arc::new(client::Config {
         connection_timeout: Some(config.connect_timeout),
         nodelay: true,
-        preferred: hardened_preferred(),
+        preferred: preferred_for_target(
+            &jump.host,
+            jump.port,
+            jump.host_key_policy,
+            jump.known_hosts_file.as_deref(),
+        )?,
         ..Default::default()
-    })
+    }))
 }
 
 fn hardened_preferred() -> Preferred {
@@ -544,6 +555,27 @@ fn hardened_preferred() -> Preferred {
             .collect(),
     );
     preferred
+}
+
+fn preferred_for_target(
+    host: &str,
+    port: u16,
+    host_key_policy: HostKeyPolicy,
+    known_hosts_file: Option<&Path>,
+) -> Result<Preferred> {
+    let mut preferred = hardened_preferred();
+    if host_key_policy == HostKeyPolicy::Insecure {
+        return Ok(preferred);
+    }
+    let trust = HostTrustPolicy::load(host, port, known_hosts_file)
+        .with_context(|| format!("failed to load host certificate authorities for {host}"))?;
+    if trust.has_certificate_authority() {
+        // A CA key's own algorithm does not constrain the certified host-key
+        // algorithm. Advertise certificate forms only for the hardened plain
+        // host-key algorithms we already permit (RSA remains excluded).
+        preferred.host_key_certificates = preferred.key.clone();
+    }
+    Ok(preferred)
 }
 
 fn handler_for(config: &ConnectionConfig, state: HandlerState) -> ClientHandler {
@@ -568,6 +600,7 @@ async fn connect_via_jumps(
     let mut current: Option<client::Handle<ClientHandler>> = None;
 
     for jump in &config.jump_hosts {
+        let jump_config = jump_ssh_config(config, jump)?;
         let mut next = if let Some(previous) = current.take() {
             let channel = timeout(
                 config.channel_open_timeout,
@@ -591,7 +624,7 @@ async fn connect_via_jumps(
             timeout(
                 config.connect_timeout,
                 client::connect_stream(
-                    jump_ssh_config(config),
+                    jump_config,
                     channel.into_stream(),
                     jump_handler(jump),
                 ),
@@ -609,7 +642,7 @@ async fn connect_via_jumps(
             timeout(
                 config.connect_timeout,
                 client::connect(
-                    jump_ssh_config(config),
+                    jump_config,
                     (jump.host.as_str(), jump.port),
                     jump_handler(jump),
                 ),
@@ -932,6 +965,18 @@ mod tests {
         config.username = "deploy".into();
         config.alias = "%PATH%".into();
         assert!(expand_proxy_command("proxy %n", &config).is_err());
+    }
+
+    #[test]
+    fn hardened_preferred_keeps_certificates_disabled_without_target_trust() {
+        let preferred = hardened_preferred();
+        assert!(preferred.host_key_certificates.is_empty());
+        assert!(
+            preferred
+                .key
+                .iter()
+                .all(|algorithm| !algorithm.as_str().contains("rsa"))
+        );
     }
 
     #[tokio::test]
