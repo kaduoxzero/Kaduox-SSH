@@ -8,6 +8,9 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 
 - SSH connection, command execution, and interactive PTY shell
 - OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion and fail-closed handling for unsupported structural semantics
+- Unix OpenSSH user-config owner/mode enforcement with same-file-descriptor verification and reads
+- target-scoped OpenSSH Host Certificate verification through clear-text `known_hosts` `@cert-authority` entries, with principal/validity/critical-option/revocation checks
+- clear-text `@revoked` enforcement for ordinary host keys, certificate subject keys, and certificate signing CAs
 - ProxyJump chains and ProxyCommand transports
 - password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
 - RSA authentication through an external SSH agent while local RSA private-key signing is disabled by security policy
@@ -33,7 +36,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - `kssh-fleet` bounded-concurrency typed command execution across multiple SSH targets
 - per-target fleet failure isolation, capped output retention, and terminal-safe aggregation
 - `kssh-inventory` offline inventory validation, listing, and group expansion
-- real OpenSSH protocol integration fixtures, including fleet execution coverage
+- real OpenSSH protocol integration fixtures, including fleet and Host Certificate coverage
 - Linux/macOS/Windows CI, Rust 1.85 MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates
 - committed `Cargo.lock` with `--locked` builds
 - on-demand real-OpenSSH performance benchmark harness
@@ -54,7 +57,7 @@ Kaduox-SSH currently ships four binaries over the same core security and transpo
 
 The TUI and fleet frontends do not implement separate SSH stacks. They reuse `kaduox-ssh-core` for authentication, host-key policy, ProxyJump/ProxyCommand, channels, SFTP, privilege switching, and transport limits.
 
-See `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, `docs/INVENTORY.md`, and `docs/OPENSSH_CONFIG.md` for frontend/config-specific contracts and resource limits.
+See `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, `docs/INVENTORY.md`, `docs/OPENSSH_CONFIG.md`, and `docs/HOST_CERTIFICATES.md` for frontend/config/trust-specific contracts and resource limits.
 
 ## RSA security policy
 
@@ -66,26 +69,33 @@ This policy distinguishes private-key signing from public-key compatibility:
 - A local RSA private-key file fails closed with an explicit remediation message.
 - RSA user authentication remains available through an external SSH agent because the private-key operation stays inside the agent rather than Kaduox-SSH.
 - RSA-only server host keys are currently rejected during key-exchange negotiation. In Russh 0.63.1 the feature needed for RSA host-signature verification is coupled to the affected local RSA signer dependency, so Kaduox-SSH prefers a fail-closed compatibility tradeoff over advertising an algorithm it cannot safely verify. Servers should expose Ed25519 or ECDSA host keys.
+- RSA Host Certificate variants are not advertised. v0.16's certificate fixture validates an Ed25519 CA and Ed25519 certified host key; RSA CA/certificate-signature compatibility is not claimed while Russh's optional RSA feature remains disabled.
 
-The real OpenSSH integration suite is designed to verify direct RSA-key rejection, agent-backed RSA authentication, and early negotiation failure against an RSA-host-key-only `sshd` fixture. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite executes green.
+The real OpenSSH integration suite is designed to verify direct RSA-key rejection, agent-backed RSA authentication, early negotiation failure against an RSA-host-key-only `sshd` fixture, and the v0.16 Host Certificate trust path. Do not re-enable the Russh `rsa` feature until the advisory has an acceptable upstream resolution and the full security test suite executes green.
 
-## OpenSSH config compatibility
+## OpenSSH config and host trust compatibility
 
 Kaduox-SSH resolves supported OpenSSH settings such as `HostName`, `User`, `Port`, `IdentityFile`, `UserKnownHostsFile`, `ProxyCommand`, and `ProxyJump` from `~/.ssh/config`.
 
 v0.14 adds bounded `Include` resolution before the downstream host parser. The supported subset includes global or `Host`-scoped includes, multiple/quoted paths, absolute paths, paths relative to `~/.ssh`, current-user `~/...`, `*` and `?` wildcards, lexical processing order, nested includes, OpenSSH-style hidden-file matching, and restoration of the containing global/`Host` scope after every included file. The OpenSSH Host catalog uses the same include graph, so concrete aliases in included files are visible to the TUI picker.
 
-Configuration remains fail-closed where OpenSSH behavior is not yet reproduced exactly:
+v0.15 applies one trust boundary to the root user config and every nested Include. On Unix, the opened file must be regular, owned by the process real uid or root, and not writable by group/other. Metadata verification and parsing bytes are tied to the same opened file descriptor, removing the path-based stat/read TOCTOU window. Windows still requires a regular file, but NTFS ACL-equivalent OpenSSH trust validation remains V1 work.
+
+v0.16 adds fail-closed Host Certificate and revocation semantics. Certificate algorithms remain disabled unless the specific final target or ProxyJump hop has a matching clear-text `@cert-authority`. A certificate must be a Host certificate, have a trusted signing CA, valid signature/time window, an acceptable hostname principal, no unsupported critical options, and neither its subject key nor CA may be `@revoked`. Ordinary host keys are also checked against applicable `@revoked` markers before known-hosts acceptance or explicit insecure acceptance. A failed certificate is never downgraded to its embedded ordinary key.
+
+Configuration/trust behavior remains fail-closed where OpenSSH semantics are not yet reproduced exactly:
 
 - A missing `~/.ssh/config` is normal and falls back to direct/default connection settings.
-- Read, permission-to-read, expansion, and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
+- Read, trust, expansion, and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
 - `Match` remains rejected for connection resolution because modern OpenSSH conditions depend on host/original host, user/local user, canonical/final passes, command/session context, `exec`, local network, tags, version, and other state that `russh-config 0.58.0` does not evaluate.
 - Include `%` tokens, `${ENV}` expansion, `~other-user` expansion, and full bracket/collation glob expressions are explicitly rejected instead of being treated as literal paths.
 - Include expansion is capped at 16 nesting levels, 256 processed files, a 4 MiB config budget, 64 paths per directive, 16 KiB per include path, and 1024 bytes per wildcard component; recursive include cycles fail explicitly.
-- Kaduox-SSH does not yet reproduce OpenSSH's complete user-config ownership/mode policy across Unix and Windows ACL models.
+- Hashed `@cert-authority` / `@revoked` marker host patterns are explicitly rejected rather than silently dropping a CA or revocation rule. Ordinary unmarked hashed known-host entries continue through Russh's existing ordinary host-key path.
+- Host Certificate critical options are not interpreted; any critical option rejects the certificate. RSA Host Certificates and RSA CA/certificate-signature compatibility are not claimed while the RSA feature remains disabled.
+- Windows user-config ACL parity with OpenSSH is not yet implemented.
 - The upstream parser exposes `StrictHostKeyChecking` only as a boolean. Values other than `no` therefore lose their exact OpenSSH policy. Use Kaduox-SSH's explicit `--host-key strict`, `--host-key accept-new`, or `--host-key insecure` when exact behavior matters.
 
-OpenSSH host-certificate / `@cert-authority` verification is a separate trust boundary and is not yet claimed as compatible. See `docs/OPENSSH_CONFIG.md` for the exact supported and rejected forms.
+See `docs/OPENSSH_CONFIG.md` and `docs/HOST_CERTIFICATES.md` for the exact supported and rejected forms.
 
 ## Architecture
 
@@ -173,7 +183,7 @@ kssh-fleet -H web-01 -H web-02 -H deploy@web-03 --jobs 3 -- uname -a
 kssh-inventory check
 ```
 
-By default host keys use `accept-new`: unknown keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing entry. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments.
+By default host keys use `accept-new`: unknown ordinary keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing ordinary key or a matching trusted Host Certificate CA. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments; applicable clear-text `@revoked` entries still reject the key.
 
 ## Transfer and sync design
 
@@ -189,11 +199,11 @@ Symbolic links encountered during recursive transfer or synchronization scans ar
 
 `kssh-fleet` defaults to 8 concurrent SSH tasks and hard-limits concurrency to 64. It retains at most 1 MiB stdout and 1 MiB stderr per in-flight host by default; each stream is capped at 16 MiB and the configured `jobs × output-limit × 2` memory window may not exceed 512 MiB. Output beyond the retention cap is still drained from SSH and marked truncated.
 
-Targets and supported OpenSSH configuration are resolved before the first connection. Checks that inherently require a live transport—host-key verification, authentication, and ProxyCommand expansion-value validation immediately before process spawn—remain fail-closed at runtime and are isolated per host.
+Targets and supported OpenSSH configuration are resolved before the first connection. Checks that inherently require a live transport—host-key/certificate verification, authentication, and ProxyCommand expansion-value validation immediately before process spawn—remain fail-closed at runtime and are isolated per host.
 
 ## Validation and performance
 
-CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
+CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, Host Certificate trust/revocation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
 
 The repository's GitHub-hosted jobs are currently failing before any workflow step executes (`steps=null` and no usable job logs). Therefore candidate branches are **not** claimed to have passed CI, and promotion to `develop`/`main` remains blocked until those jobs actually acquire runners and execute successfully.
 
@@ -211,10 +221,11 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 
 Some features are deliberately not enabled until they can be implemented completely and tested as security boundaries:
 
-- full OpenSSH host-certificate / `@cert-authority` semantics, including CA signature, principals, critical options, host-pattern matching, validity and revocation behavior
-- complete OpenSSH `Match` evaluation and the remaining Include token/environment/`~user`/full-glob semantics, plus OpenSSH-equivalent config ownership/mode validation
-- encrypted persistent credential storage and its key-management model
-- cross-process ControlMaster-style reuse through a local daemon/IPC protocol
-- explicit symbolic-link transfer/sync policy
+- complete OpenSSH `Match` evaluation and the remaining Include token/environment/`~user`/full-glob semantics;
+- hashed `@cert-authority` / `@revoked` marker matching, Windows ACL-equivalent config trust, and RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
+- encrypted persistent credential storage and its key-management model;
+- cross-process ControlMaster-style reuse through a local daemon/IPC protocol;
+- explicit symbolic-link transfer/sync policy;
+- Windows Authenticode, macOS Developer ID/notarization, and final provenance/SBOM policy.
 
-See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
+See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
