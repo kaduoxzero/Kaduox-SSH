@@ -8,10 +8,6 @@ mod diagnostics;
 mod forward;
 mod handler;
 mod host_catalog;
-// v0.16 stages certificate-trust policy separately from the handshake wiring.
-// Keep this narrowly scoped allowance until the follow-up PR makes the policy
-// a live dependency of client configuration and ClientHandler verification.
-#[allow(dead_code)]
 mod host_trust;
 mod inventory;
 mod manager;
