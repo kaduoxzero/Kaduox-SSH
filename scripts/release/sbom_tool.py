@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a deterministic SPDX 2.3 SBOM from the resolved Cargo.lock graph."""
+"""Generate a deterministic SPDX 2.3 inventory from the resolved Cargo.lock graph."""
 
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -21,8 +22,10 @@ ROOT = release_tool.ROOT
 MAX_SBOM_BYTES = 8 * 1024 * 1024
 SPDX_VERSION = "SPDX-2.3"
 SPDX_DATA_LICENSE = "CC0-1.0"
-NORMALIZED_CREATED = "1970-01-01T00:00:00Z"
-DEPENDENCY_SPEC = re.compile(r"^(?P<name>[^\s()]+)(?:\s+(?P<version>[^\s()]+))?(?:\s+\((?P<source>.+)\))?$")
+DEFAULT_SOURCE_DATE_EPOCH = 0
+DEPENDENCY_SPEC = re.compile(
+    r"^(?P<name>[^\s()]+)(?:\s+(?P<version>[^\s()]+))?(?:\s+\((?P<source>.+)\))?$"
+)
 
 
 def load_lock(path: Path | None = None) -> dict:
@@ -123,9 +126,25 @@ def spdx_package(package: dict) -> dict:
     return result
 
 
-def build_spdx_document(lock_data: dict, tag: str, target: str) -> dict:
+def spdx_created_from_epoch(value: str | int) -> str:
+    try:
+        epoch = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("source date epoch must be an integer number of seconds") from exc
+    if epoch < 0:
+        raise ValueError("source date epoch cannot be negative")
+    try:
+        instant = datetime.fromtimestamp(epoch, timezone.utc)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ValueError("source date epoch is outside the supported timestamp range") from exc
+    return instant.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_spdx_document(lock_data: dict, tag: str, created: str) -> dict:
     version = release_tool.check_tag(tag)
-    target = release_tool.safe_component(target, "target")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", created):
+        raise ValueError("SPDX creation timestamp must use UTC YYYY-MM-DDThh:mm:ssZ format")
+
     packages = lock_data.get("package")
     if not isinstance(packages, list) or not packages:
         raise ValueError("Cargo.lock contains no package records")
@@ -180,18 +199,23 @@ def build_spdx_document(lock_data: dict, tag: str, target: str) -> dict:
 
     namespace = (
         "https://github.com/kaduoxzero/Kaduox-SSH/sbom/"
-        f"{quote(tag, safe='-._~')}/{quote(target, safe='-._~')}"
+        f"{quote(tag, safe='-._~')}/cargo-lock"
     )
     return {
         "spdxVersion": SPDX_VERSION,
         "dataLicense": SPDX_DATA_LICENSE,
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": f"Kaduox-SSH-{version}-{target}",
+        "name": f"Kaduox-SSH-{version}-Cargo.lock",
         "documentNamespace": namespace,
         "creationInfo": {
-            "created": NORMALIZED_CREATED,
+            "created": created,
             "creators": ["Tool: Kaduox-SSH scripts/release/sbom_tool.py"],
-            "comment": "Creation time is normalized for deterministic release output; build time is carried by release provenance.",
+            "comment": (
+                "The timestamp is derived from the tagged source commit for reproducible output. "
+                "This document inventories the resolved Cargo.lock graph; Cargo.lock is not a "
+                "target-pruned record, so target-specific packages may be listed even when they "
+                "are not present in every platform binary."
+            ),
         },
         "packages": spdx_packages,
         "relationships": [
@@ -212,12 +236,16 @@ def render_spdx(document: dict) -> str:
     return text
 
 
-def generate_sbom(tag: str, target: str, output_dir: Path) -> Path:
+def generate_sbom(
+    tag: str,
+    output_dir: Path,
+    source_date_epoch: str | int = DEFAULT_SOURCE_DATE_EPOCH,
+) -> Path:
     version = release_tool.check_tag(tag)
-    target = release_tool.safe_component(target, "target")
-    document = build_spdx_document(load_lock(), tag, target)
+    created = spdx_created_from_epoch(source_date_epoch)
+    document = build_spdx_document(load_lock(), tag, created)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / f"kaduox-ssh-{version}-{target}.spdx.json"
+    output = output_dir / f"kaduox-ssh-{version}.spdx.json"
     release_tool.write_text_safely(output, render_spdx(document))
     return output
 
@@ -225,7 +253,7 @@ def generate_sbom(tag: str, target: str, output_dir: Path) -> Path:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--tag", required=True)
-    root.add_argument("--target", required=True)
+    root.add_argument("--source-date-epoch", default=str(DEFAULT_SOURCE_DATE_EPOCH))
     root.add_argument("--output-dir", default="dist")
     return root
 
@@ -233,7 +261,11 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        output = generate_sbom(args.tag, args.target, Path(args.output_dir).resolve())
+        output = generate_sbom(
+            args.tag,
+            Path(args.output_dir).resolve(),
+            args.source_date_epoch,
+        )
     except (OSError, ValueError) as exc:
         print(f"SBOM generation failed: {exc}", file=sys.stderr)
         return 2
