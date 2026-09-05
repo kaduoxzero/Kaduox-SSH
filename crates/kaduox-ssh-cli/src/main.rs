@@ -8,9 +8,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
     Authentication, ConnectionConfig, ConnectionTarget, DynamicForward, HostKeyPolicy,
     HostKeyVerification, LocalForward, RemoteCommandSpec, RemoteFileMetadata, RemoteFileType,
-    RemoteForward, RemoteUser, SshClient, SyncActionKind, SyncOptions, SyncPlan, TerminalSize,
-    TerminalSpec, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
-    resolve_jump_hosts,
+    RemoteForward, RemoteUser, SshClient, SymlinkPolicy, SyncActionKind, SyncOptions, SyncPlan,
+    TerminalSize, TerminalSpec, TransferCancellation, TransferDirection, TransferEvent,
+    TransferOptions, resolve_jump_hosts,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -101,6 +101,21 @@ impl From<HostKeyMode> for HostKeyPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SymlinkMode {
+    Skip,
+    Reject,
+}
+
+impl From<SymlinkMode> for SymlinkPolicy {
+    fn from(value: SymlinkMode) -> Self {
+        match value {
+            SymlinkMode::Skip => Self::Skip,
+            SymlinkMode::Reject => Self::Reject,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Start an interactive PTY shell.
@@ -128,6 +143,9 @@ enum Command {
         /// Recursively upload a directory tree.
         #[arg(short = 'r', long)]
         recursive: bool,
+        /// How recursive upload handles symbolic links/reparse points.
+        #[arg(long, value_enum, requires = "recursive")]
+        symlinks: Option<SymlinkMode>,
         /// Resume from a stable .kaduox.part file when possible.
         #[arg(long)]
         resume: bool,
@@ -163,6 +181,9 @@ enum Command {
         /// Recursively download a directory tree.
         #[arg(short = 'r', long)]
         recursive: bool,
+        /// How recursive download handles symbolic links.
+        #[arg(long, value_enum, requires = "recursive")]
+        symlinks: Option<SymlinkMode>,
         /// Resume from a stable .kaduox.part file when possible.
         #[arg(long)]
         resume: bool,
@@ -186,6 +207,9 @@ enum Command {
     Sync {
         local: PathBuf,
         remote: String,
+        /// How synchronization handles symbolic links/reparse points in scanned trees.
+        #[arg(long, value_enum, default_value = "skip")]
+        symlinks: SymlinkMode,
         /// Print the synchronization plan without modifying the remote tree.
         #[arg(long)]
         dry_run: bool,
@@ -630,6 +654,7 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
             local,
             remote,
             recursive,
+            symlinks,
             resume,
             no_atomic,
             jobs,
@@ -648,18 +673,20 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 packet_size,
                 request_timeout,
             );
+            let symlink_policy: SymlinkPolicy = symlinks.unwrap_or(SymlinkMode::Skip).into();
             if recursive {
                 if let Some(user) = as_user {
                     let file_mode = parse_mode(mode.as_deref().unwrap_or("0644"))?;
                     let directory_mode = parse_mode(dir_mode.as_deref().unwrap_or("0755"))?;
                     let summary = ssh
-                        .upload_privileged_recursive(
+                        .upload_privileged_recursive_with_symlink_policy(
                             &local,
                             &remote,
                             &user,
                             file_mode,
                             directory_mode,
                             ui.options.clone(),
+                            symlink_policy,
                         )
                         .await?;
                     eprintln!(
@@ -668,7 +695,12 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                     );
                 } else {
                     let summary = ssh
-                        .upload_recursive(&local, &remote, ui.options.clone())
+                        .upload_recursive_with_symlink_policy(
+                            &local,
+                            &remote,
+                            ui.options.clone(),
+                            symlink_policy,
+                        )
                         .await?;
                     eprintln!(
                         "uploaded {} files, {} directories, {} bytes; skipped {} entries",
@@ -692,6 +724,7 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
             remote,
             local,
             recursive,
+            symlinks,
             resume,
             no_atomic,
             jobs,
@@ -707,9 +740,15 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 packet_size,
                 request_timeout,
             );
+            let symlink_policy: SymlinkPolicy = symlinks.unwrap_or(SymlinkMode::Skip).into();
             if recursive {
                 let summary = ssh
-                    .download_recursive(&remote, &local, ui.options.clone())
+                    .download_recursive_with_symlink_policy(
+                        &remote,
+                        &local,
+                        ui.options.clone(),
+                        symlink_policy,
+                    )
                     .await?;
                 eprintln!(
                     "downloaded {} files, {} directories, {} bytes; skipped {} entries",
@@ -725,6 +764,7 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
         Command::Sync {
             local,
             remote,
+            symlinks,
             dry_run,
             delete,
             size_only,
@@ -748,11 +788,25 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 size_only,
                 transfer: ui.options.clone(),
             };
-            let plan = ssh.plan_sync_to_remote(&local, &remote, &options).await?;
+            let symlink_policy: SymlinkPolicy = symlinks.into();
+            let plan = ssh
+                .plan_sync_to_remote_with_symlink_policy(
+                    &local,
+                    &remote,
+                    &options,
+                    symlink_policy,
+                )
+                .await?;
             print_sync_plan(&plan, dry_run);
             if !dry_run && !plan.is_empty() {
                 let summary = ssh
-                    .apply_sync_to_remote(&local, &remote, &plan, options)
+                    .apply_sync_to_remote_with_symlink_policy(
+                        &local,
+                        &remote,
+                        &plan,
+                        options,
+                        symlink_policy,
+                    )
                     .await?;
                 eprintln!(
                     "sync complete: uploaded {} files / {} bytes, created {} directories",
@@ -1159,6 +1213,95 @@ mod tests {
     fn parses_probe_subcommand() {
         let cli = Cli::try_parse_from(["kssh", "server.example", "probe"]).unwrap();
         assert!(matches!(cli.command, Command::Probe));
+    }
+
+    #[test]
+    fn parses_recursive_symlink_policy_options() {
+        let upload = Cli::try_parse_from([
+            "kssh",
+            "server.example",
+            "upload",
+            "-r",
+            "--symlinks",
+            "reject",
+            "local",
+            "/srv/local",
+        ])
+        .unwrap();
+        assert!(matches!(
+            upload.command,
+            Command::Upload {
+                recursive: true,
+                symlinks: Some(SymlinkMode::Reject),
+                ..
+            }
+        ));
+
+        let download = Cli::try_parse_from([
+            "kssh",
+            "server.example",
+            "download",
+            "-r",
+            "--symlinks",
+            "reject",
+            "/srv/remote",
+            "local",
+        ])
+        .unwrap();
+        assert!(matches!(
+            download.command,
+            Command::Download {
+                recursive: true,
+                symlinks: Some(SymlinkMode::Reject),
+                ..
+            }
+        ));
+
+        let sync = Cli::try_parse_from([
+            "kssh",
+            "server.example",
+            "sync",
+            "--symlinks",
+            "reject",
+            "local",
+            "/srv/remote",
+        ])
+        .unwrap();
+        assert!(matches!(
+            sync.command,
+            Command::Sync {
+                symlinks: SymlinkMode::Reject,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_symlink_option_for_non_recursive_transfer() {
+        assert!(
+            Cli::try_parse_from([
+                "kssh",
+                "server.example",
+                "upload",
+                "--symlinks",
+                "reject",
+                "local",
+                "/srv/local",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "kssh",
+                "server.example",
+                "download",
+                "--symlinks",
+                "reject",
+                "/srv/remote",
+                "local",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
