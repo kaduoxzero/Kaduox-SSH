@@ -17,6 +17,19 @@ pub(super) async fn preflight_local_sync_sources(
     local_root: &Path,
     plan: &SyncPlan,
 ) -> Result<()> {
+    let root_metadata = tokio::fs::symlink_metadata(local_root)
+        .await
+        .with_context(|| format!("failed to stat sync source root {}", local_root.display()))?;
+    if is_local_link_like(&root_metadata) {
+        bail!(
+            "refusing symbolic-link/reparse sync source root: {}",
+            local_root.display()
+        );
+    }
+    if !root_metadata.is_dir() {
+        bail!("sync source root is no longer a directory: {}", local_root.display());
+    }
+
     for (index, action) in plan.actions.iter().enumerate() {
         if action.kind != SyncActionKind::UploadFile {
             continue;
@@ -205,5 +218,27 @@ mod tests {
         tokio::fs::remove_file(root.join("escape")).await.unwrap();
         tokio::fs::remove_dir_all(root).await.unwrap();
         tokio::fs::remove_dir_all(outside).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlinked_source_root() {
+        use std::os::unix::fs::symlink;
+
+        let target = temp_root("root-target");
+        let link = temp_root("root-link");
+        tokio::fs::create_dir_all(&target).await.unwrap();
+        tokio::fs::write(target.join("app.bin"), b"data")
+            .await
+            .unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = preflight_local_sync_sources(&link, &upload_plan("app.bin", 4))
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("sync source root"));
+
+        tokio::fs::remove_file(link).await.unwrap();
+        tokio::fs::remove_dir_all(target).await.unwrap();
     }
 }
