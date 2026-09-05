@@ -57,9 +57,9 @@ async fn preflight_local_sync_source(
         let metadata = tokio::fs::symlink_metadata(&current)
             .await
             .with_context(|| format!("failed to stat sync upload source {}", current.display()))?;
-        if metadata.file_type().is_symlink() {
+        if is_local_link_like(&metadata) {
             bail!(
-                "refusing to follow symbolic-link component in sync upload source: {}",
+                "refusing to follow symbolic-link/reparse component in sync upload source: {}",
                 current.display()
             );
         }
@@ -87,6 +87,22 @@ async fn preflight_local_sync_source(
         }
     }
     Ok(())
+}
+
+fn is_local_link_like(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +200,7 @@ mod tests {
         let error = preflight_local_sync_sources(&root, &upload_plan("escape/secret.bin", 6))
             .await
             .unwrap_err();
-        assert!(format!("{error:#}").contains("symbolic-link component"));
+        assert!(format!("{error:#}").contains("symbolic-link/reparse component"));
 
         tokio::fs::remove_file(root.join("escape")).await.unwrap();
         tokio::fs::remove_dir_all(root).await.unwrap();
