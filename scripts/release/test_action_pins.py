@@ -14,7 +14,7 @@ WORKFLOW_FILES = {
     "openssh": release_tool.ROOT / ".github" / "workflows" / "integration-openssh.yml",
 }
 USES_LINE = re.compile(
-    r"^\s*-\s+uses:\s+(?P<spec>[^\s#]+)(?:\s+#\s*(?P<comment>.+))?\s*$"
+    r"^\s*(?:-\s+)?uses:\s+(?P<spec>[^\s#]+)(?:\s+#\s*(?P<comment>.+))?\s*$"
 )
 FULL_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -194,6 +194,21 @@ class WorkflowActionPinTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             validate_workflow_action_pins(text, expected, "test")
+
+    def test_job_level_reusable_workflow_uses_are_checked(self) -> None:
+        action_spec = spec("example/reusable/.github/workflows/build.yml", "a" * 40)
+        expected = Counter({action_spec: 1})
+        text = f"jobs:\n  build:\n    uses: {action_spec} # v1\n"
+        self.assertEqual(
+            validate_workflow_action_pins(text, expected, "test"),
+            [action_spec],
+        )
+        with self.assertRaises(ValueError):
+            validate_workflow_action_pins(
+                "jobs:\n  build:\n    uses: example/reusable/.github/workflows/build.yml@v1 # v1\n",
+                expected,
+                "test",
+            )
 
     def test_local_actions_do_not_require_git_commit_refs(self) -> None:
         action_spec = spec("actions/example", "b" * 40)
