@@ -8,7 +8,9 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+hmac.workspace = true
 russh.workspace = true
 russh-config.workspace = true
 russh-sftp.workspace = true
+sha1.workspace = true
 tokio.workspace = true
