@@ -2,8 +2,8 @@
 
 Kaduox-SSH uses a fail-closed release path. A Git tag is not sufficient by
 itself to publish binaries: repository metadata, tag/version identity, branch
-reachability, all target builds, archive contents, and the final archive set
-must pass their gates first.
+reachability, validation policy, all target builds, archive contents, the SBOM,
+and the final release asset set must pass their gates first.
 
 ## Version preparation
 
@@ -15,7 +15,7 @@ Use the repository release tool instead of editing the version strings by hand:
 
 ```bash
 python scripts/release/release_tool.py check
-python scripts/release/release_tool.py set-version 0.13.0-rc.1
+python scripts/release/release_tool.py set-version 0.20.0-rc.1
 python scripts/release/release_tool.py check
 ```
 
@@ -36,7 +36,8 @@ A release candidate is not ready to tag until all of these execute successfully:
 - Clippy with warnings denied;
 - dependency audit;
 - real OpenSSH integration fixtures;
-- release-policy Python unit tests and repository metadata validation.
+- release packaging and SPDX SBOM Python unit tests;
+- repository release metadata validation.
 
 A GitHub Actions job that fails before runner allocation, checkout, or any step
 execution is neither a pass nor evidence of a source-code failure. Promotion and
@@ -65,7 +66,7 @@ operator/repository-governance responsibility.
 
 ## Release artifacts
 
-The release matrix currently produces four suites:
+The release matrix currently produces four binary suites:
 
 - Linux x86_64: `x86_64-unknown-linux-gnu` (`.tar.gz`);
 - macOS Intel: `x86_64-apple-darwin` (`.tar.gz`);
@@ -81,21 +82,86 @@ Every suite must contain all four frontends:
 
 It also includes `README.md`, `README.zh-CN.md`, `LICENSE`, and `manifest.json`.
 The manifest records the target plus SHA-256 and byte length for every binary.
-The publish job refuses any release with anything other than exactly four final
-archives and creates a top-level `SHA256SUMS` covering those archives.
 
-Pre-release SemVer tags containing `-` (for example `v0.13.0-rc.1`) are created
+v0.20 adds one release-wide SPDX 2.3 JSON asset named
+`kaduox-ssh-<version>.spdx.json`. It is generated directly from the committed
+Cargo.lock v4 graph and contains stable package identities plus `DEPENDS_ON`
+relationships. Ambiguous dependency references, malformed package checksums,
+duplicate package identities, or an unexpectedly large document fail closed.
+The SPDX creation timestamp is derived from the tagged source commit so repeated
+generation from the same release source remains reproducible.
+
+The SPDX file is deliberately described as a **Cargo.lock dependency inventory**,
+not as a platform-pruned binary bill of materials. Cargo.lock records the
+workspace's resolved dependency universe and may contain target-specific packages
+that are not linked into every Linux, macOS, or Windows executable. Kaduox-SSH
+does not claim target-level package precision until the release process has a
+validated build-material graph for each target.
+
+The publish job refuses any release with anything other than exactly four final
+archives and exactly one release-wide SPDX file. It creates a top-level
+`SHA256SUMS` covering all five assets.
+
+Pre-release SemVer tags containing `-` (for example `v0.20.0-rc.1`) are created
 as GitHub pre-releases automatically.
+
+## Optional GitHub artifact attestations
+
+GitHub artifact attestations are an opt-in release capability. They are disabled
+unless the repository variable below is set exactly to `true`:
+
+```text
+KADUOX_ENABLE_GITHUB_ATTESTATIONS=true
+```
+
+When enabled, a dedicated attestation job receives only the permissions required
+for GitHub OIDC/Sigstore attestation (`contents: read`, `id-token: write`, and
+`attestations: write`). Normal build and SBOM-generation jobs keep
+`contents: read` only.
+
+The attestation job downloads the complete release asset set, verifies that it
+contains exactly four archives and exactly one SPDX JSON file with no unexpected
+files, and then creates a build-provenance attestation covering all five release
+assets. If attestation is enabled and this step fails, publication is blocked.
+If the variable is not enabled, the attestation job is skipped and the normal
+archive/SBOM release path remains available.
+
+v0.20 intentionally does **not** create a GitHub SBOM predicate that binds the
+release-wide Cargo.lock inventory to an individual platform archive. That would
+claim a target-level correspondence the lockfile-only inventory cannot prove.
+A future target-specific SBOM attestation must be backed by a validated
+per-target build-material graph first.
+
+GitHub currently permits artifact attestations for private/internal repositories
+only on GitHub Enterprise Cloud. Kaduox-SSH therefore does not enable the feature
+unconditionally for this private repository or pretend that repository settings
+can substitute for the required GitHub account capability.
+
+Consumers of an attested release can verify an archive or the SPDX asset with the
+GitHub CLI, for example:
+
+```bash
+gh attestation verify ./kaduox-ssh-<version>-x86_64-unknown-linux-gnu.tar.gz \
+  -R kaduoxzero/Kaduox-SSH
+```
+
+An attestation establishes provenance and an integrity relationship to the build
+workflow; it is not a statement that the software is vulnerability-free.
 
 ## Verification after publication
 
 Before announcing a release:
 
-1. download all four archives and `SHA256SUMS` from the GitHub Release;
-2. verify every archive against `SHA256SUMS` using a trusted local SHA-256 tool;
-3. inspect each `manifest.json` and ensure tag/version/target are correct;
-4. launch `--version` for each executable on representative target machines;
-5. run at least one strict host-key SSH connection and one file transfer using
+1. download all four archives, the SPDX JSON file, and `SHA256SUMS` from the
+   GitHub Release;
+2. verify all five assets against `SHA256SUMS` using a trusted local SHA-256 tool;
+3. inspect each archive's `manifest.json` and ensure tag/version/target are correct;
+4. inspect the SPDX document and confirm its tag/version namespace and local
+   Kaduox package records;
+5. when GitHub attestations are enabled, verify each archive and the SPDX asset
+   with `gh attestation verify`;
+6. launch `--version` for each executable on representative target machines;
+7. run at least one strict host-key SSH connection and one file transfer using
    the published binaries rather than a developer build.
 
 ## V1 signing boundary
@@ -105,13 +171,20 @@ published checksum file, but they are **not** platform code signing and do not
 by themselves establish publisher identity if the release account is
 compromised.
 
-Before Kaduox-SSH declares the V1 release channel complete, the release plan
-should decide and implement the appropriate publisher-authentication layer:
+v0.20 provides a deterministic release-wide SPDX dependency inventory and an
+optional GitHub provenance-attestation path. These improve supply-chain
+traceability but do not replace native platform signing or a future exact
+per-target SBOM predicate.
+
+Before Kaduox-SSH declares the V1 release channel complete, the remaining
+publisher-authentication work is primarily:
 
 - Windows Authenticode signing for `.exe` artifacts;
 - macOS Developer ID signing and notarization for distributed macOS binaries;
-- provenance/attestation and an SBOM policy where useful for the distribution
-  channel.
+- final operator policy for whether GitHub artifact attestations are enabled on
+  the production release repository/account;
+- target-specific build-material SBOM attestation only if the release channel
+  requires that stronger claim.
 
 Those controls require release credentials or external signing services and
 must not be emulated with repository-stored private keys.
