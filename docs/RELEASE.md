@@ -15,7 +15,7 @@ Use the repository release tool instead of editing the version strings by hand:
 
 ```bash
 python scripts/release/release_tool.py check
-python scripts/release/release_tool.py set-version 0.21.0-rc.1
+python scripts/release/release_tool.py set-version 0.22.0-rc.1
 python scripts/release/release_tool.py check
 ```
 
@@ -37,7 +37,7 @@ A release candidate is not ready to tag until all of these execute successfully:
 - dependency audit;
 - real OpenSSH integration fixtures;
 - release packaging and SPDX SBOM Python unit tests;
-- immutable release-action pin policy tests;
+- immutable workflow-action pin policy tests;
 - repository release metadata validation.
 
 A GitHub Actions job that fails before runner allocation, checkout, or any step
@@ -65,28 +65,41 @@ Use an annotated/signed Git tag according to the maintainer signing policy. The
 workflow verifies that the pushed tag exists, but tag signing policy remains an
 operator/repository-governance responsibility.
 
-## Immutable release workflow dependencies
+## Immutable workflow dependencies
 
-The production `.github/workflows/release.yml` must not depend on mutable GitHub
-Action tags or branches. Every external `uses:` entry is pinned to a reviewed,
-full 40-character Git commit SHA. A human-readable version/ref comment remains
-beside each SHA so maintainers can identify the intended upstream release.
+The production release workflow and the workflows that decide release readiness
+must not execute mutable GitHub Action tags or branches. External `uses:` entries
+in the following files are pinned to reviewed, full 40-character Git commit SHAs:
 
-`scripts/release/test_action_pins.py` enforces this boundary in both Quality's
-`release-policy` job and the tag-release preflight. It rejects mutable refs such
-as `@v4` or `@stable`, abbreviated hashes, unapproved external Actions, changed
-SHAs that do not match the reviewed approval map, missing version/ref comments,
-and unpinned `docker://` actions. Repository-local `./...` actions are permitted
-because their contents are already fixed by the checked-out release commit.
+- `.github/workflows/release.yml`;
+- `.github/workflows/ci.yml`;
+- `.github/workflows/quality.yml`;
+- `.github/workflows/integration-openssh.yml`.
 
-Updating an approved release Action is therefore an explicit reviewed change:
-update the workflow SHA and the matching approval-map SHA together after
-reviewing the upstream commit. The production release workflow independently
-reruns this pin policy before publishing a tag.
+A human-readable version/ref comment remains beside each SHA so maintainers can
+identify the intended upstream release. `scripts/release/test_action_pins.py`
+maintains an exact expected multiset of `action@sha` references for each workflow,
+including occurrence counts. This means the policy rejects not only mutable refs
+such as `@v4` or `@stable`, abbreviated hashes, and unknown Actions, but also:
 
-The v0.21 policy is intentionally scoped to the production release workflow.
-Ordinary CI/Quality workflow dependencies remain a separate hardening scope and
-do not weaken the tag-release pin check.
+- a reviewed Action being moved to a different full SHA without a policy update;
+- one occurrence being replaced by a different otherwise-approved SHA;
+- adding or removing an Action occurrence without explicit review;
+- removing the human-readable version/ref comment;
+- unpinned `docker://` actions.
+
+Repository-local `./...` actions are permitted because their contents are fixed
+by the checked-out repository commit. Updating any external workflow dependency
+therefore requires changing both the workflow reference and the exact expected
+pin policy in the same reviewed change.
+
+The pinned `actions-rust-lang/audit` commit used by Quality currently pins its
+internal `actions/cache` dependency and installs `cargo-audit` 0.22.0 explicitly.
+It invokes `cargo +stable`, and the normal CI/release Rust setup also intentionally
+tracks the Rust `stable` toolchain channel. v0.22 freezes the Action implementation
+commits, not the Rust stable channel itself; changing that toolchain-version policy
+is a separate reproducibility decision. The MSRV lane remains explicitly fixed at
+Rust 1.85.0.
 
 ## Release artifacts
 
@@ -126,7 +139,7 @@ The publish job refuses any release with anything other than exactly four final
 archives and exactly one release-wide SPDX file. It creates a top-level
 `SHA256SUMS` covering all five assets.
 
-Pre-release SemVer tags containing `-` (for example `v0.21.0-rc.1`) are created
+Pre-release SemVer tags containing `-` (for example `v0.22.0-rc.1`) are created
 as GitHub pre-releases automatically.
 
 ## Optional GitHub artifact attestations
@@ -196,10 +209,11 @@ by themselves establish publisher identity if the release account is
 compromised.
 
 v0.20 provides a deterministic release-wide SPDX dependency inventory and an
-optional GitHub provenance-attestation path. v0.21 pins the production release
-workflow's external Action dependencies to reviewed immutable commits. These
-controls improve supply-chain traceability and workflow integrity but do not
-replace native platform signing or a future exact per-target SBOM predicate.
+optional GitHub provenance-attestation path. v0.21 pins production release Action
+implementations to reviewed immutable commits. v0.22 extends that immutable
+Action boundary to CI, Quality, dependency audit, and real OpenSSH validation.
+These controls improve supply-chain traceability and workflow integrity but do
+not replace native platform signing or a future exact per-target SBOM predicate.
 
 Before Kaduox-SSH declares the V1 release channel complete, the remaining
 publisher-authentication work is primarily:
