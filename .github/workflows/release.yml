@@ -137,54 +137,28 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            archive_pattern: '*.tar.gz'
-          - target: x86_64-apple-darwin
-            archive_pattern: '*.tar.gz'
-          - target: aarch64-apple-darwin
-            archive_pattern: '*.tar.gz'
-          - target: x86_64-pc-windows-msvc
-            archive_pattern: '*.zip'
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: release-${{ matrix.target }}
+          pattern: release-*
           path: dist
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-sbom
-          path: dist
-      - name: Resolve exact attestation inputs
-        id: attestation-inputs
+          merge-multiple: true
+      - name: Verify exact attestation subject set
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t archives < <(find dist -maxdepth 1 -type f -name '${{ matrix.archive_pattern }}' -print | sort)
+          mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print | sort)
           mapfile -t sboms < <(find dist -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
-          if [[ ${#archives[@]} -ne 1 ]]; then
-            printf 'expected exactly one archive for %s, found %s\n' '${{ matrix.target }}' "${#archives[@]}" >&2
+          mapfile -t unexpected < <(find dist -maxdepth 1 -type f ! \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.spdx.json' \) -print | sort)
+          if [[ ${#archives[@]} -ne 4 || ${#sboms[@]} -ne 1 || ${#unexpected[@]} -ne 0 ]]; then
+            printf 'invalid attestation subject set: archives=%s sboms=%s unexpected=%s\n' \
+              "${#archives[@]}" "${#sboms[@]}" "${#unexpected[@]}" >&2
             exit 1
           fi
-          if [[ ${#sboms[@]} -ne 1 ]]; then
-            printf 'expected exactly one release SPDX SBOM, found %s\n' "${#sboms[@]}" >&2
-            exit 1
-          fi
-          printf 'archive=%s\n' "${archives[0]}" >> "$GITHUB_OUTPUT"
-          printf 'sbom=%s\n' "${sboms[0]}" >> "$GITHUB_OUTPUT"
-      - name: Attest release archive provenance
+      - name: Attest release asset provenance
         uses: actions/attest@v4
         with:
-          subject-path: ${{ steps.attestation-inputs.outputs.archive }}
-          create-storage-record: false
-      - name: Bind lockfile SPDX inventory to release archive
-        uses: actions/attest@v4
-        with:
-          subject-path: ${{ steps.attestation-inputs.outputs.archive }}
-          sbom-path: ${{ steps.attestation-inputs.outputs.sbom }}
+          subject-path: dist/*
           create-storage-record: false
 
   publish:
