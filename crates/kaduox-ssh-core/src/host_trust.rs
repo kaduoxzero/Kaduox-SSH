@@ -3,8 +3,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use hmac::{Hmac, KeyInit, Mac};
 use russh::keys::ssh_key::certificate::CertType;
+use russh::keys::ssh_key::known_hosts::HostPatterns;
 use russh::keys::ssh_key::{Algorithm, Certificate, HashAlg, PublicKey};
+use sha1::Sha1;
 
 const MAX_KNOWN_HOSTS_BYTES: usize = 8 * 1024 * 1024;
 
@@ -55,8 +58,14 @@ impl HostTrustPolicy {
                 ),
             }
 
-            let patterns = fields.next().with_context(|| {
+            let patterns_text = fields.next().with_context(|| {
                 format!("known_hosts marker on line {} is missing host patterns", line_index + 1)
+            })?;
+            let patterns = patterns_text.parse::<HostPatterns>().with_context(|| {
+                format!(
+                    "invalid known_hosts host pattern on marker line {}",
+                    line_index + 1
+                )
             })?;
             let algorithm = fields.next().with_context(|| {
                 format!("known_hosts marker on line {} is missing a key algorithm", line_index + 1)
@@ -65,13 +74,7 @@ impl HostTrustPolicy {
                 format!("known_hosts marker on line {} is missing key data", line_index + 1)
             })?;
 
-            if patterns.starts_with("|1|") {
-                bail!(
-                    "hashed {marker} known_hosts entries are not supported yet; refusing to ignore revocation/CA policy on line {}",
-                    line_index + 1
-                );
-            }
-            if !host_patterns_match(&target, patterns)? {
+            if !host_patterns_match(&target, &patterns)? {
                 continue;
             }
 
@@ -205,22 +208,26 @@ fn known_hosts_target(host: &str, port: u16) -> String {
     }
 }
 
-fn host_patterns_match(target: &str, patterns: &str) -> Result<bool> {
+fn host_patterns_match(target: &str, patterns: &HostPatterns) -> Result<bool> {
+    match patterns {
+        HostPatterns::Patterns(patterns) => clear_host_patterns_match(target, patterns),
+        HostPatterns::HashedName { salt, hash } => hashed_host_matches(target, salt, hash),
+    }
+}
+
+fn clear_host_patterns_match(target: &str, patterns: &[String]) -> Result<bool> {
     let target = target.to_ascii_lowercase();
     let mut positive_match = false;
 
-    for pattern in patterns.split(',') {
+    for pattern in patterns {
         if pattern.is_empty() {
             bail!("known_hosts host pattern list contains an empty entry");
         }
         let (negated, pattern) = match pattern.strip_prefix('!') {
             Some(pattern) if pattern.is_empty() => bail!("known_hosts negated host pattern is empty"),
             Some(pattern) => (true, pattern),
-            None => (false, pattern),
+            None => (false, pattern.as_str()),
         };
-        if pattern.starts_with("|1|") {
-            bail!("hashed host patterns cannot be mixed with clear-text marker patterns");
-        }
         if wildcard_match(pattern.as_bytes(), target.as_bytes()) {
             if negated {
                 return Ok(false);
@@ -230,6 +237,15 @@ fn host_patterns_match(target: &str, patterns: &str) -> Result<bool> {
     }
 
     Ok(positive_match)
+}
+
+fn hashed_host_matches(target: &str, salt: &[u8], expected_hash: &[u8; 20]) -> Result<bool> {
+    let hmac = Hmac::<Sha1>::new_from_slice(salt)
+        .context("failed to initialize OpenSSH hashed-host HMAC")?;
+    Ok(hmac
+        .chain_update(target.as_bytes())
+        .verify_slice(expected_hash)
+        .is_ok())
 }
 
 fn host_principal_matches(host: &str, principal: &str) -> bool {
@@ -287,19 +303,44 @@ mod tests {
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     const OTHER_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
+    const HASHED_EXAMPLE_COM: &str =
+        "|1|AQIDBAUGBwgJCgsMDQ4PEBESExQ=|qvtG0DaqrsqPDhV2Ni+wmYohchA=";
+    const HASHED_NONSTANDARD_PORT: &str =
+        "|1|AQIDBAUGBwgJCgsMDQ4PEBESExQ=|6fK61BT8VzQZpCSeeHMpEDJJ8RM=";
 
     #[test]
     fn clear_text_patterns_support_wildcards_and_negation() {
-        assert!(host_patterns_match("api.prod.example", "*.prod.example").unwrap());
-        assert!(!host_patterns_match("api.prod.example", "*.example,!api.prod.example").unwrap());
-        assert!(host_patterns_match("db1.example", "db?.example").unwrap());
-        assert!(!host_patterns_match("db10.example", "db?.example").unwrap());
+        let patterns: HostPatterns = "*.prod.example".parse().unwrap();
+        assert!(host_patterns_match("api.prod.example", &patterns).unwrap());
+
+        let patterns: HostPatterns = "*.example,!api.prod.example".parse().unwrap();
+        assert!(!host_patterns_match("api.prod.example", &patterns).unwrap());
+
+        let patterns: HostPatterns = "db?.example".parse().unwrap();
+        assert!(host_patterns_match("db1.example", &patterns).unwrap());
+        assert!(!host_patterns_match("db10.example", &patterns).unwrap());
     }
 
     #[test]
     fn matching_is_ascii_case_insensitive() {
-        assert!(host_patterns_match("PROD.EXAMPLE", "prod.example").unwrap());
-        assert!(host_patterns_match("prod.example", "*.EXAMPLE").unwrap());
+        let exact: HostPatterns = "prod.example".parse().unwrap();
+        let wildcard: HostPatterns = "*.EXAMPLE".parse().unwrap();
+        assert!(host_patterns_match("PROD.EXAMPLE", &exact).unwrap());
+        assert!(host_patterns_match("prod.example", &wildcard).unwrap());
+    }
+
+    #[test]
+    fn hashed_marker_pattern_matches_exact_host_only() {
+        let patterns: HostPatterns = HASHED_EXAMPLE_COM.parse().unwrap();
+        assert!(host_patterns_match("example.com", &patterns).unwrap());
+        assert!(!host_patterns_match("other.example", &patterns).unwrap());
+    }
+
+    #[test]
+    fn hashed_marker_pattern_uses_nonstandard_port_bracket_form() {
+        let patterns: HostPatterns = HASHED_NONSTANDARD_PORT.parse().unwrap();
+        assert!(host_patterns_match("[127.0.0.1]:40230", &patterns).unwrap());
+        assert!(!host_patterns_match("127.0.0.1", &patterns).unwrap());
     }
 
     #[test]
@@ -314,7 +355,8 @@ mod tests {
     fn nonstandard_port_uses_openssh_bracket_form() {
         assert_eq!(known_hosts_target("Example.COM", 22), "example.com");
         assert_eq!(known_hosts_target("Example.COM", 2222), "[example.com]:2222");
-        assert!(host_patterns_match("[example.com]:2222", "[example.com]:2222").unwrap());
+        let patterns: HostPatterns = "[example.com]:2222".parse().unwrap();
+        assert!(host_patterns_match("[example.com]:2222", &patterns).unwrap());
     }
 
     #[test]
@@ -332,6 +374,36 @@ mod tests {
     }
 
     #[test]
+    fn hashed_ca_and_revoked_entries_are_classified() {
+        let contents = format!(
+            "@cert-authority {HASHED_EXAMPLE_COM} {KEY}\n@revoked {HASHED_EXAMPLE_COM} {OTHER_KEY}\n"
+        );
+        let policy = HostTrustPolicy::parse("example.com", 22, &contents).unwrap();
+        assert!(policy.has_certificate_authority());
+        assert!(policy.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
+
+        let unrelated = HostTrustPolicy::parse("other.example", 22, &contents).unwrap();
+        assert!(!unrelated.has_certificate_authority());
+        assert!(!unrelated.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
+    }
+
+    #[test]
+    fn hashed_marker_uses_known_hosts_nonstandard_port_target() {
+        let contents = format!("@cert-authority {HASHED_NONSTANDARD_PORT} {KEY}\n");
+        let matching = HostTrustPolicy::parse("127.0.0.1", 40230, &contents).unwrap();
+        assert!(matching.has_certificate_authority());
+
+        let wrong_port = HostTrustPolicy::parse("127.0.0.1", 22, &contents).unwrap();
+        assert!(!wrong_port.has_certificate_authority());
+    }
+
+    #[test]
+    fn malformed_hashed_security_markers_fail_closed() {
+        let contents = format!("@revoked |1|not-base64|also-not-base64 {KEY}\n");
+        assert!(HostTrustPolicy::parse("prod.example", 22, &contents).is_err());
+    }
+
+    #[test]
     fn unrelated_marker_entries_do_not_apply() {
         let contents = format!("@cert-authority other.example {KEY}\n");
         let policy = HostTrustPolicy::parse("prod.example", 22, &contents).unwrap();
@@ -341,12 +413,6 @@ mod tests {
     #[test]
     fn unknown_markers_fail_closed_even_for_other_hosts() {
         let contents = format!("@future-marker other.example {KEY}\n");
-        assert!(HostTrustPolicy::parse("prod.example", 22, &contents).is_err());
-    }
-
-    #[test]
-    fn hashed_security_markers_fail_closed() {
-        let contents = format!("@revoked |1|salt|hash {KEY}\n");
         assert!(HostTrustPolicy::parse("prod.example", 22, &contents).is_err());
     }
 
