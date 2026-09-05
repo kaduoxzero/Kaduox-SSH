@@ -44,6 +44,33 @@ impl SshClient {
         self.upload_recursive(local_path, remote_path, options).await
     }
 
+    /// Privileged recursive upload with an explicit local source-tree link
+    /// policy. Strict preflight runs before exclusive `/tmp` staging is created,
+    /// so a rejected tree does not leave remote staging mutations behind.
+    pub async fn upload_privileged_recursive_with_symlink_policy(
+        &self,
+        local_path: &Path,
+        remote_path: &str,
+        as_user: &str,
+        file_mode: u32,
+        directory_mode: u32,
+        options: TransferOptions,
+        policy: SymlinkPolicy,
+    ) -> Result<TransferSummary> {
+        if policy == SymlinkPolicy::Reject {
+            preflight_local_tree_no_links(local_path, false, &options).await?;
+        }
+        self.upload_privileged_recursive(
+            local_path,
+            remote_path,
+            as_user,
+            file_mode,
+            directory_mode,
+            options,
+        )
+        .await
+    }
+
     /// Recursive download with an explicit remote source-tree symbolic-link
     /// policy. Existing `download_recursive` remains `Skip`.
     pub async fn download_recursive_with_symlink_policy(
