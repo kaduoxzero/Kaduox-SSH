@@ -16,6 +16,7 @@ repository = "https://github.com/kaduoxzero/Kaduox-SSH"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
+hmac = "0.13"
 rpassword = "7.4"
 # Keep Russh's crypto backend and compression, but deliberately do not enable
 # its optional `rsa` feature. Russh 0.63.1's RSA private-key signer pulls
@@ -25,6 +26,7 @@ rpassword = "7.4"
 russh = { version = "0.63.1", default-features = false, features = ["aws-lc-rs", "flate2"] }
 russh-config = "0.58.0"
 russh-sftp = "2.4.0"
+sha1 = "0.11"
 tokio = { version = "1.47", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

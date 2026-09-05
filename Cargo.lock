@@ -1082,9 +1082,11 @@ name = "kaduox-ssh-core"
 version = "0.6.0-rc.1"
 dependencies = [
  "anyhow",
+ "hmac",
  "russh",
  "russh-config",
  "russh-sftp",
+ "sha1",
  "tokio",
 ]
 
