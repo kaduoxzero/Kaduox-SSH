@@ -14,11 +14,6 @@ pub(crate) struct HostTrustPolicy {
     revoked_keys: Vec<PublicKey>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct VerifiedHostCertificate {
-    pub(crate) ca_fingerprint_sha256: String,
-}
-
 impl HostTrustPolicy {
     pub(crate) fn load(
         host: &str,
@@ -105,11 +100,7 @@ impl HostTrustPolicy {
         self.revoked_keys.iter().any(|revoked| revoked == key)
     }
 
-    pub(crate) fn verify_host_certificate(
-        &self,
-        host: &str,
-        certificate: &Certificate,
-    ) -> Result<VerifiedHostCertificate> {
+    pub(crate) fn verify_host_certificate(&self, host: &str, certificate: &Certificate) -> Result<()> {
         if certificate.cert_type() != CertType::Host {
             bail!("server presented a user certificate where a host certificate is required");
         }
@@ -148,9 +139,7 @@ impl HostTrustPolicy {
             bail!("server host certificate does not authorize hostname {host:?}");
         }
 
-        Ok(VerifiedHostCertificate {
-            ca_fingerprint_sha256: signing_ca.fingerprint(HashAlg::Sha256).to_string(),
-        })
+        Ok(())
     }
 }
 
