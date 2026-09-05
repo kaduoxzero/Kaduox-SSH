@@ -74,7 +74,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Test release packaging and SBOM policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_sbom_tool
+      - name: Test release packaging, SBOM, and action-pin policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_sbom_tool scripts.release.test_action_pins
       - name: Validate repository release metadata
         run: python scripts/release/release_tool.py check
