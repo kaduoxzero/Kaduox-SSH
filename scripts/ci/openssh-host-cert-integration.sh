@@ -45,6 +45,12 @@ wait_for_port() {
   return 1
 }
 
+hash_known_hosts_file() {
+  local path="$1"
+  ssh-keygen -q -H -f "$path"
+  rm -f "$path.old"
+}
+
 if [[ ! -x "$KSSH" ]]; then
   fail "kssh binary not found at $KSSH"
 fi
@@ -104,6 +110,17 @@ printf '@cert-authority [localhost]:%s %s\n' "$PORT" "$CA_PUBLIC" >"$WORK/known-
   printf '@revoked [127.0.0.1]:%s %s\n' "$PORT" "$CA_PUBLIC"
 } >"$WORK/known-revoked-ca"
 printf '@revoked [127.0.0.1]:%s %s\n' "$PORT" "$HOST_PUBLIC" >"$WORK/known-revoked-host"
+
+cp "$WORK/known-good" "$WORK/known-hashed-good"
+cp "$WORK/known-revoked-ca" "$WORK/known-hashed-revoked-ca"
+cp "$WORK/known-revoked-host" "$WORK/known-hashed-revoked-host"
+hash_known_hosts_file "$WORK/known-hashed-good"
+hash_known_hosts_file "$WORK/known-hashed-revoked-ca"
+hash_known_hosts_file "$WORK/known-hashed-revoked-host"
+
+grep -q '^@cert-authority |1|' "$WORK/known-hashed-good" || fail 'ssh-keygen -H did not hash @cert-authority fixture'
+grep -q '^@revoked |1|' "$WORK/known-hashed-revoked-ca" || fail 'ssh-keygen -H did not hash @revoked CA fixture'
+grep -q '^@revoked |1|' "$WORK/known-hashed-revoked-host" || fail 'ssh-keygen -H did not hash @revoked host fixture'
 chmod 600 "$WORK"/known-*
 
 cat >"$LOCAL_HOME/.ssh/config" <<EOF
@@ -114,6 +131,15 @@ Host cert-good
   IdentityFile $CLIENT_KEY
   IdentitiesOnly yes
   UserKnownHostsFile $WORK/known-good
+  StrictHostKeyChecking yes
+
+Host cert-hashed-good
+  HostName 127.0.0.1
+  Port $PORT
+  User $TEST_USER
+  IdentityFile $CLIENT_KEY
+  IdentitiesOnly yes
+  UserKnownHostsFile $WORK/known-hashed-good
   StrictHostKeyChecking yes
 
 Host cert-bad-principal
@@ -134,6 +160,15 @@ Host cert-revoked-ca
   UserKnownHostsFile $WORK/known-revoked-ca
   StrictHostKeyChecking yes
 
+Host cert-hashed-revoked-ca
+  HostName 127.0.0.1
+  Port $PORT
+  User $TEST_USER
+  IdentityFile $CLIENT_KEY
+  IdentitiesOnly yes
+  UserKnownHostsFile $WORK/known-hashed-revoked-ca
+  StrictHostKeyChecking yes
+
 Host plain-revoked
   HostName 127.0.0.1
   Port $PORT
@@ -141,6 +176,15 @@ Host plain-revoked
   IdentityFile $CLIENT_KEY
   IdentitiesOnly yes
   UserKnownHostsFile $WORK/known-revoked-host
+  StrictHostKeyChecking no
+
+Host plain-hashed-revoked
+  HostName 127.0.0.1
+  Port $PORT
+  User $TEST_USER
+  IdentityFile $CLIENT_KEY
+  IdentitiesOnly yes
+  UserKnownHostsFile $WORK/known-hashed-revoked-host
   StrictHostKeyChecking no
 EOF
 chmod 600 "$LOCAL_HOME/.ssh/config"
@@ -154,6 +198,13 @@ probe_output="$(run_kssh cert-good probe)" || fail 'trusted host certificate was
 grep -q '^host-key-verification: known-hosts$' <<<"$probe_output" || {
   echo "$probe_output" >&2
   fail 'trusted host certificate was not reported as known trust'
+}
+
+echo '[host-cert] hashed trusted CA certificate succeeds'
+hashed_probe_output="$(run_kssh cert-hashed-good probe)" || fail 'hashed trusted host certificate was rejected'
+grep -q '^host-key-verification: known-hosts$' <<<"$hashed_probe_output" || {
+  echo "$hashed_probe_output" >&2
+  fail 'hashed trusted host certificate was not reported as known trust'
 }
 
 echo '[host-cert] principal mismatch fails closed'
@@ -174,6 +225,15 @@ grep -qi 'signing CA is marked @revoked' "$WORK/revoked-ca.log" || {
   fail 'revoked CA was not rejected by certificate trust policy'
 }
 
+echo '[host-cert] hashed revoked signing CA fails closed'
+if run_kssh cert-hashed-revoked-ca probe >"$WORK/hashed-revoked-ca.log" 2>&1; then
+  fail 'certificate signed by a hashed @revoked CA unexpectedly succeeded'
+fi
+grep -qi 'signing CA is marked @revoked' "$WORK/hashed-revoked-ca.log" || {
+  cat "$WORK/hashed-revoked-ca.log" >&2
+  fail 'hashed revoked CA was not rejected by certificate trust policy'
+}
+
 echo '[host-cert] revoked plain host key overrides insecure policy'
 if run_kssh plain-revoked --host-key insecure probe >"$WORK/revoked-host.log" 2>&1; then
   fail '@revoked plain host key unexpectedly succeeded under insecure policy'
@@ -181,6 +241,15 @@ fi
 grep -qi 'marked @revoked' "$WORK/revoked-host.log" || {
   cat "$WORK/revoked-host.log" >&2
   fail 'plain @revoked host key was not rejected before insecure acceptance'
+}
+
+echo '[host-cert] hashed revoked plain host key overrides insecure policy'
+if run_kssh plain-hashed-revoked --host-key insecure probe >"$WORK/hashed-revoked-host.log" 2>&1; then
+  fail 'hashed @revoked plain host key unexpectedly succeeded under insecure policy'
+fi
+grep -qi 'marked @revoked' "$WORK/hashed-revoked-host.log" || {
+  cat "$WORK/hashed-revoked-host.log" >&2
+  fail 'hashed plain @revoked host key was not rejected before insecure acceptance'
 }
 
 echo '[host-cert] all host certificate trust checks passed'
