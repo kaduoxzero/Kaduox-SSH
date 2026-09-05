@@ -200,9 +200,8 @@ fn default_known_hosts_path() -> Result<PathBuf> {
 }
 
 fn known_hosts_target(host: &str, port: u16) -> String {
-    let host = host.to_ascii_lowercase();
     if port == 22 {
-        host
+        host.to_owned()
     } else {
         format!("[{host}]:{port}")
     }
@@ -333,6 +332,7 @@ mod tests {
     fn hashed_marker_pattern_matches_exact_host_only() {
         let patterns: HostPatterns = HASHED_EXAMPLE_COM.parse().unwrap();
         assert!(host_patterns_match("example.com", &patterns).unwrap());
+        assert!(!host_patterns_match("EXAMPLE.COM", &patterns).unwrap());
         assert!(!host_patterns_match("other.example", &patterns).unwrap());
     }
 
@@ -353,10 +353,10 @@ mod tests {
 
     #[test]
     fn nonstandard_port_uses_openssh_bracket_form() {
-        assert_eq!(known_hosts_target("Example.COM", 22), "example.com");
-        assert_eq!(known_hosts_target("Example.COM", 2222), "[example.com]:2222");
+        assert_eq!(known_hosts_target("Example.COM", 22), "Example.COM");
+        assert_eq!(known_hosts_target("Example.COM", 2222), "[Example.COM]:2222");
         let patterns: HostPatterns = "[example.com]:2222".parse().unwrap();
-        assert!(host_patterns_match("[example.com]:2222", &patterns).unwrap());
+        assert!(host_patterns_match("[Example.COM]:2222", &patterns).unwrap());
     }
 
     #[test]
