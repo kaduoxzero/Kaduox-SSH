@@ -142,13 +142,13 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            archive_pattern: dist/*.tar.gz
+            archive_pattern: '*.tar.gz'
           - target: x86_64-apple-darwin
-            archive_pattern: dist/*.tar.gz
+            archive_pattern: '*.tar.gz'
           - target: aarch64-apple-darwin
-            archive_pattern: dist/*.tar.gz
+            archive_pattern: '*.tar.gz'
           - target: x86_64-pc-windows-msvc
-            archive_pattern: dist/*.zip
+            archive_pattern: '*.zip'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -158,16 +158,33 @@ jobs:
         with:
           name: release-sbom
           path: dist
+      - name: Resolve exact attestation inputs
+        id: attestation-inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f -name '${{ matrix.archive_pattern }}' -print | sort)
+          mapfile -t sboms < <(find dist -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
+          if [[ ${#archives[@]} -ne 1 ]]; then
+            printf 'expected exactly one archive for %s, found %s\n' '${{ matrix.target }}' "${#archives[@]}" >&2
+            exit 1
+          fi
+          if [[ ${#sboms[@]} -ne 1 ]]; then
+            printf 'expected exactly one release SPDX SBOM, found %s\n' "${#sboms[@]}" >&2
+            exit 1
+          fi
+          printf 'archive=%s\n' "${archives[0]}" >> "$GITHUB_OUTPUT"
+          printf 'sbom=%s\n' "${sboms[0]}" >> "$GITHUB_OUTPUT"
       - name: Attest release archive provenance
         uses: actions/attest@v4
         with:
-          subject-path: ${{ matrix.archive_pattern }}
+          subject-path: ${{ steps.attestation-inputs.outputs.archive }}
           create-storage-record: false
       - name: Bind lockfile SPDX inventory to release archive
         uses: actions/attest@v4
         with:
-          subject-path: ${{ matrix.archive_pattern }}
-          sbom-path: dist/*.spdx.json
+          subject-path: ${{ steps.attestation-inputs.outputs.archive }}
+          sbom-path: ${{ steps.attestation-inputs.outputs.sbom }}
           create-storage-record: false
 
   publish:
