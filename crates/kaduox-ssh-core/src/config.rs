@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
+use crate::openssh_config_trust::read_user_config_file;
 use crate::openssh_include::expand_user_config;
+use crate::openssh_match::{has_directive, rewrite_supported_match_config};
 
 const MAX_JUMP_HOPS: usize = 8;
 const SHELL_ACTIVE_TOKEN_CHARS: &str = "'`\"$\\;&<>|(){}";
@@ -392,8 +394,19 @@ fn parse_home_config(alias: &str) -> Result<russh_config::Config> {
         }
     }
 
-    let contents = expand_user_config(&path, &home)
-        .with_context(|| format!("failed to expand OpenSSH config {}", path.display()))?;
+    let root_contents = read_user_config_file(&path, &home)
+        .with_context(|| format!("failed to read trusted OpenSSH config {}", path.display()))?;
+    let contents = if has_directive(&root_contents, "match") {
+        rewrite_supported_match_config(&root_contents, alias).with_context(|| {
+            format!(
+                "failed to resolve supported OpenSSH Match configuration {} for {alias}",
+                path.display()
+            )
+        })?
+    } else {
+        expand_user_config(&path, &home)
+            .with_context(|| format!("failed to expand OpenSSH config {}", path.display()))?
+    };
     parse_openssh_contents(&contents, alias)
         .with_context(|| format!("failed to parse OpenSSH config {} for {alias}", path.display()))
 }
