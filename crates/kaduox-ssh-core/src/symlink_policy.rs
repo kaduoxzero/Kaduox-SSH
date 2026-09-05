@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use russh_sftp::client::{SftpSession, error::Error as SftpError};
@@ -56,7 +55,7 @@ impl SshClient {
     ) -> Result<TransferSummary> {
         if policy == SymlinkPolicy::Reject {
             let sftp = self.open_sftp_for_transfer(&options).await?;
-            let preflight = preflight_remote_tree_no_links(&sftp, remote_path, true, &options).await;
+            let preflight = preflight_remote_tree_no_links(&sftp, remote_path, &options).await;
             let close = sftp.close().await;
             preflight?;
             close?;
@@ -76,8 +75,7 @@ impl SshClient {
         if policy == SymlinkPolicy::Reject {
             preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
             let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-            let preflight =
-                preflight_remote_tree_no_links(&sftp, remote_root, false, &options.transfer).await;
+            let preflight = preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
             let close = sftp.close().await;
             preflight?;
             close?;
@@ -98,8 +96,7 @@ impl SshClient {
         if policy == SymlinkPolicy::Reject {
             preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
             let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-            let preflight =
-                preflight_remote_tree_no_links(&sftp, remote_root, false, &options.transfer).await;
+            let preflight = preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
             let close = sftp.close().await;
             preflight?;
             close?;
@@ -190,7 +187,6 @@ async fn preflight_local_tree_no_links(
 async fn preflight_remote_tree_no_links(
     sftp: &SftpSession,
     root: &str,
-    allow_file_root: bool,
     options: &TransferOptions,
 ) -> Result<()> {
     check_cancelled(options)?;
@@ -199,12 +195,6 @@ async fn preflight_remote_tree_no_links(
     };
     if metadata.is_symlink() {
         bail!("symlink policy rejects remote symbolic-link source root: {root}");
-    }
-    if metadata.is_regular() {
-        if allow_file_root {
-            return Ok(());
-        }
-        return Ok(());
     }
     if !metadata.is_dir() {
         return Ok(());
