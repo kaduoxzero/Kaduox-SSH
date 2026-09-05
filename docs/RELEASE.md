@@ -116,26 +116,29 @@ KADUOX_ENABLE_GITHUB_ATTESTATIONS=true
 
 When enabled, a dedicated attestation job receives only the permissions required
 for GitHub OIDC/Sigstore attestation (`contents: read`, `id-token: write`, and
-`attestations: write`). Normal build jobs keep `contents: read` only.
+`attestations: write`). Normal build and SBOM-generation jobs keep
+`contents: read` only.
 
-For each of the four release archives, the attestation job first verifies that
-it has exactly one archive and exactly one release-wide SPDX file, then creates:
+The attestation job downloads the complete release asset set, verifies that it
+contains exactly four archives and exactly one SPDX JSON file with no unexpected
+files, and then creates a build-provenance attestation covering all five release
+assets. If attestation is enabled and this step fails, publication is blocked.
+If the variable is not enabled, the attestation job is skipped and the normal
+archive/SBOM release path remains available.
 
-- a build-provenance attestation for the archive;
-- an SBOM attestation binding the release-wide Cargo.lock SPDX inventory to that
-  archive.
-
-If attestation is enabled and any target attestation fails, publication is
-blocked. If the variable is not enabled, the attestation job is skipped and the
-normal archive/SBOM release path remains available.
+v0.20 intentionally does **not** create a GitHub SBOM predicate that binds the
+release-wide Cargo.lock inventory to an individual platform archive. That would
+claim a target-level correspondence the lockfile-only inventory cannot prove.
+A future target-specific SBOM attestation must be backed by a validated
+per-target build-material graph first.
 
 GitHub currently permits artifact attestations for private/internal repositories
 only on GitHub Enterprise Cloud. Kaduox-SSH therefore does not enable the feature
 unconditionally for this private repository or pretend that repository settings
 can substitute for the required GitHub account capability.
 
-Consumers of an attested release can verify an archive with the GitHub CLI, for
-example:
+Consumers of an attested release can verify an archive or the SPDX asset with the
+GitHub CLI, for example:
 
 ```bash
 gh attestation verify ./kaduox-ssh-<version>-x86_64-unknown-linux-gnu.tar.gz \
@@ -155,8 +158,8 @@ Before announcing a release:
 3. inspect each archive's `manifest.json` and ensure tag/version/target are correct;
 4. inspect the SPDX document and confirm its tag/version namespace and local
    Kaduox package records;
-5. when GitHub attestations are enabled, verify each archive with
-   `gh attestation verify`;
+5. when GitHub attestations are enabled, verify each archive and the SPDX asset
+   with `gh attestation verify`;
 6. launch `--version` for each executable on representative target machines;
 7. run at least one strict host-key SSH connection and one file transfer using
    the published binaries rather than a developer build.
@@ -169,8 +172,9 @@ by themselves establish publisher identity if the release account is
 compromised.
 
 v0.20 provides a deterministic release-wide SPDX dependency inventory and an
-optional GitHub provenance/SBOM-attestation path. These improve supply-chain
-traceability but do not replace native platform signing.
+optional GitHub provenance-attestation path. These improve supply-chain
+traceability but do not replace native platform signing or a future exact
+per-target SBOM predicate.
 
 Before Kaduox-SSH declares the V1 release channel complete, the remaining
 publisher-authentication work is primarily:
@@ -178,7 +182,9 @@ publisher-authentication work is primarily:
 - Windows Authenticode signing for `.exe` artifacts;
 - macOS Developer ID signing and notarization for distributed macOS binaries;
 - final operator policy for whether GitHub artifact attestations are enabled on
-  the production release repository/account.
+  the production release repository/account;
+- target-specific build-material SBOM attestation only if the release channel
+  requires that stronger claim.
 
 Those controls require release credentials or external signing services and
 must not be emulated with repository-stored private keys.
