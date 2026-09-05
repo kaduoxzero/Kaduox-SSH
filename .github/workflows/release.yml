@@ -22,8 +22,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Test release packaging policy
-        run: python -m unittest scripts.release.test_release_tool
+      - name: Test release packaging and SBOM policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_sbom_tool
       - name: Verify release metadata and tag
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Require release commit to be reachable from main
@@ -34,6 +34,10 @@ jobs:
 
   build:
     needs: preflight
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +96,18 @@ jobs:
           --format "${{ matrix.archive }}"
           --exe-suffix "${{ matrix.exe_suffix }}"
           --output-dir dist
+      - name: Generate deterministic SPDX SBOM
+        shell: bash
+        run: >-
+          python scripts/release/sbom_tool.py
+          --tag "$GITHUB_REF_NAME"
+          --target "${{ matrix.target }}"
+          --output-dir dist
+      - name: Attest release archive and SBOM
+        if: ${{ vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -112,18 +128,24 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - name: Verify release archive set
+      - name: Verify release archive and SBOM set
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print | sort)
+          mapfile -t sboms < <(find dist -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
           if [[ ${#archives[@]} -ne 4 ]]; then
             printf 'expected 4 release archives, found %s\n' "${#archives[@]}" >&2
             printf '%s\n' "${archives[@]}" >&2
             exit 1
           fi
-          (cd dist && sha256sum *.tar.gz *.zip 2>/dev/null | sort -k2 > SHA256SUMS)
-          test "$(wc -l < dist/SHA256SUMS)" -eq 4
+          if [[ ${#sboms[@]} -ne 4 ]]; then
+            printf 'expected 4 SPDX SBOMs, found %s\n' "${#sboms[@]}" >&2
+            printf '%s\n' "${sboms[@]}" >&2
+            exit 1
+          fi
+          (cd dist && sha256sum *.tar.gz *.zip *.spdx.json 2>/dev/null | sort -k2 > SHA256SUMS)
+          test "$(wc -l < dist/SHA256SUMS)" -eq 8
           cat dist/SHA256SUMS
       - name: Create GitHub Release
         shell: bash
