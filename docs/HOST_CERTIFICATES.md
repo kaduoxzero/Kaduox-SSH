@@ -4,18 +4,18 @@ Kaduox-SSH v0.16 adds fail-closed OpenSSH host-certificate verification on top o
 
 ## When certificate algorithms are advertised
 
-Host-certificate algorithms are disabled by default. Before a handshake, Kaduox-SSH reads the effective `UserKnownHostsFile` for the specific target. Certificate variants are advertised only when that target has at least one matching clear-text `@cert-authority` entry and host-key verification is not `insecure`.
+Host-certificate algorithms are disabled by default. Before a handshake, Kaduox-SSH reads the effective `UserKnownHostsFile` for the specific target. Certificate variants are advertised only when that target has at least one matching clear-text **Ed25519 or ECDSA** `@cert-authority` entry and host-key verification is not `insecure`.
 
 The decision is made independently for the final target and for every ProxyJump hop. A CA trusted for one host therefore does not enable certificate negotiation for another hop.
 
-Kaduox-SSH preserves its existing hardened host-key algorithm policy. RSA host keys are currently excluded, so RSA host-certificate variants are also not advertised. A CA key's algorithm does not need to match the certified host key's algorithm.
+Kaduox-SSH preserves its existing hardened host-key algorithm policy. RSA host keys are currently excluded, so RSA host-certificate variants are also not advertised. A CA key's algorithm does not need to match the certified host key's algorithm, but v0.16 deliberately limits trusted certificate-signature verification to Ed25519/ECDSA CA keys while Russh's optional RSA feature remains disabled.
 
 ## Certificate verification
 
 A presented certificate is accepted only when all of the following hold:
 
 - it is an OpenSSH **host** certificate, not a user certificate;
-- its signing key matches a `@cert-authority` entry whose host pattern applies to the current target and port;
+- its signing key is an enabled Ed25519/ECDSA verifier algorithm and matches a `@cert-authority` entry whose host pattern applies to the current target and port;
 - the certificate signature verifies;
 - the current time is inside the certificate validity interval;
 - neither the certified host public key nor its signing CA is matched by an applicable `@revoked` entry;
@@ -52,7 +52,8 @@ The marker-policy reader is bounded to 8 MiB.
 The following are not claimed as compatible in v0.16:
 
 - hashed `@cert-authority` or `@revoked` host patterns (`|1|...`): these cause an explicit error rather than silently dropping CA or revocation policy;
-- RSA host certificates: RSA host-key negotiation remains disabled by the existing security policy;
+- RSA host certificates and RSA CA certificate-signature verification: the existing security policy keeps Russh's optional RSA feature disabled;
+- certificate-form keys inside `@revoked` entries: v0.16's marker layer accepts public-key entries and fails closed on unsupported marker key syntax;
 - certificate critical options: no critical option is currently interpreted, so any critical option rejects the certificate;
 - full OpenSSH `Match` evaluation and the remaining user-config expansion forms documented in `OPENSSH_CONFIG.md`;
 - Windows ACL-equivalent trust validation for user configuration files.
