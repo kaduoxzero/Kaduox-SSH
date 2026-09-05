@@ -100,7 +100,11 @@ impl HostTrustPolicy {
         self.revoked_keys.iter().any(|revoked| revoked == key)
     }
 
-    pub(crate) fn verify_host_certificate(&self, host: &str, certificate: &Certificate) -> Result<()> {
+    pub(crate) fn verify_host_certificate(
+        &self,
+        host: &str,
+        certificate: &Certificate,
+    ) -> Result<()> {
         if certificate.cert_type() != CertType::Host {
             bail!("server presented a user certificate where a host certificate is required");
         }
