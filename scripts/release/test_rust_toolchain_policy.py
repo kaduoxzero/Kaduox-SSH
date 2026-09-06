@@ -11,12 +11,14 @@ PINNED_RUST = "1.98.1"
 MSRV_RUST = "1.85.0"
 WORKFLOW_FILES = {
     "release": release_tool.ROOT / ".github" / "workflows" / "release.yml",
+    "qualification": release_tool.ROOT / ".github" / "workflows" / "release-qualification.yml",
     "ci": release_tool.ROOT / ".github" / "workflows" / "ci.yml",
     "quality": release_tool.ROOT / ".github" / "workflows" / "quality.yml",
     "openssh": release_tool.ROOT / ".github" / "workflows" / "integration-openssh.yml",
 }
 EXPECTED_TOOLCHAINS = {
     "release": Counter({PINNED_RUST: 1}),
+    "qualification": Counter(),
     "ci": Counter({PINNED_RUST: 1, MSRV_RUST: 1}),
     "quality": Counter({PINNED_RUST: 2}),
     "openssh": Counter({PINNED_RUST: 1}),
@@ -88,6 +90,12 @@ class RustToolchainPolicyTests(unittest.TestCase):
         )
         self.assertIn("cargo +1.98.1 audit --version | grep -F '0.22.0'", text)
         self.assertIn("cargo +1.98.1 audit --file Cargo.lock", text)
+
+    def test_qualification_does_not_rebuild_published_binaries(self) -> None:
+        text = WORKFLOW_FILES["qualification"].read_text(encoding="utf-8")
+        self.assertNotIn("cargo build", text)
+        self.assertNotIn("dtolnay/rust-toolchain@", text)
+        self.assertIn("qualification_tool.py qualify", text)
 
     def test_msrv_remains_distinct_from_release_toolchain(self) -> None:
         self.assertNotEqual(PINNED_RUST, MSRV_RUST)
