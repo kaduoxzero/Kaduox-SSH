@@ -355,7 +355,9 @@ async fn main() -> Result<()> {
             .record_success(&cli.host, stored_auth_method(final_auth_kind))
             .and_then(|_| host_store.save())
         {
-            eprintln!("warning: connected successfully but failed to persist host statistics: {error:#}");
+            eprintln!(
+                "warning: connected successfully but failed to persist host statistics: {error:#}"
+            );
         }
     }
 
@@ -395,7 +397,10 @@ fn effective_username<'a>(
 fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Result<()> {
     let snapshot = config.snapshot();
     println!("alias: {}", snapshot.alias);
-    println!("endpoint: {}", format_endpoint(&snapshot.host, snapshot.port));
+    println!(
+        "endpoint: {}",
+        format_endpoint(&snapshot.host, snapshot.port)
+    );
     println!("user: {}", snapshot.username);
     println!(
         "host-key-policy: {}",
@@ -404,7 +409,11 @@ fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Re
     println!("authentication: {}", authentication_mode(cli));
     println!(
         "agent-forwarding: {}",
-        if snapshot.agent_forwarding { "enabled" } else { "disabled" }
+        if snapshot.agent_forwarding {
+            "enabled"
+        } else {
+            "disabled"
+        }
     );
 
     match &snapshot.route {
@@ -444,7 +453,10 @@ fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Re
             }
         }
     } else {
-        println!("identity-files: {} configured", snapshot.identity_files.len());
+        println!(
+            "identity-files: {} configured",
+            snapshot.identity_files.len()
+        );
     }
 
     if let Some(interval) = snapshot.keepalive_interval {
@@ -458,7 +470,9 @@ fn inspect_connection(config: &ConnectionConfig, cli: &Cli, verbose: bool) -> Re
         println!("inactivity-timeout: disabled");
     }
 
-    if cli.local_forward.is_empty() && cli.remote_forward.is_empty() && cli.dynamic_forward.is_empty()
+    if cli.local_forward.is_empty()
+        && cli.remote_forward.is_empty()
+        && cli.dynamic_forward.is_empty()
     {
         println!("forwards: none");
         return Ok(());
@@ -839,12 +853,7 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
             };
             let symlink_policy: SymlinkPolicy = symlinks.into();
             let plan = ssh
-                .plan_sync_to_remote_with_symlink_policy(
-                    &local,
-                    &remote,
-                    &options,
-                    symlink_policy,
-                )
+                .plan_sync_to_remote_with_symlink_policy(&local, &remote, &options, symlink_policy)
                 .await?;
             print_sync_plan(&plan, dry_run);
             if !dry_run && !plan.is_empty() {
@@ -1255,7 +1264,10 @@ mod tests {
     #[test]
     fn parses_connection_inspect_subcommand() {
         let cli = Cli::try_parse_from(["kssh", "example.com", "inspect", "--verbose"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Inspect { verbose: true })));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Inspect { verbose: true })
+        ));
     }
 
     #[test]
@@ -1362,7 +1374,10 @@ mod tests {
     #[test]
     fn formats_endpoints_and_probe_verification() {
         assert_eq!(format_endpoint("2001:db8::1", 22), "[2001:db8::1]:22");
-        assert_eq!(format_endpoint("server.example", 2222), "server.example:2222");
+        assert_eq!(
+            format_endpoint("server.example", 2222),
+            "server.example:2222"
+        );
         assert_eq!(
             host_key_verification_name(HostKeyVerification::Learned),
             "accept-new-learned"

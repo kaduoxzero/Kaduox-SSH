@@ -8,9 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::execute;
 use crossterm::queue;
 use crossterm::style::{Attribute, Print, SetAttribute};
-use crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
@@ -75,7 +73,8 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
 
     loop {
         terminal.render(&current, &entries, selected, kind, &status)?;
-        let Event::Key(key) = event::read().context("failed to read local-picker terminal input")?
+        let Event::Key(key) =
+            event::read().context("failed to read local-picker terminal input")?
         else {
             continue;
         };
@@ -148,8 +147,8 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
                         status = "directory picker does not select regular files".to_owned();
                     }
                     Ok(LocalEntryKind::LinkLike) => {
-                        status = "link/reparse-point paths are never followed by the picker"
-                            .to_owned();
+                        status =
+                            "link/reparse-point paths are never followed by the picker".to_owned();
                     }
                     Ok(LocalEntryKind::Other) => {
                         status = "unsupported local file type cannot be selected".to_owned();
@@ -163,7 +162,9 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
                     Ok(other) => {
                         status = format!("current local path changed type to {other:?}; refusing")
                     }
-                    Err(error) => status = format!("cannot revalidate current directory: {error:#}"),
+                    Err(error) => {
+                        status = format!("cannot revalidate current directory: {error:#}")
+                    }
                 }
             }
             KeyCode::Enter | KeyCode::Right => {
@@ -198,8 +199,9 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
                         status = "directory picker does not select regular files".to_owned();
                     }
                     LocalEntryKind::LinkLike => {
-                        status = "link/reparse-point entries are display-only and are never followed"
-                            .to_owned();
+                        status =
+                            "link/reparse-point entries are display-only and are never followed"
+                                .to_owned();
                     }
                     LocalEntryKind::Other => {
                         status = "unsupported local file type cannot be selected".to_owned();
@@ -267,9 +269,15 @@ fn load_entries(path: &Path) -> Result<Vec<LocalEntry>> {
     match classify_path(path)? {
         LocalEntryKind::Directory => {}
         LocalEntryKind::LinkLike => {
-            bail!("refusing to browse link/reparse-point directory {}", path.display())
+            bail!(
+                "refusing to browse link/reparse-point directory {}",
+                path.display()
+            )
         }
-        other => bail!("local path {} is not a directory ({other:?})", path.display()),
+        other => bail!(
+            "local path {} is not a directory ({other:?})",
+            path.display()
+        ),
     }
 
     let read_dir = fs::read_dir(path)
@@ -290,9 +298,8 @@ fn load_entries(path: &Path) -> Result<Vec<LocalEntry>> {
         }
 
         let entry_path = entry.path();
-        let kind = classify_path(&entry_path).with_context(|| {
-            format!("failed to inspect local entry {}", entry_path.display())
-        })?;
+        let kind = classify_path(&entry_path)
+            .with_context(|| format!("failed to inspect local entry {}", entry_path.display()))?;
         entries.push(LocalEntry {
             path: entry_path,
             kind,

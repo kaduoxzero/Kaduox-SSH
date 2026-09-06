@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-cli"
-version = "0.6.0-rc.1"
+version = "0.33.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "0.6.0-rc.1"
+version = "0.33.0-rc.1"
 dependencies = [
  "anyhow",
  "hmac",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-daemon"
-version = "0.6.0-rc.1"
+version = "0.33.0-rc.1"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1105,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "0.6.0-rc.1"
+version = "0.33.0-rc.1"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",

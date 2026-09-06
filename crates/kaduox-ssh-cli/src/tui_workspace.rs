@@ -7,9 +7,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::queue;
 use crossterm::style::{Attribute, Print, SetAttribute};
-use crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use kaduox_ssh_core::{
     ConnectionManager, ConnectionManagerSnapshot, HostInventory, HostKeyVerification,
     TransferTaskRegistry, discover_inventory, discover_openssh_hosts, load_inventory,
@@ -157,9 +155,7 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                                     sessions.extend(opened);
                                     selected = first_new;
                                 } else if let Some(index) = targets.iter().find_map(|target| {
-                                    sessions
-                                        .iter()
-                                        .position(|session| &session.label == target)
+                                    sessions.iter().position(|session| &session.label == target)
                                 }) {
                                     selected = index;
                                 }
@@ -212,19 +208,16 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                 match broadcast_result {
                     Ok((0, 0)) => status = "broadcast cancelled".to_owned(),
                     Ok((total, failed)) => {
-                        status =
-                            format!("broadcast complete: {total} sessions, {failed} failed");
-                        let _ = prompt_line(
-                            "press Enter to return to session dashboard: ".to_owned(),
-                        )
-                        .await;
+                        status = format!("broadcast complete: {total} sessions, {failed} failed");
+                        let _ =
+                            prompt_line("press Enter to return to session dashboard: ".to_owned())
+                                .await;
                     }
                     Err(error) => {
                         status = format!("broadcast failed: {error:#}");
-                        let _ = prompt_line(
-                            "press Enter to return to session dashboard: ".to_owned(),
-                        )
-                        .await;
+                        let _ =
+                            prompt_line("press Enter to return to session dashboard: ".to_owned())
+                                .await;
                     }
                 }
                 terminal.resume()?;
@@ -255,9 +248,7 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
                 let snapshot = manager.snapshot().await;
                 status = format!(
                     "pool: {} connected, {} leased, {} capacity available",
-                    snapshot.total_connections,
-                    snapshot.active_leases,
-                    snapshot.available_capacity
+                    snapshot.total_connections, snapshot.active_leases, snapshot.available_capacity
                 );
             }
             _ => {}

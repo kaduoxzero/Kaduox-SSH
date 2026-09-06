@@ -6,9 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::execute;
 use crossterm::queue;
 use crossterm::style::{Attribute, Print, SetAttribute};
-use crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use kaduox_ssh_core::HostInventory;
 
 pub(crate) fn select_group(inventory: &HostInventory) -> Result<Option<String>> {
@@ -20,7 +18,8 @@ pub(crate) fn select_group(inventory: &HostInventory) -> Result<Option<String>> 
     let mut selected = 0_usize;
     loop {
         terminal.render(inventory, selected)?;
-        let Event::Key(key) = event::read().context("failed to read inventory group picker input")?
+        let Event::Key(key) =
+            event::read().context("failed to read inventory group picker input")?
         else {
             continue;
         };
@@ -47,7 +46,10 @@ pub(crate) fn select_group(inventory: &HostInventory) -> Result<Option<String>> 
                     .min(inventory.groups().len().saturating_sub(1));
             }
             KeyCode::Enter => {
-                return Ok(inventory.groups().get(selected).map(|group| group.name.clone()));
+                return Ok(inventory
+                    .groups()
+                    .get(selected)
+                    .map(|group| group.name.clone()));
             }
             _ => {}
         }

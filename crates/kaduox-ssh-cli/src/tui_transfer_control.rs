@@ -25,7 +25,8 @@ impl TransferCancelListener {
                 {
                     continue;
                 }
-                let input = event::read().context("failed to read terminal input during transfer")?;
+                let input =
+                    event::read().context("failed to read terminal input during transfer")?;
                 let Event::Key(key) = input else {
                     continue;
                 };

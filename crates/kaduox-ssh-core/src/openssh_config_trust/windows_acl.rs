@@ -363,7 +363,10 @@ fn sid_is_trusted(sid: Sid, user_sid: Sid, trusted_installer_sid: Option<Sid>) -
 fn current_user_sid() -> Result<SidStorage> {
     let mut raw_token: Handle = null_mut();
     if unsafe { open_process_token(get_current_process(), TOKEN_QUERY, &mut raw_token) } == 0 {
-        bail!("OpenProcessToken failed: {}", std::io::Error::last_os_error());
+        bail!(
+            "OpenProcessToken failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
     let token = TokenHandle(raw_token);
 
@@ -445,7 +448,9 @@ fn lookup_account_sid_optional(account: &str) -> Option<SidStorage> {
         return None;
     }
 
-    let error = std::io::Error::last_os_error().raw_os_error().unwrap_or_default() as u32;
+    let error = std::io::Error::last_os_error()
+        .raw_os_error()
+        .unwrap_or_default() as u32;
     if error == ERROR_NONE_MAPPED {
         return None;
     }

@@ -13,9 +13,7 @@ pub(crate) enum TaskPanelAction {
     Cleared(usize),
 }
 
-pub(crate) async fn choose_action(
-    registry: TransferTaskRegistry,
-) -> Result<TaskPanelAction> {
+pub(crate) async fn choose_action(registry: TransferTaskRegistry) -> Result<TaskPanelAction> {
     let tasks = registry.recent(DISPLAY_TASK_LIMIT)?;
     tokio::task::spawn_blocking(move || choose_action_blocking(tasks, registry))
         .await
@@ -62,10 +60,16 @@ fn choose_action_blocking(
         return Ok(TaskPanelAction::Return);
     };
     let Some(task) = tasks.iter().find(|task| task.id.get() == raw_id) else {
-        writeln!(stdout, "Task {raw_id} is not in the retained recent-task view.")?;
+        writeln!(
+            stdout,
+            "Task {raw_id} is not in the retained recent-task view."
+        )?;
         return Ok(TaskPanelAction::Return);
     };
-    if !matches!(task.state, TransferTaskState::Cancelled | TransferTaskState::Failed) {
+    if !matches!(
+        task.state,
+        TransferTaskState::Cancelled | TransferTaskState::Failed
+    ) {
         writeln!(
             stdout,
             "Task {raw_id} is {:?}; only failed or cancelled tasks can be resumed.",

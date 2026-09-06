@@ -18,11 +18,7 @@ pub(crate) struct HostTrustPolicy {
 }
 
 impl HostTrustPolicy {
-    pub(crate) fn load(
-        host: &str,
-        port: u16,
-        known_hosts_file: Option<&Path>,
-    ) -> Result<Self> {
+    pub(crate) fn load(host: &str, port: u16, known_hosts_file: Option<&Path>) -> Result<Self> {
         let path = match known_hosts_file {
             Some(path) => path.to_path_buf(),
             None => default_known_hosts_path()?,
@@ -59,7 +55,10 @@ impl HostTrustPolicy {
             }
 
             let patterns_text = fields.next().with_context(|| {
-                format!("known_hosts marker on line {} is missing host patterns", line_index + 1)
+                format!(
+                    "known_hosts marker on line {} is missing host patterns",
+                    line_index + 1
+                )
             })?;
             let patterns = patterns_text.parse::<HostPatterns>().with_context(|| {
                 format!(
@@ -68,10 +67,16 @@ impl HostTrustPolicy {
                 )
             })?;
             let algorithm = fields.next().with_context(|| {
-                format!("known_hosts marker on line {} is missing a key algorithm", line_index + 1)
+                format!(
+                    "known_hosts marker on line {} is missing a key algorithm",
+                    line_index + 1
+                )
             })?;
             let encoded_key = fields.next().with_context(|| {
-                format!("known_hosts marker on line {} is missing key data", line_index + 1)
+                format!(
+                    "known_hosts marker on line {} is missing key data",
+                    line_index + 1
+                )
             })?;
 
             if !host_patterns_match(&target, &patterns)? {
@@ -80,7 +85,10 @@ impl HostTrustPolicy {
 
             let key_text = format!("{algorithm} {encoded_key}");
             let key = PublicKey::from_openssh(&key_text).with_context(|| {
-                format!("invalid public key on known_hosts marker line {}", line_index + 1)
+                format!(
+                    "invalid public key on known_hosts marker line {}",
+                    line_index + 1
+                )
             })?;
 
             match marker {
@@ -139,9 +147,9 @@ impl HostTrustPolicy {
                 "server presented a host certificate but no matching verifiable @cert-authority is trusted"
             );
         }
-        certificate
-            .validate(ca_fingerprints.iter())
-            .context("server host certificate signature, authority, or validity window is invalid")?;
+        certificate.validate(ca_fingerprints.iter()).context(
+            "server host certificate signature, authority, or validity window is invalid",
+        )?;
 
         if !certificate.critical_options().is_empty() {
             bail!("server host certificate contains unsupported critical options");
@@ -300,10 +308,11 @@ fn dedup_public_keys(keys: &mut Vec<PublicKey>) {
 mod tests {
     use super::*;
 
-    const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
-    const OTHER_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
-    const HASHED_EXAMPLE_COM: &str =
-        "|1|AQIDBAUGBwgJCgsMDQ4PEBESExQ=|qvtG0DaqrsqPDhV2Ni+wmYohchA=";
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    const OTHER_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
+    const HASHED_EXAMPLE_COM: &str = "|1|AQIDBAUGBwgJCgsMDQ4PEBESExQ=|qvtG0DaqrsqPDhV2Ni+wmYohchA=";
     const HASHED_NONSTANDARD_PORT: &str =
         "|1|AQIDBAUGBwgJCgsMDQ4PEBESExQ=|6fK61BT8VzQZpCSeeHMpEDJJ8RM=";
 
@@ -347,23 +356,28 @@ mod tests {
     fn certificate_principals_use_hostname_without_known_hosts_port_form() {
         assert!(host_principal_matches("prod.example", "prod.example"));
         assert!(host_principal_matches("api.prod.example", "*.prod.example"));
-        assert!(!host_principal_matches("prod.example", "[prod.example]:2222"));
+        assert!(!host_principal_matches(
+            "prod.example",
+            "[prod.example]:2222"
+        ));
         assert!(!host_principal_matches("db10.example", "db?.example"));
     }
 
     #[test]
     fn nonstandard_port_uses_openssh_bracket_form() {
         assert_eq!(known_hosts_target("Example.COM", 22), "Example.COM");
-        assert_eq!(known_hosts_target("Example.COM", 2222), "[Example.COM]:2222");
+        assert_eq!(
+            known_hosts_target("Example.COM", 2222),
+            "[Example.COM]:2222"
+        );
         let patterns: HostPatterns = "[example.com]:2222".parse().unwrap();
         assert!(host_patterns_match("[Example.COM]:2222", &patterns).unwrap());
     }
 
     #[test]
     fn matching_ca_and_revoked_entries_are_classified() {
-        let contents = format!(
-            "@cert-authority *.example.com {KEY}\n@revoked bad.example.com {OTHER_KEY}\n"
-        );
+        let contents =
+            format!("@cert-authority *.example.com {KEY}\n@revoked bad.example.com {OTHER_KEY}\n");
         let prod = HostTrustPolicy::parse("prod.example.com", 22, &contents).unwrap();
         assert!(prod.has_certificate_authority());
         assert!(!prod.is_revoked(&PublicKey::from_openssh(OTHER_KEY).unwrap()));
@@ -418,9 +432,8 @@ mod tests {
 
     #[test]
     fn duplicate_keys_are_collapsed() {
-        let contents = format!(
-            "@cert-authority prod.example {KEY}\n@cert-authority prod.example {KEY}\n"
-        );
+        let contents =
+            format!("@cert-authority prod.example {KEY}\n@cert-authority prod.example {KEY}\n");
         let policy = HostTrustPolicy::parse("prod.example", 22, &contents).unwrap();
         assert_eq!(policy.trusted_certificate_authorities.len(), 1);
     }

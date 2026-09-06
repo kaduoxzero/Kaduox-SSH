@@ -37,10 +37,16 @@ mod platform {
                         bail!("refusing symlink daemon socket path {}", path.display());
                     }
                     if !metadata.file_type().is_socket() {
-                        bail!("existing daemon endpoint {} is not a Unix socket", path.display());
+                        bail!(
+                            "existing daemon endpoint {} is not a Unix socket",
+                            path.display()
+                        );
                     }
                     if metadata.uid() != owner_uid {
-                        bail!("existing daemon socket {} has a different owner", path.display());
+                        bail!(
+                            "existing daemon socket {} has a different owner",
+                            path.display()
+                        );
                     }
                     match StdUnixStream::connect(&path) {
                         Ok(_) => bail!("kssh-daemon is already running at {}", path.display()),
@@ -76,12 +82,18 @@ mod platform {
             let listener = UnixListener::bind(&path)
                 .with_context(|| format!("failed to bind daemon socket {}", path.display()))?;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).with_context(|| {
-                format!("failed to set daemon socket {} mode to 0600", path.display())
+                format!(
+                    "failed to set daemon socket {} mode to 0600",
+                    path.display()
+                )
             })?;
             let metadata = fs::symlink_metadata(&path)?;
             if metadata.uid() != owner_uid || metadata.permissions().mode() & 0o077 != 0 {
                 let _ = fs::remove_file(&path);
-                bail!("daemon socket {} failed private ownership/mode validation", path.display());
+                bail!(
+                    "daemon socket {} failed private ownership/mode validation",
+                    path.display()
+                );
             }
 
             Ok(Self {
@@ -93,8 +105,14 @@ mod platform {
 
         pub async fn accept(&self) -> Result<UnixStream> {
             loop {
-                let (stream, _) = self.listener.accept().await.context("daemon socket accept failed")?;
-                let credentials = stream.peer_cred().context("failed to read Unix peer credentials")?;
+                let (stream, _) = self
+                    .listener
+                    .accept()
+                    .await
+                    .context("daemon socket accept failed")?;
+                let credentials = stream
+                    .peer_cred()
+                    .context("failed to read Unix peer credentials")?;
                 if credentials.uid() != self.owner_uid {
                     drop(stream);
                     continue;
@@ -138,16 +156,24 @@ mod platform {
             || !metadata.file_type().is_socket()
             || metadata.permissions().mode() & 0o077 != 0
         {
-            bail!("daemon endpoint {} is not a private Unix socket", path.display());
+            bail!(
+                "daemon endpoint {} is not a private Unix socket",
+                path.display()
+            );
         }
         if metadata.uid() != parent_metadata.uid() {
-            bail!("daemon endpoint {} owner differs from its private directory", path.display());
+            bail!(
+                "daemon endpoint {} owner differs from its private directory",
+                path.display()
+            );
         }
 
         let stream = UnixStream::connect(path)
             .await
             .with_context(|| format!("failed to connect daemon socket {}", path.display()))?;
-        let credentials = stream.peer_cred().context("failed to read daemon peer credentials")?;
+        let credentials = stream
+            .peer_cred()
+            .context("failed to read daemon peer credentials")?;
         if credentials.uid() != metadata.uid() {
             bail!("daemon peer UID does not match socket owner");
         }
@@ -157,7 +183,9 @@ mod platform {
     pub fn default_endpoint_path() -> Result<PathBuf> {
         if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
             if !runtime.is_empty() {
-                return Ok(PathBuf::from(runtime).join("kaduox-ssh").join("daemon.sock"));
+                return Ok(PathBuf::from(runtime)
+                    .join("kaduox-ssh")
+                    .join("daemon.sock"));
             }
         }
 
@@ -181,10 +209,16 @@ mod platform {
             .with_context(|| format!("failed to create daemon directory {}", path.display()))?;
         let metadata = fs::symlink_metadata(path)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            bail!("daemon directory {} is not a real directory", path.display());
+            bail!(
+                "daemon directory {} is not a real directory",
+                path.display()
+            );
         }
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).with_context(|| {
-            format!("failed to set daemon directory {} mode to 0700", path.display())
+            format!(
+                "failed to set daemon directory {} mode to 0700",
+                path.display()
+            )
         })?;
         Ok(())
     }
@@ -245,7 +279,10 @@ mod platform {
                     .reject_remote_clients(true)
                     .create(PIPE_NAME)
                     .context("failed to create local daemon named pipe")?;
-                server.connect().await.context("daemon named-pipe accept failed")?;
+                server
+                    .connect()
+                    .await
+                    .context("daemon named-pipe accept failed")?;
                 let mut pid = 0_u32;
                 let handle = server.as_raw_handle() as HANDLE;
                 let ok = unsafe { GetNamedPipeClientProcessId(handle, &mut pid) };

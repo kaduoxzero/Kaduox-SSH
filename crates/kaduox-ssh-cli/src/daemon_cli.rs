@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{Authentication, RemoteCommandSpec};
 use kaduox_ssh_daemon::{
-    AuthRequest, DaemonClient, DaemonExecOutcome, DaemonJumpAuthChallenge,
-    DaemonJumpAuthFuture, DaemonJumpAuthProvider, DaemonShellOutcome,
+    AuthRequest, DaemonClient, DaemonExecOutcome, DaemonJumpAuthChallenge, DaemonJumpAuthFuture,
+    DaemonJumpAuthProvider, DaemonShellOutcome,
 };
 use tokio::sync::watch;
 
@@ -92,15 +92,8 @@ impl DaemonJumpAuthProvider for InteractiveDaemonJumpAuth {
 async fn run_exec(cli: &Cli, command: &str, as_user: Option<&str>) -> Result<bool> {
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
-    let first = DaemonClient::exec(
-        &cli.host,
-        None,
-        command,
-        as_user,
-        &mut stdout,
-        &mut stderr,
-    )
-    .await;
+    let first =
+        DaemonClient::exec(&cli.host, None, command, as_user, &mut stdout, &mut stderr).await;
     let first = match first {
         Ok(outcome) => outcome,
         Err(error) if DaemonClient::is_unavailable(&error) => return Ok(false),

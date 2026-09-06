@@ -87,21 +87,21 @@ impl ManagedConnection {
     }
 
     fn acquire_lease(&self) {
-        let result = self.active_leases.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |current| current.checked_add(1),
-        );
+        let result =
+            self.active_leases
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_add(1)
+                });
         assert!(result.is_ok(), "connection lease counter overflow");
         self.touch();
     }
 
     fn release_lease(&self) {
-        let result = self.active_leases.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |current| current.checked_sub(1),
-        );
+        let result =
+            self.active_leases
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_sub(1)
+                });
         debug_assert!(result.is_ok(), "connection lease counter underflow");
         self.touch();
     }
@@ -640,8 +640,7 @@ mod tests {
         let existing = AuthenticationReuseKey::PrivateKey(PathBuf::from("deploy_key"));
         let requested = AuthenticationReuseKey::PrivateKey(PathBuf::from("admin_key"));
 
-        let error =
-            ensure_reusable("prod", &config, &config, &existing, &requested).unwrap_err();
+        let error = ensure_reusable("prod", &config, &config, &existing, &requested).unwrap_err();
         assert!(error.to_string().contains("authentication source"));
     }
 
@@ -650,16 +649,7 @@ mod tests {
         let config = ConnectionConfig::new("server.example", "deploy");
         let non_reusable = AuthenticationReuseKey::NonReusable;
 
-        assert!(
-            ensure_reusable(
-                "prod",
-                &config,
-                &config,
-                &non_reusable,
-                &non_reusable,
-            )
-            .is_err()
-        );
+        assert!(ensure_reusable("prod", &config, &config, &non_reusable, &non_reusable,).is_err());
     }
 
     #[tokio::test]

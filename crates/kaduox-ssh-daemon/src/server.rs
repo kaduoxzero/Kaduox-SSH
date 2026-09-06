@@ -125,18 +125,7 @@ where
             auth,
             command,
             as_user,
-        } => {
-            handle_exec(
-                &mut reader,
-                &writer,
-                &state,
-                &alias,
-                auth,
-                command,
-                as_user,
-            )
-            .await
-        }
+        } => handle_exec(&mut reader, &writer, &state, &alias, auth, command, as_user).await,
         ClientFrame::Shell {
             alias,
             auth,
@@ -214,9 +203,10 @@ where
                 return Ok(None);
             };
             match frame {
-                ClientFrame::JumpAuthResponse { auth } => Ok(auth.map(|auth| {
-                    auth.into_authentication(request.jump.identity_files.clone())
-                })),
+                ClientFrame::JumpAuthResponse { auth } => {
+                    Ok(auth
+                        .map(|auth| auth.into_authentication(request.jump.identity_files.clone())))
+                }
                 _ => bail!("expected JumpAuthResponse while authenticating jump host"),
             }
         })
@@ -295,7 +285,9 @@ fn record_store_use(
         .record_success(alias, method)
         .and_then(|_| store.save())
     {
-        eprintln!("warning: daemon connection succeeded but host statistics update failed: {error:#}");
+        eprintln!(
+            "warning: daemon connection succeeded but host statistics update failed: {error:#}"
+        );
     }
     Ok(())
 }
@@ -325,17 +317,16 @@ where
     let remote_user = as_user.map(RemoteUser::Sudo).unwrap_or_default();
 
     let result = client
-        .exec_stream(
-            &command,
-            &remote_user,
-            &mut stdout_sink,
-            &mut stderr_sink,
-        )
+        .exec_stream(&command, &remote_user, &mut stdout_sink, &mut stderr_sink)
         .await;
     drop(stdout_sink);
     drop(stderr_sink);
-    stdout_task.await.context("daemon stdout bridge task failed")??;
-    stderr_task.await.context("daemon stderr bridge task failed")??;
+    stdout_task
+        .await
+        .context("daemon stdout bridge task failed")??;
+    stderr_task
+        .await
+        .context("daemon stderr bridge task failed")??;
 
     match result {
         Ok(status) => send_frame(writer, ServerFrame::Exit(status)).await,
@@ -419,18 +410,16 @@ where
     };
 
     drop(input_sink);
-    output_task.await.context("daemon shell output bridge task failed")??;
+    output_task
+        .await
+        .context("daemon shell output bridge task failed")??;
     match shell_result {
         Ok(status) => send_frame(writer, ServerFrame::Exit(status)).await,
         Err(error) => send_frame(writer, ServerFrame::Error(format!("{error:#}"))).await,
     }
 }
 
-async fn forward_output<R, W>(
-    mut reader: R,
-    writer: Arc<Mutex<W>>,
-    stderr: bool,
-) -> Result<()>
+async fn forward_output<R, W>(mut reader: R, writer: Arc<Mutex<W>>, stderr: bool) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,

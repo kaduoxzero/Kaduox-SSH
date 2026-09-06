@@ -6,9 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::execute;
 use crossterm::queue;
 use crossterm::style::{Attribute, Print, SetAttribute};
-use crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use kaduox_ssh_core::OpenSshHostCatalog;
 
 pub fn select_host(catalog: &OpenSshHostCatalog) -> Result<Option<String>> {
@@ -99,7 +97,10 @@ impl PickerTerminal {
             SetAttribute(Attribute::Reset),
             MoveTo(0, 1),
             Print(truncate_cells(
-                &format!("config: {path} | {} selectable aliases", catalog.aliases.len()),
+                &format!(
+                    "config: {path} | {} selectable aliases",
+                    catalog.aliases.len()
+                ),
                 width
             )),
         )?;

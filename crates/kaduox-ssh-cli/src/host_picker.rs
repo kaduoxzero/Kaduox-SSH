@@ -98,7 +98,11 @@ pub(crate) fn pick_default_host() -> Result<String> {
             .context("host selection must be a number")?
     };
     let candidate = ranked
-        .get(selected.checked_sub(1).context("host selection starts at 1")?)
+        .get(
+            selected
+                .checked_sub(1)
+                .context("host selection starts at 1")?,
+        )
         .with_context(|| format!("host selection {selected} is out of range"))?;
     Ok(candidate.0.alias.clone())
 }

@@ -250,7 +250,10 @@ impl HostDatabase {
 
         for (alias, host) in &self.hosts {
             if alias != &host.alias {
-                bail!("host map key {alias:?} does not match stored alias {:?}", host.alias);
+                bail!(
+                    "host map key {alias:?} does not match stored alias {:?}",
+                    host.alias
+                );
             }
             host.validate()?;
             if let Some(chain) = &host.jump_chain {
@@ -261,7 +264,10 @@ impl HostDatabase {
         }
         for (name, chain) in &self.chains {
             if name != &chain.name {
-                bail!("chain map key {name:?} does not match stored name {:?}", chain.name);
+                bail!(
+                    "chain map key {name:?} does not match stored name {:?}",
+                    chain.name
+                );
             }
             chain.validate()?;
             for hop in &chain.hops {
@@ -302,9 +308,10 @@ pub fn validate_name(value: &str, field: &str) -> Result<()> {
     if value.is_empty() || value.len() > 128 {
         bail!("{field} must contain 1..=128 bytes");
     }
-    if !value.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':')
-    }) {
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
+    {
         bail!(
             "{field} {value:?} contains unsupported characters; use ASCII letters, digits, '.', '_', '-' or ':'"
         );

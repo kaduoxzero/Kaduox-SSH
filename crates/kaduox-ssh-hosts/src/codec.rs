@@ -151,8 +151,8 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
         tables.push(table);
     }
 
-    let version = take_integer(&mut root, "version")?
-        .context("host database is missing root version")?;
+    let version =
+        take_integer(&mut root, "version")?.context("host database is missing root version")?;
     if version != u64::from(DATABASE_VERSION) {
         bail!(
             "unsupported host database version {version}; expected {}",
@@ -175,9 +175,11 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
                 let port = u16::try_from(port)
                     .ok()
                     .filter(|value| *value != 0)
-                    .with_context(|| format!("invalid SSH port in host table at line {}", table.line))?;
-                let identity_file = take_string(&mut table.values, "identity_file")?
-                    .map(PathBuf::from);
+                    .with_context(|| {
+                        format!("invalid SSH port in host table at line {}", table.line)
+                    })?;
+                let identity_file =
+                    take_string(&mut table.values, "identity_file")?.map(PathBuf::from);
                 let groups = take_strings(&mut table.values, "groups")?.unwrap_or_default();
                 let tags = take_strings(&mut table.values, "tags")?.unwrap_or_default();
                 let note = take_string(&mut table.values, "note")?;
@@ -187,8 +189,8 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
                     .unwrap_or_default();
                 let jump_chain = take_string(&mut table.values, "jump_chain")?;
                 let last_connected_unix = take_integer(&mut table.values, "last_connected_unix")?;
-                let connection_count = take_integer(&mut table.values, "connection_count")?
-                    .unwrap_or(0);
+                let connection_count =
+                    take_integer(&mut table.values, "connection_count")?.unwrap_or(0);
                 let last_auth_method = take_string(&mut table.values, "last_auth_method")?
                     .map(|value| StoredAuthMethod::parse(&value))
                     .transpose()?;
@@ -218,7 +220,10 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
             }
             TableKind::Chain => {
                 let name = required_string(&mut table.values, "name", table.line)?;
-                reject_unknown(&table.values, &format!("chain table at line {}", table.line))?;
+                reject_unknown(
+                    &table.values,
+                    &format!("chain table at line {}", table.line),
+                )?;
                 if !seen_chain_names.insert(name.clone()) {
                     bail!("duplicate jump chain {name:?}");
                 }
@@ -237,11 +242,9 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
                 let index = usize::try_from(index).context("hop index does not fit usize")?;
                 let kind = required_string(&mut table.values, "kind", table.line)?;
                 let hop = match kind.as_str() {
-                    "host" => JumpHop::Host(required_string(
-                        &mut table.values,
-                        "name",
-                        table.line,
-                    )?),
+                    "host" => {
+                        JumpHop::Host(required_string(&mut table.values, "name", table.line)?)
+                    }
                     "openssh" => JumpHop::OpenSshAlias(required_string(
                         &mut table.values,
                         "name",
@@ -258,15 +261,12 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
                             .with_context(|| {
                                 format!("invalid inline hop port at line {}", table.line)
                             })?;
-                        let identity_file = take_string(&mut table.values, "identity_file")?
-                            .map(PathBuf::from);
-                        let host_key_policy = take_string(
-                            &mut table.values,
-                            "host_key_policy",
-                        )?
-                        .map(|value| StoredHostKeyPolicy::parse(&value))
-                        .transpose()?
-                        .unwrap_or_default();
+                        let identity_file =
+                            take_string(&mut table.values, "identity_file")?.map(PathBuf::from);
+                        let host_key_policy = take_string(&mut table.values, "host_key_policy")?
+                            .map(|value| StoredHostKeyPolicy::parse(&value))
+                            .transpose()?
+                            .unwrap_or_default();
                         JumpHop::Inline(InlineJump {
                             alias,
                             host,
@@ -458,11 +458,7 @@ fn strip_comment(line: &str) -> Result<String> {
     Ok(line.to_owned())
 }
 
-fn required_string(
-    values: &mut BTreeMap<String, Value>,
-    key: &str,
-    line: usize,
-) -> Result<String> {
+fn required_string(values: &mut BTreeMap<String, Value>, key: &str, line: usize) -> Result<String> {
     take_string(values, key)?.with_context(|| format!("table at line {line} is missing {key}"))
 }
 

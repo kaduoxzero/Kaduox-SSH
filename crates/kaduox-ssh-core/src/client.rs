@@ -491,10 +491,7 @@ impl SshClient {
         start_remote_forward(Arc::clone(&self.session), &self.state, spec).await
     }
 
-    pub async fn remote_forward_managed(
-        &self,
-        spec: RemoteForward,
-    ) -> Result<RemoteForwardHandle> {
+    pub async fn remote_forward_managed(&self, spec: RemoteForward) -> Result<RemoteForwardHandle> {
         start_remote_forward_managed(Arc::clone(&self.session), &self.state, spec).await
     }
 
@@ -695,11 +692,7 @@ async fn connect_via_jumps(
             keepalive.push(Arc::new(previous));
             timeout(
                 config.connect_timeout,
-                client::connect_stream(
-                    jump_config,
-                    channel.into_stream(),
-                    jump_handler(jump),
-                ),
+                client::connect_stream(jump_config, channel.into_stream(), jump_handler(jump)),
             )
             .await
             .with_context(|| {
@@ -870,12 +863,7 @@ async fn connect_via_jumps(
     );
     let channel = timeout(
         config.channel_open_timeout,
-        last.channel_open_direct_tcpip(
-            config.host.clone(),
-            u32::from(config.port),
-            "127.0.0.1",
-            0,
-        ),
+        last.channel_open_direct_tcpip(config.host.clone(), u32::from(config.port), "127.0.0.1", 0),
     )
     .await
     .with_context(|| {
@@ -1049,9 +1037,10 @@ fn validate_proxy_expansion_value(label: &str, value: &str) -> Result<()> {
     if value.is_empty() {
         bail!("ProxyCommand {label} expansion value must not be empty");
     }
-    if !value.chars().all(|ch| {
-        ch.is_ascii_alphanumeric() || PROXY_EXPANSION_SAFE_PUNCTUATION.contains(ch)
-    }) {
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || PROXY_EXPANSION_SAFE_PUNCTUATION.contains(ch))
+    {
         bail!(
             "refusing unsafe ProxyCommand {label} expansion value outside the portable shell-token grammar [A-Za-z0-9._:@+-[]]"
         );

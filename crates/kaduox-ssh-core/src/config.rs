@@ -203,10 +203,7 @@ fn resolve_jump_hosts_internal(spec: &str, validate_untrusted: bool) -> Result<V
     if raw_hops.iter().any(|hop| hop.is_empty()) {
         bail!("ProxyJump chain contains an empty hop");
     }
-    if raw_hops
-        .iter()
-        .any(|hop| hop.eq_ignore_ascii_case("none"))
-    {
+    if raw_hops.iter().any(|hop| hop.eq_ignore_ascii_case("none")) {
         bail!("ProxyJump 'none' cannot be combined with other hops");
     }
     if raw_hops.len() > MAX_JUMP_HOPS {
@@ -237,8 +234,7 @@ fn resolve_jump_host(spec: &str, validate_untrusted: bool) -> Result<JumpHost> {
     let parsed = parse_home_config(&alias)?;
     let identity_files = parsed.host_config.identity_file.clone().unwrap_or_default();
     let known_hosts_file = parsed.host_config.user_known_hosts_file.clone();
-    let host_key_policy =
-        host_key_policy_from_config(parsed.host_config.strict_host_key_checking);
+    let host_key_policy = host_key_policy_from_config(parsed.host_config.strict_host_key_checking);
 
     Ok(JumpHost {
         alias,
@@ -361,9 +357,10 @@ fn validate_untrusted_shell_token(value: &str, role: &str) -> Result<()> {
     if value.starts_with('-') {
         bail!("{role} cannot begin with '-'");
     }
-    if value.chars().any(|ch| {
-        ch.is_whitespace() || ch.is_control() || SHELL_ACTIVE_TOKEN_CHARS.contains(ch)
-    }) {
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control() || SHELL_ACTIVE_TOKEN_CHARS.contains(ch))
+    {
         bail!(
             "{role} contains shell-active or whitespace characters that are unsafe for ProxyCommand token expansion"
         );
@@ -398,8 +395,12 @@ fn parse_home_config(alias: &str) -> Result<russh_config::Config> {
             path.display()
         )
     })?;
-    parse_openssh_contents(&contents, alias)
-        .with_context(|| format!("failed to parse OpenSSH config {} for {alias}", path.display()))
+    parse_openssh_contents(&contents, alias).with_context(|| {
+        format!(
+            "failed to parse OpenSSH config {} for {alias}",
+            path.display()
+        )
+    })
 }
 
 fn parse_openssh_contents(contents: &str, alias: &str) -> Result<russh_config::Config> {
@@ -480,8 +481,7 @@ mod tests {
 
     #[test]
     fn parses_openssh_proxyjump_ssh_uri() {
-        let (user, host_port) =
-            parse_jump_destination("ssh://deploy@[2001:db8::1]:2222").unwrap();
+        let (user, host_port) = parse_jump_destination("ssh://deploy@[2001:db8::1]:2222").unwrap();
         assert_eq!(user, Some("deploy"));
         let (host, port) = parse_host_port(host_port).unwrap();
         assert_eq!(host, "2001:db8::1");
@@ -566,8 +566,14 @@ mod tests {
     #[test]
     fn host_key_policy_defaults_and_overrides_are_explicit() {
         assert_eq!(host_key_policy_from_config(None), HostKeyPolicy::AcceptNew);
-        assert_eq!(host_key_policy_from_config(Some(true)), HostKeyPolicy::Strict);
-        assert_eq!(host_key_policy_from_config(Some(false)), HostKeyPolicy::Insecure);
+        assert_eq!(
+            host_key_policy_from_config(Some(true)),
+            HostKeyPolicy::Strict
+        );
+        assert_eq!(
+            host_key_policy_from_config(Some(false)),
+            HostKeyPolicy::Insecure
+        );
     }
 
     #[test]

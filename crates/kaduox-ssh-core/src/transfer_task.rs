@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result, bail};
 
-use crate::transfer::{
-    TransferCancellation, TransferDirection, TransferEvent, TransferSummary,
-};
+use crate::transfer::{TransferCancellation, TransferDirection, TransferEvent, TransferSummary};
 
 const DEFAULT_TRANSFER_TASK_RETENTION: usize = 128;
 const MAX_TRANSFER_TASK_RETENTION: usize = 1024;
@@ -393,11 +391,7 @@ fn task_mut(inner: &mut RegistryInner, id: TransferTaskId) -> Result<&mut TaskRe
 
 fn ensure_running(id: TransferTaskId, state: TransferTaskState) -> Result<()> {
     if state != TransferTaskState::Running {
-        bail!(
-            "transfer task {} cannot finish from {:?}",
-            id.get(),
-            state
-        );
+        bail!("transfer task {} cannot finish from {:?}", id.get(), state);
     }
     Ok(())
 }
@@ -407,9 +401,7 @@ fn validate_retention(max_retained: usize) -> Result<()> {
         bail!("transfer task retention must be greater than zero");
     }
     if max_retained > MAX_TRANSFER_TASK_RETENTION {
-        bail!(
-            "transfer task retention must be <= {MAX_TRANSFER_TASK_RETENTION}"
-        );
+        bail!("transfer task retention must be <= {MAX_TRANSFER_TASK_RETENTION}");
     }
     Ok(())
 }
@@ -419,9 +411,7 @@ fn validate_task_text(label: &str, value: &str) -> Result<()> {
         bail!("transfer task {label} must not be empty");
     }
     if value.len() > MAX_TRANSFER_TASK_TEXT_BYTES {
-        bail!(
-            "transfer task {label} exceeds {MAX_TRANSFER_TASK_TEXT_BYTES} UTF-8 bytes"
-        );
+        bail!("transfer task {label} exceeds {MAX_TRANSFER_TASK_TEXT_BYTES} UTF-8 bytes");
     }
     Ok(())
 }
@@ -503,7 +493,9 @@ mod tests {
             .register(TransferTaskKind::UploadFile, "a", "b")
             .unwrap();
         registry.mark_running(first.id()).unwrap();
-        registry.complete(first.id(), TransferSummary::default()).unwrap();
+        registry
+            .complete(first.id(), TransferSummary::default())
+            .unwrap();
         let second = registry
             .register(TransferTaskKind::UploadFile, "c", "d")
             .unwrap();
@@ -514,9 +506,11 @@ mod tests {
         assert!(registry.get(first.id()).unwrap().is_none());
         assert!(registry.get(second.id()).unwrap().is_some());
         assert!(registry.get(third.id()).unwrap().is_some());
-        assert!(registry
-            .register(TransferTaskKind::UploadFile, "g", "h")
-            .is_err());
+        assert!(
+            registry
+                .register(TransferTaskKind::UploadFile, "g", "h")
+                .is_err()
+        );
     }
 
     #[test]
@@ -526,17 +520,19 @@ mod tests {
             .register(TransferTaskKind::UploadFile, "local", "/remote")
             .unwrap();
         registry.mark_running(task.id()).unwrap();
-        assert!(registry
-            .record_progress(
-                task.id(),
-                &TransferEvent {
-                    direction: TransferDirection::Download,
-                    path: "/remote".to_owned(),
-                    bytes_transferred: 1,
-                    total_bytes: None,
-                    completed: false,
-                },
-            )
-            .is_err());
+        assert!(
+            registry
+                .record_progress(
+                    task.id(),
+                    &TransferEvent {
+                        direction: TransferDirection::Download,
+                        path: "/remote".to_owned(),
+                        bytes_transferred: 1,
+                        total_bytes: None,
+                        completed: false,
+                    },
+                )
+                .is_err()
+        );
     }
 }

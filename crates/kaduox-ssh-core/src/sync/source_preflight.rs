@@ -13,10 +13,7 @@ use super::{SyncActionKind, SyncPlan};
 /// generated plan can also become stale before apply. Walking every component
 /// with symlink_metadata prevents a symlinked parent from redirecting an upload
 /// outside the selected local synchronization root during this preflight.
-pub(super) async fn preflight_local_sync_sources(
-    local_root: &Path,
-    plan: &SyncPlan,
-) -> Result<()> {
+pub(super) async fn preflight_local_sync_sources(local_root: &Path, plan: &SyncPlan) -> Result<()> {
     let root_metadata = tokio::fs::symlink_metadata(local_root)
         .await
         .with_context(|| format!("failed to stat sync source root {}", local_root.display()))?;
@@ -27,7 +24,10 @@ pub(super) async fn preflight_local_sync_sources(
         );
     }
     if !root_metadata.is_dir() {
-        bail!("sync source root is no longer a directory: {}", local_root.display());
+        bail!(
+            "sync source root is no longer a directory: {}",
+            local_root.display()
+        );
     }
 
     for (index, action) in plan.actions.iter().enumerate() {
@@ -35,9 +35,8 @@ pub(super) async fn preflight_local_sync_sources(
             continue;
         }
 
-        let relative = local_path_from_remote_relative(&action.path).with_context(|| {
-            format!("sync upload action #{index} has an unsafe local path")
-        })?;
+        let relative = local_path_from_remote_relative(&action.path)
+            .with_context(|| format!("sync upload action #{index} has an unsafe local path"))?;
         preflight_local_sync_source(local_root, &relative, action.bytes)
             .await
             .with_context(|| {
@@ -157,7 +156,9 @@ mod tests {
     #[tokio::test]
     async fn accepts_regular_source_with_planned_size() {
         let root = temp_root("regular");
-        tokio::fs::create_dir_all(root.join("nested")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("nested"))
+            .await
+            .unwrap();
         tokio::fs::write(root.join("nested/app.bin"), b"data")
             .await
             .unwrap();

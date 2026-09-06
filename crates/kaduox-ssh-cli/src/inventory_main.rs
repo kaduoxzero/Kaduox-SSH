@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use kaduox_ssh_core::{
-    HostInventory, InventoryMember, discover_inventory, load_inventory,
-};
+use kaduox_ssh_core::{HostInventory, InventoryMember, discover_inventory, load_inventory};
 
 #[derive(Debug, Parser)]
 #[command(

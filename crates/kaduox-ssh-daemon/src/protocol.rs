@@ -51,9 +51,7 @@ impl std::fmt::Debug for AuthRequest {
             Self::Auto => formatter.write_str("Auto"),
             Self::Agent => formatter.write_str("Agent"),
             Self::Password(_) => formatter.write_str("Password(<redacted>)"),
-            Self::KeyboardInteractive(_) => {
-                formatter.write_str("KeyboardInteractive(<redacted>)")
-            }
+            Self::KeyboardInteractive(_) => formatter.write_str("KeyboardInteractive(<redacted>)"),
             Self::PrivateKey { path, passphrase } => formatter
                 .debug_struct("PrivateKey")
                 .field("path", path)
@@ -84,7 +82,9 @@ impl AuthRequest {
 pub enum ClientFrame {
     Ping,
     Status,
-    Disconnect { alias: String },
+    Disconnect {
+        alias: String,
+    },
     Exec {
         alias: String,
         auth: Option<AuthRequest>,
@@ -100,10 +100,15 @@ pub enum ClientFrame {
         as_user: Option<String>,
     },
     Input(Vec<u8>),
-    Resize { columns: u32, rows: u32 },
+    Resize {
+        columns: u32,
+        rows: u32,
+    },
     Eof,
     Shutdown,
-    JumpAuthResponse { auth: Option<AuthRequest> },
+    JumpAuthResponse {
+        auth: Option<AuthRequest>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,7 +126,9 @@ pub enum ServerFrame {
         max_connections: usize,
         available_capacity: usize,
     },
-    Cache { reused: bool },
+    Cache {
+        reused: bool,
+    },
     JumpAuthChallenge {
         index: usize,
         total: usize,
@@ -215,7 +222,10 @@ where
         .write_all(payload)
         .await
         .context("failed to write daemon IPC frame payload")?;
-    writer.flush().await.context("failed to flush daemon IPC frame")
+    writer
+        .flush()
+        .await
+        .context("failed to flush daemon IPC frame")
 }
 
 fn encode_client(frame: &ClientFrame) -> Result<Vec<u8>> {
@@ -534,17 +544,23 @@ impl<'a> Cursor<'a> {
 
     fn u16(&mut self) -> Result<u16> {
         let bytes = self.take(2)?;
-        Ok(u16::from_be_bytes(bytes.try_into().expect("length checked")))
+        Ok(u16::from_be_bytes(
+            bytes.try_into().expect("length checked"),
+        ))
     }
 
     fn u32(&mut self) -> Result<u32> {
         let bytes = self.take(4)?;
-        Ok(u32::from_be_bytes(bytes.try_into().expect("length checked")))
+        Ok(u32::from_be_bytes(
+            bytes.try_into().expect("length checked"),
+        ))
     }
 
     fn u64(&mut self) -> Result<u64> {
         let bytes = self.take(8)?;
-        Ok(u64::from_be_bytes(bytes.try_into().expect("length checked")))
+        Ok(u64::from_be_bytes(
+            bytes.try_into().expect("length checked"),
+        ))
     }
 
     fn bytes(&mut self, max: usize) -> Result<Vec<u8>> {
@@ -643,9 +659,7 @@ mod tests {
 
     #[test]
     fn oversized_input_is_rejected() {
-        assert!(
-            encode_client(&ClientFrame::Input(vec![0; OUTPUT_CHUNK_BYTES + 1])).is_err()
-        );
+        assert!(encode_client(&ClientFrame::Input(vec![0; OUTPUT_CHUNK_BYTES + 1])).is_err());
     }
 
     #[test]

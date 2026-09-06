@@ -106,10 +106,7 @@ fn prompt_local_download_leaf(default_name: &str) -> Result<Option<String>> {
             Ok(()) => return Ok(Some(candidate)),
             Err(error) => {
                 let mut stderr = io::stderr();
-                writeln!(
-                    stderr,
-                    "invalid local download directory name: {error}"
-                )?;
+                writeln!(stderr, "invalid local download directory name: {error}")?;
                 stderr.flush()?;
             }
         }
@@ -195,7 +192,12 @@ pub async fn upload_regular_file_with_options(
 ) -> Result<u64> {
     let metadata = tokio::fs::symlink_metadata(local_path)
         .await
-        .with_context(|| format!("failed to stat local upload source {}", local_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to stat local upload source {}",
+                local_path.display()
+            )
+        })?;
     if metadata.file_type().is_symlink() {
         bail!(
             "TUI upload source {} is a symbolic link; explicit symlink upload is not supported",
@@ -327,7 +329,8 @@ struct ShellRawModeGuard;
 
 impl ShellRawModeGuard {
     fn enable() -> Result<Self> {
-        crossterm::terminal::enable_raw_mode().context("failed to enable raw mode for SSH shell")?;
+        crossterm::terminal::enable_raw_mode()
+            .context("failed to enable raw mode for SSH shell")?;
         Ok(Self)
     }
 }
@@ -353,7 +356,10 @@ mod tests {
             Some(LocalPickKind::Directory)
         );
         assert_eq!(local_picker_kind("remote file name [app.tar]: "), None);
-        assert_eq!(local_picker_kind("download /tmp/a to local path [a]: "), None);
+        assert_eq!(
+            local_picker_kind("download /tmp/a to local path [a]: "),
+            None
+        );
     }
 
     #[test]

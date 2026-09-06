@@ -261,7 +261,10 @@ pub(crate) async fn download_file(
         bail!("remote path {remote_path} is not a regular file");
     }
 
-    if let Some(parent) = local_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+    if let Some(parent) = local_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
         ensure_local_directory_no_symlinks(parent, "download parent directory").await?;
     }
     reject_existing_local_symlink(local_path, "download destination").await?;
@@ -455,7 +458,9 @@ pub(crate) async fn download_tree(
 
     let root_metadata = sftp.symlink_metadata(remote_root.to_owned()).await?;
     if root_metadata.is_symlink() {
-        bail!("refusing to follow remote symbolic-link root during recursive download: {remote_root}");
+        bail!(
+            "refusing to follow remote symbolic-link root during recursive download: {remote_root}"
+        );
     }
     if root_metadata.is_regular() {
         let bytes = download_file(&sftp, remote_root, local_root, &options).await?;
@@ -501,11 +506,8 @@ pub(crate) async fn download_tree(
             let local_relative = local_path_from_remote_relative(&name)?;
             let local_path = local_dir.join(local_relative);
             if file_type.is_dir() {
-                ensure_local_directory_no_symlinks(
-                    &local_path,
-                    "recursive download directory",
-                )
-                .await?;
+                ensure_local_directory_no_symlinks(&local_path, "recursive download directory")
+                    .await?;
                 summary.directories += 1;
                 stack.push((remote_path, local_path));
             } else {
@@ -543,12 +545,16 @@ async fn collect_next_transfer(
 async fn reject_existing_local_symlink(path: &Path, role: &str) -> Result<()> {
     match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            bail!("refusing to follow symbolic link at {role}: {}", path.display())
+            bail!(
+                "refusing to follow symbolic link at {role}: {}",
+                path.display()
+            )
         }
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect {role} {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect {role} {}", path.display()))
+        }
     }
 }
 
@@ -568,14 +574,15 @@ async fn ensure_local_directory_no_symlinks(path: &Path, role: &str) -> Result<(
                 match tokio::fs::create_dir(candidate).await {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        let metadata = tokio::fs::symlink_metadata(candidate)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "failed to inspect concurrently created {role} {}",
-                                    candidate.display()
-                                )
-                            })?;
+                        let metadata =
+                            tokio::fs::symlink_metadata(candidate)
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "failed to inspect concurrently created {role} {}",
+                                        candidate.display()
+                                    )
+                                })?;
                         validate_local_directory(candidate, &metadata, role)?;
                     }
                     Err(error) => {
@@ -766,7 +773,10 @@ async fn finish_remote_atomic(sftp: &SftpSession, work_path: &str, final_path: &
 }
 
 async fn finish_local_atomic(work_path: &Path, final_path: &Path) -> Result<()> {
-    if let Some(parent) = final_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+    if let Some(parent) = final_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
         ensure_local_directory_no_symlinks(parent, "atomic download destination parent").await?;
     }
     reject_existing_local_symlink(final_path, "atomic download destination").await?;
@@ -819,7 +829,8 @@ async fn preserve_remote_mtime(
         attributes.permissions = Some(local_metadata.permissions().mode());
     }
     if attributes.mtime.is_some() || attributes.permissions.is_some() {
-        sftp.set_metadata(remote_path.to_owned(), attributes).await?;
+        sftp.set_metadata(remote_path.to_owned(), attributes)
+            .await?;
     }
     Ok(())
 }
@@ -910,7 +921,15 @@ mod tests {
 
     #[test]
     fn remote_entry_names_cannot_escape_local_tree() {
-        for unsafe_name in ["", ".", "..", "../escape", "sub/file", r"..\escape", "bad\0name"] {
+        for unsafe_name in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "sub/file",
+            r"..\escape",
+            "bad\0name",
+        ] {
             assert!(validate_remote_child_name(unsafe_name).is_err());
         }
         assert!(validate_remote_child_name("normal-file.txt").is_ok());
@@ -979,11 +998,8 @@ mod tests {
         let link = root.join("link");
         symlink(&real, &link).unwrap();
 
-        let result = ensure_local_directory_no_symlinks(
-            &link.join("nested"),
-            "test directory",
-        )
-        .await;
+        let result =
+            ensure_local_directory_no_symlinks(&link.join("nested"), "test directory").await;
         assert!(result.is_err());
 
         let _ = tokio::fs::remove_file(link).await;
@@ -1004,10 +1020,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "kaduox-mtime-{}-{stamp}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("kaduox-mtime-{}-{stamp}", std::process::id()));
         std::fs::write(&path, b"mtime").unwrap();
         let expected = 1_700_000_000_u32;
 

@@ -120,8 +120,8 @@ mod tests {
 
     #[test]
     fn generated_chain_names_are_portable() {
-        let store = HostStore::open(PathBuf::from("/definitely/not/created/kaduox-test.toml"))
-            .unwrap();
+        let store =
+            HostStore::open(PathBuf::from("/definitely/not/created/kaduox-test.toml")).unwrap();
         let name = unique_chain_name(&store, "prod-db");
         assert_eq!(name, "openssh-prod-db-jump");
         crate::model::validate_name(&name, "chain").unwrap();

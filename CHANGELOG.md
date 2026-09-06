@@ -4,6 +4,34 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.1] - Unreleased
+
+This candidate integrates the v0.16–v0.33 development lines and the daemon/host-library product line into `develop`.
+
+### Added
+
+- `kaduox-ssh-hosts` crate: atomic private TOML host database with aliases, recent-use ordering, strict codec validation, and transactional OpenSSH `Host` import; `kssh hosts` CRUD subcommands;
+- named jump chains with ordered hop resolution (`kssh chains`) and interactive per-hop authentication;
+- `kaduox-ssh-daemon` crate and `kssh-daemon` binary: per-user local IPC connection-reuse daemon with a bounded framed protocol, endpoint singleton/stale-socket handling, and platform peer identity verification; `kssh` exec/shell attempt daemon reuse before direct connection fallback;
+- recent-aware fuzzy host picker in the CLI;
+- Host Certificate and `@revoked` trust enforcement carried from v0.16–v0.17, including OpenSSH-hashed `known_hosts` markers;
+- bounded OpenSSH `Include` resolution (wildcards, `${ENV}`, `%%`, `%l`/`%L`, nested scope restoration) and the bounded `Match all` / `Match originalhost` subset (v0.14, v0.19, v0.28–v0.31);
+- explicit recursive transfer/sync symbolic-link policy (`skip` / fail-closed `reject`) across CLI, sync, and privileged recursive upload (v0.18);
+- sync source preflight validating planned upload paths against the local tree before any remote mutation (v0.18);
+- tracked, cancellable, retryable TUI transfer tasks and planned remote file mutations / recursive deletion (v0.10–v0.12);
+- bounded TUI local file pickers for upload sources and recursive-download destinations (v0.32–v0.33);
+- release pipeline hardening: per-target SPDX 2.3 SBOMs, GitHub artifact attestations, immutable action pins, pinned Rust 1.98.1 toolchain, published-artifact qualification, and native Windows/macOS signing for stable tags (v0.20–v0.25, v0.27);
+- Windows NTFS ACL trust validation for OpenSSH user configuration reads (v0.26).
+
+### Fixed
+
+- repaired six corrupted `Cargo.lock` registry checksums so `--locked` builds verify against the crates.io index;
+- removed `russh::client::Config.connection_timeout` literals (no such field in russh 0.63.1; connect timeouts are enforced through existing tokio wrappers);
+- fully unwrapped recursive transfer/sync task results in the bounded JoinSet collectors;
+- Windows mtime preservation now opens files with a write-capable handle (SetFileTime requires FILE_WRITE_ATTRIBUTES);
+- Windows config/include test fixtures live under the trusted user profile so the fail-closed ACL trust check accepts them;
+- inactive OpenSSH `Port` options are validated explicitly because russh-config silently ignores unparseable values.
+
 ## [0.15.0-rc.1] - Unreleased
 
 ### Security

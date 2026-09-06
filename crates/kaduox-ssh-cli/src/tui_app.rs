@@ -7,9 +7,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::execute;
 use crossterm::queue;
 use crossterm::style::{Attribute, Print, SetAttribute};
-use crossterm::terminal::{
-    self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use kaduox_ssh_core::{
     ConnectionConfig, HostKeyVerification, RemoteDeleteOptions, RemoteDirEntry, RemoteFileMetadata,
     RemoteFileType, RemoteUser, ServerHostKeyInfo, SshClient, TransferEvent, TransferOptions,
@@ -70,22 +68,10 @@ pub async fn run(
                 remove_selected(&mut terminal, ssh, &mut state).await?;
             }
             KeyCode::Char('X') => {
-                remove_selected_tree(
-                    &mut terminal,
-                    ssh,
-                    host_key.as_ref(),
-                    &mut state,
-                )
-                .await?;
+                remove_selected_tree(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
             }
             KeyCode::Char('t') => {
-                open_transfer_tasks(
-                    &mut terminal,
-                    ssh,
-                    host_key.as_ref(),
-                    &mut state,
-                )
-                .await?;
+                open_transfer_tasks(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
             }
             KeyCode::Char('s') => {
                 run_shell_action(&mut terminal, ssh, &mut state, RemoteUser::Current).await?;
@@ -99,38 +85,23 @@ pub async fn run(
                 if user.is_empty() {
                     state.status = "sudo shell cancelled".to_owned();
                 } else {
-                    run_shell_action(
-                        &mut terminal,
-                        ssh,
-                        &mut state,
-                        RemoteUser::Sudo(user),
-                    )
-                    .await?;
+                    run_shell_action(&mut terminal, ssh, &mut state, RemoteUser::Sudo(user))
+                        .await?;
                 }
             }
             KeyCode::Char('d') => {
                 download_selected(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
             }
             KeyCode::Char('D') => {
-                download_selected_directory(
-                    &mut terminal,
-                    ssh,
-                    host_key.as_ref(),
-                    &mut state,
-                )
-                .await?;
+                download_selected_directory(&mut terminal, ssh, host_key.as_ref(), &mut state)
+                    .await?;
             }
             KeyCode::Char('u') => {
                 upload_to_current(&mut terminal, ssh, host_key.as_ref(), &mut state).await?;
             }
             KeyCode::Char('U') => {
-                upload_directory_to_current(
-                    &mut terminal,
-                    ssh,
-                    host_key.as_ref(),
-                    &mut state,
-                )
-                .await?;
+                upload_directory_to_current(&mut terminal, ssh, host_key.as_ref(), &mut state)
+                    .await?;
             }
             _ => {}
         }
@@ -536,8 +507,8 @@ async fn download_selected(
         return Ok(());
     };
     if entry.metadata.file_type != RemoteFileType::File {
-        state.status = "TUI download currently accepts regular files only; use D for directories"
-            .to_owned();
+        state.status =
+            "TUI download currently accepts regular files only; use D for directories".to_owned();
         return Ok(());
     }
 
@@ -562,8 +533,7 @@ async fn download_selected(
     let transfers = TransferTaskManager::new(ssh, state.transfer_tasks.clone());
     state.status = format!("downloading {} ... Esc/Ctrl-C cancels transfer", entry.path);
     terminal.render(ssh.config(), host_key, state)?;
-    let result =
-        download_regular_file_with_options(&transfers, &entry.path, &local, options).await;
+    let result = download_regular_file_with_options(&transfers, &entry.path, &local, options).await;
     let cancelled = cancel_listener.is_cancelled();
     let listener_result = cancel_listener.stop().await;
 
@@ -703,9 +673,8 @@ async fn download_selected_directory(
             );
         }
         (Err(error), false, Ok(())) => {
-            state.status = format!(
-                "recursive download failed: {error:#}; press t to inspect/retry task"
-            );
+            state.status =
+                format!("recursive download failed: {error:#}; press t to inspect/retry task");
         }
     }
     Ok(())
@@ -835,13 +804,16 @@ async fn upload_directory_to_current(
     let metadata = match tokio::fs::symlink_metadata(&local).await {
         Ok(metadata) => metadata,
         Err(error) => {
-            state.status = format!("failed to stat local directory {}: {error}", local.display());
+            state.status = format!(
+                "failed to stat local directory {}: {error}",
+                local.display()
+            );
             return Ok(());
         }
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        state.status = "recursive upload source must be a real local directory, not a symlink"
-            .to_owned();
+        state.status =
+            "recursive upload source must be a real local directory, not a symlink".to_owned();
         return Ok(());
     }
 
@@ -855,10 +827,7 @@ async fn upload_directory_to_current(
     };
     let remote_input = prompt_with_terminal(
         terminal,
-        format!(
-            "remote directory name [{}]: ",
-            terminal_safe(&default_name)
-        ),
+        format!("remote directory name [{}]: ", terminal_safe(&default_name)),
     )
     .await?;
     let remote_name = if remote_input.trim().is_empty() {
@@ -945,9 +914,8 @@ async fn upload_directory_to_current(
             );
         }
         (Err(error), false, Ok(())) => {
-            state.status = format!(
-                "recursive upload failed: {error:#}; press t to inspect/retry task"
-            );
+            state.status =
+                format!("recursive upload failed: {error:#}; press t to inspect/retry task");
         }
     }
     Ok(())

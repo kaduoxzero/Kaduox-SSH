@@ -160,7 +160,8 @@ pub(crate) async fn authenticate(
                     }
                 }
 
-                match authenticate_private_key(session, username, &path, passphrase.as_deref()).await
+                match authenticate_private_key(session, username, &path, passphrase.as_deref())
+                    .await
                 {
                     Ok(true) => return Ok(true),
                     Ok(false) => {}
@@ -258,11 +259,8 @@ async fn authenticate_keyboard_interactive(
             KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
             KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                 rounds += 1;
-                total_prompts = validate_keyboard_interactive_request(
-                    rounds,
-                    prompts.len(),
-                    total_prompts,
-                )?;
+                total_prompts =
+                    validate_keyboard_interactive_request(rounds, prompts.len(), total_prompts)?;
 
                 let responses = prompts
                     .iter()
@@ -524,12 +522,8 @@ mod tests {
             .is_err()
         );
         assert!(
-            validate_keyboard_interactive_request(
-                2,
-                1,
-                MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS,
-            )
-            .is_err()
+            validate_keyboard_interactive_request(2, 1, MAX_KEYBOARD_INTERACTIVE_TOTAL_PROMPTS,)
+                .is_err()
         );
     }
 }

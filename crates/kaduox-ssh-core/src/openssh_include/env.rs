@@ -39,12 +39,7 @@ where
     let mut local_names: Option<LocalHostnames> = None;
 
     while let Some(start) = rest.find("${") {
-        expand_percent_tokens(
-            &mut output,
-            &rest[..start],
-            max_bytes,
-            &mut local_names,
-        )?;
+        expand_percent_tokens(&mut output, &rest[..start], max_bytes, &mut local_names)?;
 
         let variable_and_rest = &rest[start + 2..];
         let end = variable_and_rest
@@ -116,11 +111,7 @@ fn query_local_hostnames() -> Result<LocalHostnames> {
     if full.is_empty() {
         bail!("local hostname is empty");
     }
-    let short = full
-        .split('.')
-        .next()
-        .unwrap_or(full.as_str())
-        .to_owned();
+    let short = full.split('.').next().unwrap_or(full.as_str()).to_owned();
     Ok(LocalHostnames { full, short })
 }
 
@@ -250,8 +241,7 @@ mod tests {
     #[test]
     fn preserves_plain_dollar_and_environment_value_characters() {
         assert_eq!(
-            expand_include_environment_with("price$5/${SPACED}/${PERCENT}", 1024, lookup)
-                .unwrap(),
+            expand_include_environment_with("price$5/${SPACED}/${PERCENT}", 1024, lookup).unwrap(),
             "price$5/dir with spaces/literal%l.conf"
         );
         assert_eq!(
@@ -326,9 +316,7 @@ mod tests {
         assert!(expand_include_environment_with("%%ab", 2, lookup).is_err());
 
         let names = query_local_hostnames().unwrap();
-        assert!(
-            expand_include_environment_with("%l", names.full.len() - 1, lookup).is_err()
-        );
+        assert!(expand_include_environment_with("%l", names.full.len() - 1, lookup).is_err());
         assert_eq!(
             expand_include_environment_with("%l", names.full.len(), lookup).unwrap(),
             names.full.as_str()

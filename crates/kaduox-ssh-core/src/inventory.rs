@@ -63,21 +63,15 @@ impl HostInventory {
         let mut visiting = Vec::new();
         let mut seen_hosts = HashSet::new();
         let mut expanded = Vec::new();
-        expand_group_inner(
-            name,
-            &lookup,
-            &mut visiting,
-            &mut seen_hosts,
-            &mut expanded,
-        )?;
+        expand_group_inner(name, &lookup, &mut visiting, &mut seen_hosts, &mut expanded)?;
         Ok(expanded)
     }
 }
 
 pub fn load_inventory(path: impl AsRef<Path>) -> Result<HostInventory> {
     let path = path.as_ref();
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read inventory {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("failed to read inventory {}", path.display()))?;
     if bytes.len() > MAX_INVENTORY_BYTES {
         bail!(
             "inventory {} exceeds the {} byte safety limit",
@@ -110,8 +104,9 @@ pub fn discover_inventory() -> Result<HostInventory> {
             hosts: Vec::new(),
             groups: Vec::new(),
         }),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to read inventory {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to read inventory {}", path.display()))
+        }
     }
 }
 
@@ -137,9 +132,7 @@ pub fn default_inventory_path() -> Result<PathBuf> {
             .join("inventory"));
     }
 
-    bail!(
-        "cannot determine inventory path; set KADUOX_SSH_INVENTORY explicitly"
-    )
+    bail!("cannot determine inventory path; set KADUOX_SSH_INVENTORY explicitly")
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -208,9 +201,7 @@ fn parse_inventory(text: &str, source: Option<PathBuf>) -> Result<HostInventory>
                         InventoryMember::Group(group.to_owned())
                     } else {
                         ConnectionTarget::parse(token).with_context(|| {
-                            format!(
-                                "inventory line {line_number}: invalid host member {token:?}"
-                            )
+                            format!("inventory line {line_number}: invalid host member {token:?}")
                         })?;
                         InventoryMember::Host((*token).to_owned())
                     };
@@ -246,9 +237,9 @@ fn parse_inventory(text: &str, source: Option<PathBuf>) -> Result<HostInventory>
                 InventoryMember::Host(host) if !hosts.contains(host) => bail!(
                     "inventory group {group_name} references undeclared host {host}; add `host {host}` first"
                 ),
-                InventoryMember::Group(group) if !groups.contains_key(group) => bail!(
-                    "inventory group {group_name} references unknown group @{group}"
-                ),
+                InventoryMember::Group(group) if !groups.contains_key(group) => {
+                    bail!("inventory group {group_name} references unknown group @{group}")
+                }
                 _ => {}
             }
         }
@@ -355,11 +346,8 @@ mod tests {
 
     #[test]
     fn rejects_group_cycles_eagerly() {
-        let error = parse_inventory(
-            "host web\ngroup a @b\ngroup b @c\ngroup c @a web\n",
-            None,
-        )
-        .unwrap_err();
+        let error = parse_inventory("host web\ngroup a @b\ngroup b @c\ngroup c @a web\n", None)
+            .unwrap_err();
         assert!(error.to_string().contains("group cycle"));
     }
 

@@ -172,10 +172,11 @@ impl<'a> TransferTaskManager<'a> {
                     bytes,
                     ..Default::default()
                 }),
-            TransferTaskKind::UploadDirectory => self
-                .client
-                .upload_recursive(Path::new(&source), &destination, options)
-                .await,
+            TransferTaskKind::UploadDirectory => {
+                self.client
+                    .upload_recursive(Path::new(&source), &destination, options)
+                    .await
+            }
             TransferTaskKind::DownloadFile => self
                 .client
                 .download_with_options(&source, Path::new(&destination), options)
@@ -185,10 +186,11 @@ impl<'a> TransferTaskManager<'a> {
                     bytes,
                     ..Default::default()
                 }),
-            TransferTaskKind::DownloadDirectory => self
-                .client
-                .download_recursive(&source, Path::new(&destination), options)
-                .await,
+            TransferTaskKind::DownloadDirectory => {
+                self.client
+                    .download_recursive(&source, Path::new(&destination), options)
+                    .await
+            }
         };
 
         if let Err(error) = await_tracking_bridge(bridge).await {
@@ -258,14 +260,12 @@ async fn await_tracking_bridge(handle: JoinHandle<Result<()>>) -> Result<()> {
 }
 
 fn local_task_path(path: &Path) -> Result<String> {
-    path.to_str()
-        .map(ToOwned::to_owned)
-        .with_context(|| {
-            format!(
-                "tracked transfer local path must be valid UTF-8 for reliable retry: {}",
-                path.display()
-            )
-        })
+    path.to_str().map(ToOwned::to_owned).with_context(|| {
+        format!(
+            "tracked transfer local path must be valid UTF-8 for reliable retry: {}",
+            path.display()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -274,7 +274,10 @@ mod tests {
 
     #[test]
     fn tracked_local_path_requires_utf8_when_platform_allows_non_utf8() {
-        assert_eq!(local_task_path(Path::new("local/file")).unwrap(), "local/file");
+        assert_eq!(
+            local_task_path(Path::new("local/file")).unwrap(),
+            "local/file"
+        );
     }
 
     #[test]

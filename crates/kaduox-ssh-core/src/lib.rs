@@ -22,13 +22,13 @@ mod remote_path;
 mod symlink_policy;
 mod sync;
 mod target;
+mod transfer_download_policy;
 #[path = "transfer.rs"]
 mod transfer_engine;
-mod transfer_download_policy;
 mod transfer_facade;
+pub(crate) mod transfer_policy;
 mod transfer_task;
 mod transfer_task_manager;
-pub(crate) mod transfer_policy;
 pub(crate) use transfer_facade as transfer;
 
 pub use auth::Authentication;

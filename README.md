@@ -37,6 +37,8 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - `kssh-fleet` bounded-concurrency typed command execution across multiple SSH targets
 - per-target fleet failure isolation, capped output retention, and terminal-safe aggregation
 - `kssh-inventory` offline inventory validation, listing, and group expansion
+- persistent private host library with host aliases, recent-use ordering, and named jump chains (`kssh hosts`, `kssh chains`)
+- `kssh-daemon` per-user local IPC connection-reuse daemon; `kssh` reuses authenticated transports through it before falling back to a direct connection, with per-hop interactive jump authentication bridged over the private IPC channel
 - real OpenSSH protocol integration fixtures, including fleet and Host Certificate coverage
 - Linux/macOS/Windows CI, Rust 1.85 MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates
 - committed `Cargo.lock` with `--locked` builds
@@ -114,8 +116,10 @@ See `docs/OPENSSH_CONFIG.md` and `docs/HOST_CERTIFICATES.md` for the exact suppo
 
 ```text
 crates/
-  kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege/manager core
-  kaduox-ssh-cli/    # kssh + kssh-tui + kssh-fleet + kssh-inventory package
+  kaduox-ssh-core/    # transport/auth/session/forward/SFTP/sync/privilege/manager core
+  kaduox-ssh-hosts/   # atomic private TOML host library, aliases, and named jump chains
+  kaduox-ssh-daemon/  # per-user IPC connection-reuse daemon (peer identity, bounded protocol)
+  kaduox-ssh-cli/     # kssh + kssh-tui + kssh-fleet + kssh-inventory package
 ```
 
 The core is frontend-independent. TUI sessions use explicit connection leases over the same manager, while fleet operations use the same typed command and transport APIs with separate batch scheduling and output policies.
@@ -242,7 +246,6 @@ Some features are deliberately not enabled until they can be implemented complet
 - complete OpenSSH `Match` evaluation beyond the bounded `all` / `originalhost` subset, plus the remaining named Include percent tokens/`~user`/full-glob semantics;
 - RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
 - encrypted persistent credential storage and its key-management model;
-- cross-process ControlMaster-style reuse through a local daemon/IPC protocol;
 - symbolic-link follow/preserve transfer/sync semantics with bounded cycle, escape, and cross-platform target handling.
 
 See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.

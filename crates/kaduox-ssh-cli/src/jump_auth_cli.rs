@@ -25,8 +25,8 @@ impl JumpAuthProvider for InteractiveJumpAuth {
                 request.jump.port,
                 request.attempt
             );
-            let password = tokio::task::spawn_blocking(move || rpassword::prompt_password(prompt))
-                .await??;
+            let password =
+                tokio::task::spawn_blocking(move || rpassword::prompt_password(prompt)).await??;
             if password.is_empty() {
                 return Ok(None);
             }
@@ -54,7 +54,11 @@ pub(crate) async fn print_progress(
                 terminal_safe(&host),
                 port
             ),
-            ConnectionProgress::JumpConnected { index, total, alias } => eprintln!(
+            ConnectionProgress::JumpConnected {
+                index,
+                total,
+                alias,
+            } => eprintln!(
                 "[jump {}/{}] transport ready: {}",
                 index + 1,
                 total,

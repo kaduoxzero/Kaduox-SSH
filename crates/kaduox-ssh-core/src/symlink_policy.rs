@@ -41,7 +41,8 @@ impl SshClient {
         if policy == SymlinkPolicy::Reject {
             preflight_local_tree_no_links(local_path, true, &options).await?;
         }
-        self.upload_recursive(local_path, remote_path, options).await
+        self.upload_recursive(local_path, remote_path, options)
+            .await
     }
 
     /// Privileged recursive upload with an explicit local source-tree link
@@ -88,7 +89,8 @@ impl SshClient {
             preflight?;
             close?;
         }
-        self.download_recursive(remote_path, local_path, options).await
+        self.download_recursive(remote_path, local_path, options)
+            .await
     }
 
     /// Build a synchronization plan with an explicit link policy for both the
@@ -103,12 +105,14 @@ impl SshClient {
         if policy == SymlinkPolicy::Reject {
             preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
             let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-            let preflight = preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
+            let preflight =
+                preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
             let close = sftp.close().await;
             preflight?;
             close?;
         }
-        self.plan_sync_to_remote(local_root, remote_root, options).await
+        self.plan_sync_to_remote(local_root, remote_root, options)
+            .await
     }
 
     /// Apply a synchronization plan with the selected link policy rechecked
@@ -124,7 +128,8 @@ impl SshClient {
         if policy == SymlinkPolicy::Reject {
             preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
             let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-            let preflight = preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
+            let preflight =
+                preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
             let close = sftp.close().await;
             preflight?;
             close?;
@@ -180,10 +185,16 @@ async fn preflight_local_tree_no_links(
         if allow_file_root {
             return Ok(());
         }
-        bail!("recursive source root must be a directory: {}", root.display());
+        bail!(
+            "recursive source root must be a directory: {}",
+            root.display()
+        );
     }
     if !metadata.is_dir() {
-        bail!("recursive source root is not a regular file or directory: {}", root.display());
+        bail!(
+            "recursive source root is not a regular file or directory: {}",
+            root.display()
+        );
     }
 
     let mut stack = vec![root.to_path_buf()];
@@ -195,9 +206,9 @@ async fn preflight_local_tree_no_links(
         while let Some(entry) = entries.next_entry().await? {
             check_cancelled(options)?;
             let path = entry.path();
-            let metadata = tokio::fs::symlink_metadata(&path)
-                .await
-                .with_context(|| format!("failed to inspect recursive source {}", path.display()))?;
+            let metadata = tokio::fs::symlink_metadata(&path).await.with_context(|| {
+                format!("failed to inspect recursive source {}", path.display())
+            })?;
             if is_local_link_like(&metadata) {
                 bail!(
                     "symlink policy rejects symbolic-link/reparse entry in recursive source: {}",
@@ -324,7 +335,9 @@ mod tests {
     #[tokio::test]
     async fn reject_policy_accepts_regular_local_tree() {
         let root = temp_root("regular");
-        tokio::fs::create_dir_all(root.join("nested")).await.unwrap();
+        tokio::fs::create_dir_all(root.join("nested"))
+            .await
+            .unwrap();
         tokio::fs::write(root.join("nested/app.bin"), b"data")
             .await
             .unwrap();
@@ -366,7 +379,11 @@ mod tests {
         let options = TransferOptions::default();
         options.cancellation.cancel();
 
-        assert!(preflight_local_tree_no_links(&root, false, &options).await.is_err());
+        assert!(
+            preflight_local_tree_no_links(&root, false, &options)
+                .await
+                .is_err()
+        );
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

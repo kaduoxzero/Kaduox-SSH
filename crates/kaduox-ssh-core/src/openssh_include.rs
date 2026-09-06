@@ -19,11 +19,7 @@ const MAX_GLOB_COMPONENT_BYTES: usize = 1024;
 const ACTIVE_PROBE_PORT: u16 = 65_534;
 const FALLBACK_PROBE_PORT: u16 = 65_535;
 
-pub(crate) fn expand_user_config(
-    root: &Path,
-    home: &Path,
-    original_host: &str,
-) -> Result<String> {
+pub(crate) fn expand_user_config(root: &Path, home: &Path, original_host: &str) -> Result<String> {
     let mut state = ExpansionState::for_connection(home, original_host);
 
     // Connection resolution is target-specific. Flatten only directives that
@@ -82,8 +78,7 @@ impl<'a> ExpansionState<'a> {
         never_match: bool,
     ) -> Result<String> {
         let identity = self.enter_file(path, depth)?;
-        let result =
-            self.expand_connection_file_inner(path, depth, inherited_active, never_match);
+        let result = self.expand_connection_file_inner(path, depth, inherited_active, never_match);
         self.active_paths.remove(&identity);
         result
     }
@@ -156,12 +151,7 @@ impl<'a> ExpansionState<'a> {
                 let pattern = self.anchor_user_include(&argument)?;
                 for include in expand_path_pattern(&pattern)? {
                     let included = self
-                        .expand_connection_file(
-                            &include,
-                            depth + 1,
-                            active,
-                            child_never_match,
-                        )
+                        .expand_connection_file(&include, depth + 1, active, child_never_match)
                         .with_context(|| {
                             format!(
                                 "while expanding OpenSSH Include from {}:{}",
@@ -212,15 +202,15 @@ impl<'a> ExpansionState<'a> {
             for argument in arguments {
                 let pattern = self.anchor_user_include(&argument)?;
                 for include in expand_path_pattern(&pattern)? {
-                    let included = self
-                        .expand_catalog_file(&include, depth + 1)
-                        .with_context(|| {
-                            format!(
-                                "while expanding OpenSSH catalog Include from {}:{}",
-                                path.display(),
-                                line_index + 1
-                            )
-                        })?;
+                    let included =
+                        self.expand_catalog_file(&include, depth + 1)
+                            .with_context(|| {
+                                format!(
+                                    "while expanding OpenSSH catalog Include from {}:{}",
+                                    path.display(),
+                                    line_index + 1
+                                )
+                            })?;
                     push_bounded(&mut expanded, &included)?;
                     if !included.ends_with('\n') {
                         push_bounded(&mut expanded, "\n")?;
@@ -239,8 +229,12 @@ impl<'a> ExpansionState<'a> {
             bail!("OpenSSH Include expansion exceeds the {MAX_INCLUDE_FILES}-file safety limit");
         }
 
-        let identity = fs::canonicalize(path)
-            .with_context(|| format!("failed to resolve OpenSSH config include {}", path.display()))?;
+        let identity = fs::canonicalize(path).with_context(|| {
+            format!(
+                "failed to resolve OpenSSH config include {}",
+                path.display()
+            )
+        })?;
         if !self.active_paths.insert(identity.clone()) {
             bail!("OpenSSH Include cycle detected at {}", path.display());
         }
@@ -335,18 +329,16 @@ impl<'a> ExpansionState<'a> {
 }
 
 fn host_directive_matches(line: &str, original_host: &str) -> Result<bool> {
-    let probe = format!(
-        "{line}\n  Port {ACTIVE_PROBE_PORT}\nHost *\n  Port {FALLBACK_PROBE_PORT}\n"
-    );
+    let probe =
+        format!("{line}\n  Port {ACTIVE_PROBE_PORT}\nHost *\n  Port {FALLBACK_PROBE_PORT}\n");
     let parsed = russh_config::parse(&probe, original_host)
         .context("failed to evaluate OpenSSH Host directive")?;
     Ok(parsed.port() == ACTIVE_PROBE_PORT)
 }
 
 fn supported_match_directive_matches(line: &str, original_host: &str) -> Result<bool> {
-    let probe = format!(
-        "{line}\n  Port {ACTIVE_PROBE_PORT}\nHost *\n  Port {FALLBACK_PROBE_PORT}\n"
-    );
+    let probe =
+        format!("{line}\n  Port {ACTIVE_PROBE_PORT}\nHost *\n  Port {FALLBACK_PROBE_PORT}\n");
     let rewritten = rewrite_supported_match_config(&probe, original_host)
         .context("failed to evaluate supported OpenSSH Match directive")?;
     let parsed = russh_config::parse(&rewritten, original_host)
@@ -562,7 +554,10 @@ fn expand_path_pattern(pattern: &Path) -> Result<Vec<PathBuf>> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!("failed to inspect OpenSSH Include path {}", candidate.display())
+                    format!(
+                        "failed to inspect OpenSSH Include path {}",
+                        candidate.display()
+                    )
                 });
             }
         }
@@ -595,8 +590,7 @@ fn pattern_explicitly_starts_with_period(pattern: &OsStr) -> Result<bool> {
     let pattern = pattern
         .to_str()
         .context("OpenSSH Include glob patterns must be valid UTF-8")?;
-    Ok(pattern.as_bytes().first() == Some(&b'.')
-        || pattern.as_bytes().starts_with(br"\."))
+    Ok(pattern.as_bytes().first() == Some(&b'.') || pattern.as_bytes().starts_with(br"\."))
 }
 
 fn glob_segment_matches(pattern: &OsStr, candidate: &OsString) -> Result<bool> {
@@ -928,11 +922,7 @@ mod tests {
         let home = temp_root("inactive-invalid-option");
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
-        fs::write(
-            ssh.join("nested.conf"),
-            "Host prod\n  Port not-a-port\n",
-        )
-        .unwrap();
+        fs::write(ssh.join("nested.conf"), "Host prod\n  Port not-a-port\n").unwrap();
         fs::write(
             ssh.join("config"),
             "Host other\n  Include nested.conf\nHost prod\n  User deploy\n",

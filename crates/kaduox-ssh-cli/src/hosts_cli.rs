@@ -3,12 +3,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use kaduox_ssh_hosts::{
-    HostRecord, HostStore, StoredHostKeyPolicy, import_openssh,
-};
+use kaduox_ssh_hosts::{HostRecord, HostStore, StoredHostKeyPolicy, import_openssh};
 
 #[derive(Debug, Parser)]
-#[command(name = "kssh hosts", about = "Manage the persistent Kaduox-SSH host library")]
+#[command(
+    name = "kssh hosts",
+    about = "Manage the persistent Kaduox-SSH host library"
+)]
 struct HostsArgs {
     #[command(subcommand)]
     command: HostsCommand,

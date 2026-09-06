@@ -3,9 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use kaduox_ssh_hosts::{
-    HostStore, InlineJump, JumpChain, JumpHop, StoredHostKeyPolicy,
-};
+use kaduox_ssh_hosts::{HostStore, InlineJump, JumpChain, JumpHop, StoredHostKeyPolicy};
 
 #[derive(Debug, Parser)]
 #[command(name = "kssh chains", about = "Manage reusable named jump chains")]
@@ -71,16 +69,12 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
             println!("chain={}", terminal_safe(&chain.name));
             for (index, hop) in chain.hops.iter().enumerate() {
                 match hop {
-                    JumpHop::Host(alias) => println!(
-                        "{}\thost\t{}",
-                        index + 1,
-                        terminal_safe(alias)
-                    ),
-                    JumpHop::OpenSshAlias(alias) => println!(
-                        "{}\topenssh\t{}",
-                        index + 1,
-                        terminal_safe(alias)
-                    ),
+                    JumpHop::Host(alias) => {
+                        println!("{}\thost\t{}", index + 1, terminal_safe(alias))
+                    }
+                    JumpHop::OpenSshAlias(alias) => {
+                        println!("{}\topenssh\t{}", index + 1, terminal_safe(alias))
+                    }
                     JumpHop::Inline(jump) => println!(
                         "{}\tinline\t{}\t{}@{}:{}\tidentity={}\thost-key={}",
                         index + 1,
@@ -185,7 +179,9 @@ mod tests {
     #[test]
     fn parses_ordered_inline_hop() {
         let hop = parse_hop("inline:edge|jump|gateway.example|2222|/keys/jump|strict").unwrap();
-        let JumpHop::Inline(hop) = hop else { panic!("expected inline hop") };
+        let JumpHop::Inline(hop) = hop else {
+            panic!("expected inline hop")
+        };
         assert_eq!(hop.alias, "edge");
         assert_eq!(hop.port, 2222);
         assert_eq!(hop.host_key_policy, StoredHostKeyPolicy::Strict);

@@ -272,9 +272,9 @@ async fn build_delete_plan(
 
     let mut directories = vec![root.to_owned()];
     while let Some(directory) = directories.pop() {
-        let entries = list_directory(sftp, &directory)
-            .await
-            .with_context(|| format!("failed to scan remote directory for deletion: {directory}"))?;
+        let entries = list_directory(sftp, &directory).await.with_context(|| {
+            format!("failed to scan remote directory for deletion: {directory}")
+        })?;
         for entry in entries {
             let file_type = entry.metadata.file_type;
             match file_type {
@@ -354,9 +354,9 @@ async fn execute_delete_plan(
                         entry.path
                     );
                 }
-                sftp.remove_dir(entry.path.clone()).await.with_context(|| {
-                    format!("failed to remove remote directory {}", entry.path)
-                })?;
+                sftp.remove_dir(entry.path.clone())
+                    .await
+                    .with_context(|| format!("failed to remove remote directory {}", entry.path))?;
             }
             RemoteFileType::Other => {
                 bail!(
@@ -396,8 +396,9 @@ async fn path_exists_no_follow(sftp: &SftpSession, path: &str) -> Result<bool> {
     match sftp.symlink_metadata(path.to_owned()).await {
         Ok(_) => Ok(true),
         Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(false),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect remote path occupancy: {path}")),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect remote path occupancy: {path}"))
+        }
     }
 }
 

@@ -3,9 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::{
-    Authentication, ConnectionConfig, ConnectionProgress, JumpAuthProvider, SshClient,
-};
+use crate::{Authentication, ConnectionConfig, ConnectionProgress, JumpAuthProvider, SshClient};
 
 use super::{ConnectClaim, ConnectionManager, ManagedConnection, ensure_reusable};
 

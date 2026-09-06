@@ -132,16 +132,7 @@ impl DaemonClient {
         WOut: AsyncWrite + Unpin,
         WErr: AsyncWrite + Unpin,
     {
-        Self::exec_with_jump_auth(
-            alias,
-            auth,
-            command,
-            as_user,
-            stdout,
-            stderr,
-            None,
-        )
-        .await
+        Self::exec_with_jump_auth(alias, auth, command, as_user, stdout, stderr, None).await
     }
 
     pub async fn exec_with_jump_auth<WOut, WErr>(
@@ -239,16 +230,7 @@ impl DaemonClient {
         W: AsyncWrite + Unpin,
     {
         Self::shell_with_jump_auth(
-            alias,
-            auth,
-            term,
-            columns,
-            rows,
-            as_user,
-            input,
-            output,
-            resize,
-            None,
+            alias, auth, term, columns, rows, as_user, input, output, resize, None,
         )
         .await
     }
@@ -386,9 +368,7 @@ impl DaemonClient {
     }
 }
 
-async fn wait_for_resize(
-    resize: &mut Option<watch::Receiver<(u32, u32)>>,
-) -> Option<(u32, u32)> {
+async fn wait_for_resize(resize: &mut Option<watch::Receiver<(u32, u32)>>) -> Option<(u32, u32)> {
     match resize {
         Some(receiver) => {
             if receiver.changed().await.is_ok() {

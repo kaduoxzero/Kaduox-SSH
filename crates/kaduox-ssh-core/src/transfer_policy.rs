@@ -176,9 +176,7 @@ async fn upload_file_atomic(
     let work_metadata = remote_symlink_metadata_if_exists(sftp, &work_path).await?;
 
     if !options.resume && work_metadata.is_some() {
-        bail!(
-            "fresh atomic upload staging path already exists; refusing to reuse it: {work_path}"
-        );
+        bail!("fresh atomic upload staging path already exists; refusing to reuse it: {work_path}");
     }
 
     let offset = if let Some(metadata) = work_metadata.as_ref() {
@@ -244,15 +242,8 @@ async fn upload_file_atomic(
         Some(total),
         false,
     );
-    let copied = copy_with_progress(
-        &mut local,
-        &mut remote,
-        remote_path,
-        offset,
-        total,
-        options,
-    )
-    .await?;
+    let copied =
+        copy_with_progress(&mut local, &mut remote, remote_path, offset, total, options).await?;
     remote.flush().await?;
     remote.shutdown().await?;
     drop(remote);
@@ -278,22 +269,19 @@ pub(crate) async fn ensure_remote_atomic_destination_absent(
         return Ok(());
     };
     if metadata.is_symlink() {
-        bail!(
-            "refusing atomic upload replacement of remote symbolic link: {final_path}"
-        );
+        bail!("refusing atomic upload replacement of remote symbolic link: {final_path}");
     }
     bail!(
         "atomic overwrite of existing remote destination is unavailable with the current SFTP v3 API: {final_path}; use atomic=false (CLI: --no-atomic) only if a non-atomic replacement is acceptable"
     )
 }
 
-async fn finish_remote_atomic(
-    sftp: &SftpSession,
-    work_path: &str,
-    final_path: &str,
-) -> Result<()> {
+async fn finish_remote_atomic(sftp: &SftpSession, work_path: &str, final_path: &str) -> Result<()> {
     ensure_remote_atomic_destination_absent(sftp, final_path).await?;
-    match sftp.rename(work_path.to_owned(), final_path.to_owned()).await {
+    match sftp
+        .rename(work_path.to_owned(), final_path.to_owned())
+        .await
+    {
         Ok(()) => Ok(()),
         Err(error) => {
             if remote_symlink_metadata_if_exists(sftp, final_path)
@@ -455,7 +443,8 @@ async fn preserve_remote_mtime(
         attributes.permissions = Some(local_metadata.permissions().mode());
     }
     if attributes.mtime.is_some() || attributes.permissions.is_some() {
-        sftp.set_metadata(remote_path.to_owned(), attributes).await?;
+        sftp.set_metadata(remote_path.to_owned(), attributes)
+            .await?;
     }
     Ok(())
 }

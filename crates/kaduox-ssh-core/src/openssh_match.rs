@@ -50,9 +50,8 @@ pub(crate) fn rewrite_supported_match_config(
             let arguments = directive_arguments(line, key).with_context(|| {
                 format!("invalid OpenSSH Match syntax on line {}", line_index + 1)
             })?;
-            emit = evaluate_supported_match(&arguments, original_host).with_context(|| {
-                format!("unsupported OpenSSH Match on line {}", line_index + 1)
-            })?;
+            emit = evaluate_supported_match(&arguments, original_host)
+                .with_context(|| format!("unsupported OpenSSH Match on line {}", line_index + 1))?;
             if emit {
                 // Resolution is for one original host, so an accepted Match
                 // block can be represented as Host * while preserving ordered
@@ -154,13 +153,7 @@ fn wildcard_match(pattern: &[u8], candidate: &[u8]) -> bool {
                     true
                 } else {
                     (candidate_index..=candidate.len()).any(|next_candidate| {
-                        inner(
-                            pattern,
-                            candidate,
-                            next_pattern,
-                            next_candidate,
-                            memo,
-                        )
+                        inner(pattern, candidate, next_pattern, next_candidate, memo)
                     })
                 }
             }
@@ -213,10 +206,7 @@ fn directive_arguments(line: &str, key: &str) -> Result<Vec<String>> {
 
 fn parse_arguments(input: &str) -> Result<Vec<String>> {
     let input = input.split_once('#').map_or(input, |(head, _)| head);
-    if input
-        .chars()
-        .any(|ch| matches!(ch, '\\' | '\'' | '"'))
-    {
+    if input.chars().any(|ch| matches!(ch, '\\' | '\'' | '"')) {
         bail!(
             "quoted or backslash-escaped Match arguments are not supported in the bounded subset"
         );

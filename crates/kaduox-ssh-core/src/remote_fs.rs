@@ -37,10 +37,7 @@ pub struct RemoteFileStat {
     pub symlink_target: Option<String>,
 }
 
-pub(crate) async fn list_directory(
-    sftp: &SftpSession,
-    path: &str,
-) -> Result<Vec<RemoteDirEntry>> {
+pub(crate) async fn list_directory(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteDirEntry>> {
     let directory = sftp
         .read_dir(path)
         .await
@@ -146,7 +143,10 @@ mod tests {
     fn maps_sftp_file_types_without_loss() {
         assert_eq!(map_file_type(SftpFileType::Dir), RemoteFileType::Directory);
         assert_eq!(map_file_type(SftpFileType::File), RemoteFileType::File);
-        assert_eq!(map_file_type(SftpFileType::Symlink), RemoteFileType::Symlink);
+        assert_eq!(
+            map_file_type(SftpFileType::Symlink),
+            RemoteFileType::Symlink
+        );
         assert_eq!(map_file_type(SftpFileType::Other), RemoteFileType::Other);
     }
 

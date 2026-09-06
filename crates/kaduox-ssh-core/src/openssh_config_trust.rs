@@ -21,14 +21,16 @@ pub(crate) fn read_user_config_file(path: &Path, home: &Path) -> Result<String> 
         .metadata()
         .with_context(|| format!("failed to inspect OpenSSH config {}", path.display()))?;
     if !metadata.is_file() {
-        bail!("OpenSSH config path is not a regular file: {}", path.display());
+        bail!(
+            "OpenSSH config path is not a regular file: {}",
+            path.display()
+        );
     }
 
     verify_platform_trust(path, home, &file, &metadata)?;
 
-    let read_limit = u64::try_from(MAX_CONFIG_FILE_BYTES)
-        .expect("4 MiB OpenSSH config limit fits u64")
-        + 1;
+    let read_limit =
+        u64::try_from(MAX_CONFIG_FILE_BYTES).expect("4 MiB OpenSSH config limit fits u64") + 1;
     let mut limited = file.take(read_limit);
     let mut contents = String::new();
     limited
@@ -138,7 +140,10 @@ mod tests {
             fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        assert_eq!(read_user_config_file(&config, &home).unwrap(), "Host prod\n");
+        assert_eq!(
+            read_user_config_file(&config, &home).unwrap(),
+            "Host prod\n"
+        );
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -239,7 +244,10 @@ mod tests {
 
         assert!(read_user_config_file(&config, &home).is_ok());
         grant_builtin_users(&config, "(R)");
-        assert_eq!(read_user_config_file(&config, &home).unwrap(), "Host prod\n");
+        assert_eq!(
+            read_user_config_file(&config, &home).unwrap(),
+            "Host prod\n"
+        );
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -254,7 +262,9 @@ mod tests {
 
         assert!(read_user_config_file(&config, &home).is_ok());
         grant_builtin_users(&config, "(W)");
-        let error = read_user_config_file(&config, &home).unwrap_err().to_string();
+        let error = read_user_config_file(&config, &home)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("write-class Windows ACL rights"), "{error}");
         fs::remove_dir_all(home).unwrap();
     }

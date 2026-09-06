@@ -122,7 +122,11 @@ mod tests {
     fn renders_arguments_environment_and_working_directory() {
         let spec = RemoteCommandSpec {
             program: "printf".to_owned(),
-            arguments: vec!["%s %s\\n".to_owned(), "hello world".to_owned(), "it's-safe".to_owned()],
+            arguments: vec![
+                "%s %s\\n".to_owned(),
+                "hello world".to_owned(),
+                "it's-safe".to_owned(),
+            ],
             environment: vec![("APP_ENV".to_owned(), "prod west".to_owned())],
             working_directory: Some("/srv/app release".to_owned()),
         };

@@ -142,12 +142,11 @@ impl client::Handler for ClientHandler {
                     "server unexpectedly presented a host certificate while certificate trust is disabled by insecure host-key policy"
                 );
             }
-            let trust = HostTrustPolicy::load(
-                &self.host,
-                self.port,
-                self.known_hosts_file.as_deref(),
-            )
-            .with_context(|| format!("failed to load host certificate trust for {}", self.host))?;
+            let trust =
+                HostTrustPolicy::load(&self.host, self.port, self.known_hosts_file.as_deref())
+                    .with_context(|| {
+                        format!("failed to load host certificate trust for {}", self.host)
+                    })?;
             trust
                 .verify_host_certificate(&self.host, certificate)
                 .with_context(|| format!("host certificate for {} was rejected", self.host))?;
@@ -158,12 +157,13 @@ impl client::Handler for ClientHandler {
         }
 
         let public_key = server_public_key.public_key();
-        let trust = HostTrustPolicy::load(
-            &self.host,
-            self.port,
-            self.known_hosts_file.as_deref(),
-        )
-        .with_context(|| format!("failed to load host-key revocation policy for {}", self.host))?;
+        let trust = HostTrustPolicy::load(&self.host, self.port, self.known_hosts_file.as_deref())
+            .with_context(|| {
+                format!(
+                    "failed to load host-key revocation policy for {}",
+                    self.host
+                )
+            })?;
         if trust.is_revoked(&public_key) {
             bail!("server host key for {} is marked @revoked", self.host);
         }

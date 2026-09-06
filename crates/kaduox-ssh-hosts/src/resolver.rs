@@ -29,8 +29,9 @@ pub fn resolve_host(
         });
     };
 
-    let mut config = ConnectionConfig::from_openssh(alias, None, None)
-        .with_context(|| format!("OpenSSH fallback resolution for host-library alias {alias} failed"))?;
+    let mut config = ConnectionConfig::from_openssh(alias, None, None).with_context(|| {
+        format!("OpenSSH fallback resolution for host-library alias {alias} failed")
+    })?;
     overlay_record(&mut config, record, user_override, port_override);
 
     if let Some(chain_name) = &record.jump_chain {

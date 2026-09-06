@@ -30,7 +30,10 @@ impl BroadcastResult {
     }
 }
 
-pub(crate) async fn execute(targets: Vec<BroadcastTarget>, command: String) -> Result<(usize, usize)> {
+pub(crate) async fn execute(
+    targets: Vec<BroadcastTarget>,
+    command: String,
+) -> Result<(usize, usize)> {
     if targets.is_empty() {
         return Ok((0, 0));
     }
@@ -69,12 +72,7 @@ async fn run_target(target: BroadcastTarget, command: String) -> BroadcastResult
     let mut stderr = CappedBuffer::new(BROADCAST_OUTPUT_LIMIT);
     let exec_result = target
         .client
-        .exec_stream(
-            &command,
-            &RemoteUser::Current,
-            &mut stdout,
-            &mut stderr,
-        )
+        .exec_stream(&command, &RemoteUser::Current, &mut stdout, &mut stderr)
         .await;
 
     match exec_result {
@@ -114,7 +112,11 @@ fn print_result(result: &BroadcastResult, completed: usize, total: usize) -> Res
         writeln!(
             output,
             "--- stdout{} ---",
-            if result.stdout.truncated { " (truncated)" } else { "" }
+            if result.stdout.truncated {
+                " (truncated)"
+            } else {
+                ""
+            }
         )?;
         writeln!(
             output,
@@ -126,7 +128,11 @@ fn print_result(result: &BroadcastResult, completed: usize, total: usize) -> Res
         writeln!(
             output,
             "--- stderr{} ---",
-            if result.stderr.truncated { " (truncated)" } else { "" }
+            if result.stderr.truncated {
+                " (truncated)"
+            } else {
+                ""
+            }
         )?;
         writeln!(
             output,
@@ -213,17 +219,11 @@ impl AsyncWrite for CappedBuffer {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut TaskContext<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut TaskContext<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }

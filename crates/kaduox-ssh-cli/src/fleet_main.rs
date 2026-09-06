@@ -437,16 +437,18 @@ fn resolve_auth_template(cli: &Cli) -> Result<AuthTemplate> {
         )?));
     }
     if cli.keyboard_interactive {
-        return Ok(AuthTemplate::KeyboardInteractive(rpassword::prompt_password(
-            "Fleet keyboard-interactive response: ",
-        )?));
+        return Ok(AuthTemplate::KeyboardInteractive(
+            rpassword::prompt_password("Fleet keyboard-interactive response: ")?,
+        ));
     }
     if cli.agent {
         return Ok(AuthTemplate::Agent);
     }
     if let Some(path) = &cli.identity {
         let passphrase = if cli.ask_key_passphrase {
-            Some(rpassword::prompt_password("Fleet private key passphrase: ")?)
+            Some(rpassword::prompt_password(
+                "Fleet private key passphrase: ",
+            )?)
         } else {
             None
         };
@@ -501,7 +503,11 @@ fn print_plan(
         targets.len(),
         cli.jobs,
         planned_auth_name(cli),
-        if command.is_some() { "validated" } else { "none" }
+        if command.is_some() {
+            "validated"
+        } else {
+            "none"
+        }
     )?;
 
     if let Some(command) = command {
@@ -708,17 +714,11 @@ impl AsyncWrite for CappedBuffer {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut TaskContext<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut TaskContext<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -762,14 +762,8 @@ mod tests {
 
     #[test]
     fn plan_auth_description_never_requires_secret_material() {
-        let cli = Cli::try_parse_from([
-            "kssh-fleet",
-            "--host",
-            "server",
-            "--plan",
-            "--password",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["kssh-fleet", "--host", "server", "--plan", "--password"])
+            .unwrap();
         assert_eq!(planned_auth_name(&cli), "password-prompt-on-execute");
     }
 }

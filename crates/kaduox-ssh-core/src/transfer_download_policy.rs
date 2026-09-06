@@ -11,9 +11,7 @@ use tokio::task::JoinSet;
 use crate::remote_path::{
     join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
 };
-use crate::transfer_policy::{
-    TransferDirection, TransferEvent, TransferOptions, TransferSummary,
-};
+use crate::transfer_policy::{TransferDirection, TransferEvent, TransferOptions, TransferSummary};
 
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
 static LOCAL_STAGING_SERIAL: AtomicU64 = AtomicU64::new(0);
@@ -55,7 +53,9 @@ pub(crate) async fn download_tree(
         .await
         .with_context(|| format!("failed to stat remote download root {remote_root}"))?;
     if root_metadata.is_symlink() {
-        bail!("refusing to follow remote symbolic-link root during recursive download: {remote_root}");
+        bail!(
+            "refusing to follow remote symbolic-link root during recursive download: {remote_root}"
+        );
     }
     if root_metadata.is_regular() {
         let bytes = download_file(&sftp, remote_root, local_root, &options).await?;
@@ -104,11 +104,8 @@ pub(crate) async fn download_tree(
             let local_path = local_dir.join(local_relative);
 
             if file_type.is_dir() {
-                ensure_local_directory_no_links(
-                    &local_path,
-                    "recursive atomic download directory",
-                )
-                .await?;
+                ensure_local_directory_no_links(&local_path, "recursive atomic download directory")
+                    .await?;
                 summary.directories = summary
                     .directories
                     .checked_add(1)
@@ -152,7 +149,10 @@ async fn download_file_atomic(
         bail!("remote path {remote_path} is not a regular file");
     }
 
-    if let Some(parent) = local_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+    if let Some(parent) = local_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
         ensure_local_directory_no_links(parent, "atomic download parent directory").await?;
     }
     ensure_atomic_destination_absent(local_path).await?;
@@ -303,8 +303,12 @@ async fn ensure_atomic_destination_absent(path: &Path) -> Result<()> {
             path.display()
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect atomic download destination {}", path.display())),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to inspect atomic download destination {}",
+                path.display()
+            )
+        }),
     }
 }
 
@@ -316,18 +320,20 @@ async fn open_atomic_staging(path: &Path, existing_resume: bool) -> Result<tokio
     }
     options.open(path).await.with_context(|| {
         if existing_resume {
-            format!("failed to reopen validated resume staging file {}", path.display())
+            format!(
+                "failed to reopen validated resume staging file {}",
+                path.display()
+            )
         } else {
-            format!("failed to exclusively create atomic download staging file {}", path.display())
+            format!(
+                "failed to exclusively create atomic download staging file {}",
+                path.display()
+            )
         }
     })
 }
 
-fn validate_resume_staging(
-    path: &Path,
-    metadata: &std::fs::Metadata,
-    total: u64,
-) -> Result<()> {
+fn validate_resume_staging(path: &Path, metadata: &std::fs::Metadata, total: u64) -> Result<()> {
     if is_local_link_like(metadata) {
         bail!(
             "refusing to resume through symbolic link/reparse point: {}",
@@ -335,7 +341,10 @@ fn validate_resume_staging(
         );
     }
     if !metadata.is_file() {
-        bail!("download resume staging path is not a regular file: {}", path.display());
+        bail!(
+            "download resume staging path is not a regular file: {}",
+            path.display()
+        );
     }
     if metadata.len() > total {
         bail!(
@@ -348,13 +357,21 @@ fn validate_resume_staging(
 }
 
 async fn finish_local_atomic(work_path: &Path, final_path: &Path) -> Result<()> {
-    if let Some(parent) = final_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+    if let Some(parent) = final_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+    {
         ensure_local_directory_no_links(parent, "atomic download destination parent").await?;
     }
 
     let staging = tokio::fs::symlink_metadata(work_path)
         .await
-        .with_context(|| format!("failed to inspect atomic download staging {}", work_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to inspect atomic download staging {}",
+                work_path.display()
+            )
+        })?;
     if is_local_link_like(&staging) || !staging.is_file() {
         bail!(
             "atomic download staging path is no longer a regular file: {}",
@@ -430,14 +447,15 @@ async fn ensure_local_directory_no_links(path: &Path, role: &str) -> Result<()> 
                 match tokio::fs::create_dir(candidate).await {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        let metadata = tokio::fs::symlink_metadata(candidate)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "failed to inspect concurrently created {role} {}",
-                                    candidate.display()
-                                )
-                            })?;
+                        let metadata =
+                            tokio::fs::symlink_metadata(candidate)
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "failed to inspect concurrently created {role} {}",
+                                        candidate.display()
+                                    )
+                                })?;
                         validate_local_directory(candidate, &metadata, role)?;
                     }
                     Err(error) => {
@@ -506,10 +524,7 @@ fn unique_local_staging_path(path: &Path) -> PathBuf {
     let serial = LOCAL_STAGING_SERIAL.fetch_add(1, Ordering::Relaxed);
     append_local_suffix(
         path,
-        &format!(
-            ".kaduox.part.{:x}.{stamp:x}.{serial:x}",
-            std::process::id()
-        ),
+        &format!(".kaduox.part.{:x}.{stamp:x}.{serial:x}", std::process::id()),
     )
 }
 

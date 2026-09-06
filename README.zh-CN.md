@@ -27,6 +27,8 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 - `kssh-tui` 多主机 Session Dashboard、OpenSSH Host picker、远端文件浏览、Shell/sudo Shell、文件操作和可恢复传输任务
 - `kssh-fleet` 有界并发的多目标 typed command 执行，逐主机故障隔离与输出上限
 - `kssh-inventory` 离线 Inventory 校验、列表和嵌套 group 展开
+- 私有持久化主机库：主机别名、按最近使用排序、命名 jump chain（`kssh hosts`、`kssh chains`）
+- `kssh-daemon` 单用户本地 IPC 连接复用 daemon；`kssh` 优先通过它复用已认证传输，失败时回退直连；逐跳交互式 jump 认证通过私有 IPC 通道桥接
 - Linux/macOS/Windows CI、Rust 1.85 MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁
 - 确定性的四套发行包流程，包含每个二进制的 manifest 和最终 SHA-256 校验文件
 - 稳定版 Windows Authenticode，以及 macOS Developer ID 签名/公证
@@ -104,8 +106,10 @@ v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语�
 
 ```text
 crates/
-  kaduox-ssh-core/   # transport/auth/session/forward/SFTP/sync/privilege/manager 核心
-  kaduox-ssh-cli/    # kssh + kssh-tui + kssh-fleet + kssh-inventory
+  kaduox-ssh-core/    # transport/auth/session/forward/SFTP/sync/privilege/manager 核心
+  kaduox-ssh-hosts/   # 原子私有 TOML 主机库、别名与命名 jump chain
+  kaduox-ssh-daemon/  # 单用户 IPC 连接复用 daemon（peer 身份校验、有界协议）
+  kaduox-ssh-cli/     # kssh + kssh-tui + kssh-fleet + kssh-inventory
 ```
 
 核心层与具体前端解耦，TUI/Fleet/Inventory 复用相同的安全和传输实现。
@@ -200,7 +204,6 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 - 超出当前 `all` / `originalhost` 子集的完整 OpenSSH `Match` 计算，以及剩余 named Include percent token/`~user`/完整 glob；
 - RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
 - 加密持久凭据存储及密钥管理模型；
-- 通过本地 daemon/IPC 实现跨进程 ControlMaster 风格连接复用；
 - 符号链接 follow/preserve 传输/同步语义，以及有界循环、越界和跨平台 target 处理。
 
 更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/HOST_CERTIFICATES.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。

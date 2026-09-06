@@ -52,8 +52,9 @@ impl HostStore {
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => HostDatabase::default(),
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("failed to inspect host database {}", path.display()));
+                return Err(error).with_context(|| {
+                    format!("failed to inspect host database {}", path.display())
+                });
             }
         };
         Ok(Self { path, database })
@@ -336,7 +337,10 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).with_context(|| {
-            format!("failed to set config directory {} mode to 0700", path.display())
+            format!(
+                "failed to set config directory {} mode to 0700",
+                path.display()
+            )
         })?;
     }
     Ok(())
@@ -356,7 +360,10 @@ fn set_private_file_permissions(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).with_context(|| {
-            format!("failed to set host database {} mode to 0600", path.display())
+            format!(
+                "failed to set host database {} mode to 0600",
+                path.display()
+            )
         })?;
     }
     #[cfg(not(unix))]
@@ -430,7 +437,9 @@ mod tests {
         store
             .insert_host(HostRecord::new("prod", "10.0.0.1", "deploy"))
             .unwrap();
-        store.record_success("prod", StoredAuthMethod::Agent).unwrap();
+        store
+            .record_success("prod", StoredAuthMethod::Agent)
+            .unwrap();
         let host = store.host("prod").unwrap();
         assert_eq!(host.stats.connection_count, 1);
         assert_eq!(host.stats.last_auth_method, Some(StoredAuthMethod::Agent));

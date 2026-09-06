@@ -50,7 +50,8 @@ pub struct JumpAuthRequest {
     pub previous_failed: bool,
 }
 
-pub type JumpAuthFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<Authentication>>> + Send + 'a>>;
+pub type JumpAuthFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Authentication>>> + Send + 'a>>;
 
 /// Supplies credentials for one already-connected jump-host SSH session.
 ///

@@ -85,9 +85,7 @@ pub(super) async fn preflight_atomic_sync(
     Ok(())
 }
 
-fn collect_planned_mutations<'a>(
-    plan: &'a SyncPlan,
-) -> Result<BTreeMap<&'a str, PlannedMutation>> {
+fn collect_planned_mutations<'a>(plan: &'a SyncPlan) -> Result<BTreeMap<&'a str, PlannedMutation>> {
     let mut mutations: BTreeMap<&'a str, PlannedMutation> = BTreeMap::new();
     for (index, action) in plan.actions.iter().enumerate() {
         let mutation = mutations.entry(action.path.as_str()).or_default();
@@ -108,9 +106,7 @@ fn collect_planned_mutations<'a>(
 
     for (path, mutation) in &mutations {
         if mutation.deletes_file() && mutation.deletes_directory() {
-            bail!(
-                "sync plan contains contradictory file/directory delete mutations for {path}"
-            );
+            bail!("sync plan contains contradictory file/directory delete mutations for {path}");
         }
         if let Some(create_index) = mutation.create_directory {
             if let Some(delete_index) = mutation.delete_file.or(mutation.delete_directory) {
@@ -212,10 +208,7 @@ fn validate_parent_beneath_fresh_ancestor(path: &str, mutation: PlannedMutation)
     Ok(())
 }
 
-fn validate_upload_beneath_fresh_ancestor(
-    path: &str,
-    mutation: PlannedMutation,
-) -> Result<()> {
+fn validate_upload_beneath_fresh_ancestor(path: &str, mutation: PlannedMutation) -> Result<()> {
     if mutation.has_delete() {
         bail!(
             "atomic sync plan is stale: upload destination {path} will be absent after parent creation but also has a delete mutation"
@@ -280,10 +273,7 @@ fn reject_atomic_overwrite(path: &str) -> Result<()> {
     )
 }
 
-fn mutation_for(
-    mutations: &BTreeMap<&str, PlannedMutation>,
-    path: &str,
-) -> PlannedMutation {
+fn mutation_for(mutations: &BTreeMap<&str, PlannedMutation>, path: &str) -> PlannedMutation {
     mutations.get(path).copied().unwrap_or_default()
 }
 
@@ -407,30 +397,19 @@ mod tests {
 
     #[test]
     fn absent_atomic_upload_destination_rejects_stale_delete() {
-        validate_final_upload_destination(
-            "/srv/new.bin",
-            None,
-            PlannedMutation::default(),
-        )
-        .unwrap();
+        validate_final_upload_destination("/srv/new.bin", None, PlannedMutation::default())
+            .unwrap();
         assert!(
-            validate_final_upload_destination(
-                "/srv/new.bin",
-                None,
-                mutation(Some(0), None, None),
-            )
-            .is_err()
+            validate_final_upload_destination("/srv/new.bin", None, mutation(Some(0), None, None),)
+                .is_err()
         );
     }
 
     #[test]
     fn upload_and_create_directory_same_path_is_rejected() {
         assert!(
-            validate_upload_beneath_fresh_ancestor(
-                "release",
-                mutation(None, None, Some(0)),
-            )
-            .is_err()
+            validate_upload_beneath_fresh_ancestor("release", mutation(None, None, Some(0)),)
+                .is_err()
         );
     }
 
@@ -510,17 +489,11 @@ mod tests {
 
     #[test]
     fn fresh_ancestor_rejects_stale_delete_but_allows_directory_creation() {
-        validate_parent_beneath_fresh_ancestor(
-            "app/assets",
-            mutation(None, None, Some(0)),
-        )
-        .unwrap();
+        validate_parent_beneath_fresh_ancestor("app/assets", mutation(None, None, Some(0)))
+            .unwrap();
         assert!(
-            validate_parent_beneath_fresh_ancestor(
-                "app/assets",
-                mutation(Some(0), None, Some(1)),
-            )
-            .is_err()
+            validate_parent_beneath_fresh_ancestor("app/assets", mutation(Some(0), None, Some(1)),)
+                .is_err()
         );
     }
 }

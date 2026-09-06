@@ -123,13 +123,9 @@ impl Drop for RemoteForwardHandle {
         let bind_port = self.bind_port;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                let _ = cancel_remote_forward_registration(
-                    &session,
-                    &state,
-                    bind_address,
-                    bind_port,
-                )
-                .await;
+                let _ =
+                    cancel_remote_forward_registration(&session, &state, bind_address, bind_port)
+                        .await;
             });
         }
     }

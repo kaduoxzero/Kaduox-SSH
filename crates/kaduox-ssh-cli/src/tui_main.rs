@@ -106,10 +106,7 @@ async fn main() -> Result<()> {
     tui_workspace::run(&cli, cli.host.clone()).await
 }
 
-pub(crate) fn build_connection_config(
-    cli: &Cli,
-    host: &str,
-) -> Result<(String, ConnectionConfig)> {
+pub(crate) fn build_connection_config(cli: &Cli, host: &str) -> Result<(String, ConnectionConfig)> {
     let target = ConnectionTarget::parse(host)?;
     let target_user = cli.user.as_deref().or(target.username.as_deref());
     let mut config = ConnectionConfig::from_openssh(&target.host, target_user, cli.port)?;
@@ -186,13 +183,8 @@ mod tests {
     #[test]
     fn explicit_user_overrides_user_at_host() {
         let target = ConnectionTarget::parse("deploy@server.example").unwrap();
-        let cli = Cli::try_parse_from([
-            "kssh-tui",
-            "deploy@server.example",
-            "--user",
-            "root",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["kssh-tui", "deploy@server.example", "--user", "root"]).unwrap();
         assert_eq!(
             cli.user.as_deref().or(target.username.as_deref()),
             Some("root")

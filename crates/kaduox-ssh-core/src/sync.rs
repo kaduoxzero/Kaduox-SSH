@@ -160,7 +160,9 @@ impl SshClient {
             let local_relative = local_path_from_remote_relative(&action.path)?;
             let local_path = local_root.join(local_relative);
             let remote_path = join_remote_under_root(remote_root, &action.path)?;
-            tasks.spawn(async move { upload_file(&sftp, &local_path, &remote_path, &transfer).await });
+            tasks.spawn(
+                async move { upload_file(&sftp, &local_path, &remote_path, &transfer).await },
+            );
         }
 
         while !tasks.is_empty() {
@@ -342,16 +344,22 @@ fn build_push_plan(
                     path,
                     0,
                 )),
-                EntryKind::File => {
-                    uploads.push(sync_action(SyncActionKind::UploadFile, path, local_entry.len))
-                }
+                EntryKind::File => uploads.push(sync_action(
+                    SyncActionKind::UploadFile,
+                    path,
+                    local_entry.len,
+                )),
                 EntryKind::Other => {}
             },
             Some(remote_entry) if remote_entry.kind == local_entry.kind => {
                 if local_entry.kind == EntryKind::File
                     && !files_match(local_entry, remote_entry, options.size_only)
                 {
-                    uploads.push(sync_action(SyncActionKind::UploadFile, path, local_entry.len));
+                    uploads.push(sync_action(
+                        SyncActionKind::UploadFile,
+                        path,
+                        local_entry.len,
+                    ));
                 }
             }
             Some(remote_entry) => {
@@ -464,10 +472,7 @@ fn sync_action(kind: SyncActionKind, path: &str, bytes: u64) -> SyncAction {
 fn validate_sync_plan(plan: &SyncPlan) -> Result<()> {
     for (index, action) in plan.actions.iter().enumerate() {
         validate_remote_relative_path(&action.path).with_context(|| {
-            format!(
-                "invalid sync plan action #{index} ({:?}) path",
-                action.kind
-            )
+            format!("invalid sync plan action #{index} ({:?}) path", action.kind)
         })?;
         // Also validate the local interpretation used by UploadFile. This is
         // harmless for non-upload actions and makes the whole plan portable
@@ -567,7 +572,12 @@ mod tests {
 
     #[test]
     fn public_sync_plan_rejects_paths_outside_the_selected_root() {
-        for path in ["../outside", "nested/../../outside", "/etc/passwd", "a\\..\\b"] {
+        for path in [
+            "../outside",
+            "nested/../../outside",
+            "/etc/passwd",
+            "a\\..\\b",
+        ] {
             let plan = SyncPlan {
                 actions: vec![SyncAction {
                     kind: SyncActionKind::DeleteRemoteFile,

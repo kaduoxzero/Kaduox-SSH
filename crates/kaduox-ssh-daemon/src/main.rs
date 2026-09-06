@@ -5,7 +5,9 @@ use kaduox_ssh_daemon::{DaemonState, default_endpoint_path, serve_default};
 async fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("--help" | "-h") => {
-            println!("kssh-daemon\n\nRun the per-user Kaduox SSH connection-reuse daemon in the foreground.");
+            println!(
+                "kssh-daemon\n\nRun the per-user Kaduox SSH connection-reuse daemon in the foreground."
+            );
             return Ok(());
         }
         Some("--version" | "-V") => {
