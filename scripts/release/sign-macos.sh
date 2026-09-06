@@ -78,6 +78,7 @@ for binary in "${binaries[@]}"; do
   path="$binary_dir/$binary"
   codesign --force --timestamp --options runtime --keychain "$keychain" --sign "$KADUOX_MACOS_SIGNING_IDENTITY" "$path"
   codesign --verify --strict --verbose=2 "$path"
+  codesign -dvv "$path" 2>&1 | grep -F 'Timestamp=' >/dev/null
 done
 
 mkdir -m 700 "$notary_dir"
@@ -113,5 +114,7 @@ print(f"Apple notarization accepted submission {submission_id}")
 PY
 
 for binary in "${binaries[@]}"; do
-  codesign --verify --strict --verbose=2 "$binary_dir/$binary"
+  path="$binary_dir/$binary"
+  codesign --verify --strict --verbose=2 "$path"
+  spctl -vvv --assess --type exec "$path"
 done
