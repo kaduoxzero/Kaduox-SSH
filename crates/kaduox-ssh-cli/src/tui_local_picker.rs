@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Stdout, Write, stdout};
+use std::io::{self, Stdout, Write, stdout};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -103,7 +103,8 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
             }
             KeyCode::Backspace | KeyCode::Left => {
                 let Some(parent) = current.parent().map(Path::to_path_buf) else {
-                    status = "already at local filesystem root".to_owned();
+                    status = "already at local filesystem root; press p to jump to another path"
+                        .to_owned();
                     continue;
                 };
                 match load_entries(&parent) {
@@ -124,6 +125,38 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
                 }
                 Err(error) => status = format!("local refresh failed: {error:#}"),
             },
+            KeyCode::Char('p') => {
+                let jump = prompt_jump_path(&mut terminal, &current)?;
+                let Some(candidate) = jump else {
+                    status = "local path jump cancelled".to_owned();
+                    continue;
+                };
+                match classify_path(&candidate) {
+                    Ok(LocalEntryKind::Directory) => match load_entries(&candidate) {
+                        Ok(next) => {
+                            current = candidate;
+                            entries = next;
+                            selected = 0;
+                            status = format!("{} entries | {}", entries.len(), kind.hint());
+                        }
+                        Err(error) => status = format!("cannot open local path: {error:#}"),
+                    },
+                    Ok(LocalEntryKind::File) if kind == LocalPickKind::File => {
+                        return Ok(Some(candidate));
+                    }
+                    Ok(LocalEntryKind::File) => {
+                        status = "directory picker does not select regular files".to_owned();
+                    }
+                    Ok(LocalEntryKind::LinkLike) => {
+                        status = "link/reparse-point paths are never followed by the picker"
+                            .to_owned();
+                    }
+                    Ok(LocalEntryKind::Other) => {
+                        status = "unsupported local file type cannot be selected".to_owned();
+                    }
+                    Err(error) => status = format!("cannot inspect local path: {error:#}"),
+                }
+            }
             KeyCode::Char('s') if kind == LocalPickKind::Directory => {
                 match classify_path(&current) {
                     Ok(LocalEntryKind::Directory) => return Ok(Some(current.clone())),
@@ -144,8 +177,7 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
                             current = entry.path;
                             entries = next;
                             selected = 0;
-                            status =
-                                format!("{} entries | {}", entries.len(), kind.hint());
+                            status = format!("{} entries | {}", entries.len(), kind.hint());
                         }
                         Err(error) => status = format!("cannot open local directory: {error:#}"),
                     },
@@ -176,6 +208,39 @@ pub(crate) fn pick_local_path(start: &Path, kind: LocalPickKind) -> Result<Optio
             }
             _ => {}
         }
+    }
+}
+
+fn prompt_jump_path(terminal: &mut LocalPickerTerminal, current: &Path) -> Result<Option<PathBuf>> {
+    terminal.suspend()?;
+    let prompt_result = (|| -> io::Result<String> {
+        let mut stdout = io::stdout();
+        write!(
+            stdout,
+            "local path [{}] (empty cancels jump): ",
+            terminal_safe(&current.display().to_string())
+        )?;
+        stdout.flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        while matches!(input.chars().last(), Some('\n' | '\r')) {
+            input.pop();
+        }
+        Ok(input)
+    })();
+    let resume_result = terminal.resume();
+    let input = prompt_result.context("failed to read local picker path jump")?;
+    resume_result?;
+
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    let candidate = PathBuf::from(input);
+    if candidate.is_absolute() {
+        Ok(Some(candidate))
+    } else {
+        Ok(Some(current.join(candidate)))
     }
 }
 
@@ -225,17 +290,9 @@ fn load_entries(path: &Path) -> Result<Vec<LocalEntry>> {
         }
 
         let entry_path = entry.path();
-        let kind = match classify_path(&entry_path) {
-            Ok(kind) => kind,
-            Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|io| {
-                io.kind() == std::io::ErrorKind::NotFound
-            }) => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("failed to inspect local entry {}", entry_path.display())
-                });
-            }
-        };
+        let kind = classify_path(&entry_path).with_context(|| {
+            format!("failed to inspect local entry {}", entry_path.display())
+        })?;
         entries.push(LocalEntry {
             path: entry_path,
             kind,
@@ -243,11 +300,9 @@ fn load_entries(path: &Path) -> Result<Vec<LocalEntry>> {
     }
 
     entries.sort_by(|left, right| {
-        left.kind.cmp(&right.kind).then_with(|| {
-            left.path
-                .file_name()
-                .cmp(&right.path.file_name())
-        })
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.path.file_name().cmp(&right.path.file_name()))
     });
     Ok(entries)
 }
@@ -285,6 +340,7 @@ fn cancel_key(key: KeyEvent) -> bool {
 
 struct LocalPickerTerminal {
     stdout: Stdout,
+    active: bool,
 }
 
 impl LocalPickerTerminal {
@@ -295,7 +351,34 @@ impl LocalPickerTerminal {
             let _ = terminal::disable_raw_mode();
             return Err(error).context("failed to enter local-picker alternate screen");
         }
-        Ok(Self { stdout })
+        Ok(Self {
+            stdout,
+            active: true,
+        })
+    }
+
+    fn suspend(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        execute!(&mut self.stdout, Show, LeaveAlternateScreen)
+            .context("failed to suspend local-picker screen")?;
+        terminal::disable_raw_mode().context("failed to suspend local-picker raw mode")?;
+        self.active = false;
+        Ok(())
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        if self.active {
+            return Ok(());
+        }
+        terminal::enable_raw_mode().context("failed to resume local-picker raw mode")?;
+        if let Err(error) = execute!(&mut self.stdout, EnterAlternateScreen, Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(error).context("failed to resume local-picker alternate screen");
+        }
+        self.active = true;
+        Ok(())
     }
 
     fn render(
@@ -357,10 +440,10 @@ impl LocalPickerTerminal {
 
         let help = match kind {
             LocalPickKind::File => {
-                "keys: j/k select | Enter open/select file | ← parent | r refresh | q/Esc cancel"
+                "keys: j/k select | Enter open/select file | ← parent | p path | r refresh | q/Esc cancel"
             }
             LocalPickKind::Directory => {
-                "keys: j/k select | Enter open dir | s select current dir | ← parent | r refresh | q/Esc cancel"
+                "keys: j/k select | Enter open dir | s select current | ← parent | p path | r refresh | q/Esc cancel"
             }
         };
         queue!(
@@ -377,8 +460,10 @@ impl LocalPickerTerminal {
 
 impl Drop for LocalPickerTerminal {
     fn drop(&mut self) {
-        let _ = execute!(&mut self.stdout, Show, LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        if self.active {
+            let _ = execute!(&mut self.stdout, Show, LeaveAlternateScreen);
+            let _ = terminal::disable_raw_mode();
+        }
     }
 }
 
@@ -487,7 +572,10 @@ mod tests {
         fs::create_dir_all(root.join("real")).unwrap();
         symlink(root.join("real"), root.join("link")).unwrap();
 
-        assert_eq!(classify_path(&root.join("link")).unwrap(), LocalEntryKind::LinkLike);
+        assert_eq!(
+            classify_path(&root.join("link")).unwrap(),
+            LocalEntryKind::LinkLike
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
