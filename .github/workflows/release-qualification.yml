@@ -95,6 +95,14 @@ jobs:
           package_dir="$(tail -n 1 qualification-path.txt)"
           test -n "$package_dir"
           printf 'package_dir=%s\n' "$package_dir" >> "$GITHUB_OUTPUT"
+      - name: Verify published Windows Authenticode signatures
+        if: ${{ (!contains(env.KADUOX_RELEASE_TAG, '-') || vars.KADUOX_ENABLE_NATIVE_SIGNING == 'true') && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./scripts/release/verify-windows-signatures.ps1 -BinaryDir "${{ steps.qualify.outputs.package_dir }}"
+      - name: Verify published macOS Developer ID and notarization acceptance
+        if: ${{ (!contains(env.KADUOX_RELEASE_TAG, '-') || vars.KADUOX_ENABLE_NATIVE_SIGNING == 'true') && runner.os == 'macOS' }}
+        shell: bash
+        run: bash scripts/release/verify-macos-signatures.sh "${{ steps.qualify.outputs.package_dir }}"
       - name: Install OpenSSH qualification fixtures
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
