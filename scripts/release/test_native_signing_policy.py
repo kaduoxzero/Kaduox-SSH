@@ -77,7 +77,9 @@ class NativeSigningPolicyTests(unittest.TestCase):
             "KADUOX_APPLE_NOTARY_ISSUER_ID: ${{ vars.KADUOX_APPLE_NOTARY_ISSUER_ID }}",
         ):
             self.assertIn(required, self.release)
-        self.assertIn("codesign --force --timestamp --options runtime --sign", self.macos_sign)
+        self.assertIn(
+            "codesign --force --timestamp --options runtime --keychain", self.macos_sign
+        )
         self.assertIn("xcrun notarytool submit", self.macos_sign)
         self.assertIn('--key "$notary_key"', self.macos_sign)
         self.assertIn('--key-id "$KADUOX_APPLE_NOTARY_KEY_ID"', self.macos_sign)
@@ -86,6 +88,7 @@ class NativeSigningPolicyTests(unittest.TestCase):
         self.assertIn('status != "Accepted"', self.macos_sign)
         self.assertNotIn("--apple-id", self.macos_sign)
         self.assertNotIn("--password", self.macos_sign)
+        self.assertNotIn("security list-keychains -d user -s", self.macos_sign)
 
     def test_published_signed_assets_are_verified_without_private_credentials(self) -> None:
         expected_condition = (
