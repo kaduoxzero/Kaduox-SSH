@@ -1,0 +1,108 @@
+name: Release Qualification
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact published release tag to qualify (for example v1.0.0)
+        required: true
+        type: string
+
+concurrency:
+  group: release-qualification-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  KADUOX_RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  qualify:
+    name: Published artifact (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            exe_suffix: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            exe_suffix: ""
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            exe_suffix: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            exe_suffix: .exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.KADUOX_RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Verify source tag and published Release state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python scripts/release/release_tool.py check --tag "$KADUOX_RELEASE_TAG"
+          actual_tag="$(gh release view "$KADUOX_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')"
+          is_draft="$(gh release view "$KADUOX_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+          if [[ "$actual_tag" != "$KADUOX_RELEASE_TAG" ]]; then
+            printf 'release tag mismatch: requested=%s actual=%s\n' "$KADUOX_RELEASE_TAG" "$actual_tag" >&2
+            exit 1
+          fi
+          if [[ "$is_draft" != 'false' ]]; then
+            printf 'release %s is still a draft and is not eligible for qualification\n' "$KADUOX_RELEASE_TAG" >&2
+            exit 1
+          fi
+      - name: Download published GitHub Release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$KADUOX_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+      - name: Verify, extract, and launch published archive
+        id: qualify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/qualification_tool.py qualify \
+            --tag "$KADUOX_RELEASE_TAG" \
+            --target "${{ matrix.target }}" \
+            --format "${{ matrix.archive }}" \
+            --exe-suffix "${{ matrix.exe_suffix }}" \
+            --assets-dir release-assets \
+            --extract-dir qualified | tee qualification-path.txt
+          package_dir="$(tail -n 1 qualification-path.txt)"
+          test -n "$package_dir"
+          printf 'package_dir=%s\n' "$package_dir" >> "$GITHUB_OUTPUT"
+      - name: Install OpenSSH qualification fixtures
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server netcat-openbsd curl
+      - name: Run published Linux binary through real OpenSSH suite
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        env:
+          KSSH: ${{ steps.qualify.outputs.package_dir }}/kssh
+        run: bash scripts/ci/openssh-integration.sh

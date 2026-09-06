@@ -15,7 +15,7 @@ Use the repository release tool instead of editing the version strings by hand:
 
 ```bash
 python scripts/release/release_tool.py check
-python scripts/release/release_tool.py set-version 0.23.0-rc.1
+python scripts/release/release_tool.py set-version 0.24.0-rc.1
 python scripts/release/release_tool.py check
 ```
 
@@ -36,9 +36,9 @@ A release candidate is not ready to tag until all of these execute successfully:
 - Clippy with warnings denied on Rust 1.98.1;
 - dependency audit using `cargo-audit 0.22.0` built and executed with Rust 1.98.1;
 - real OpenSSH integration fixtures built with Rust 1.98.1;
-- release packaging and SPDX SBOM Python unit tests;
+- release packaging, published-asset qualification, and SPDX SBOM Python unit tests;
 - immutable workflow-action pin policy tests;
-- Rust toolchain policy tests;
+- Rust toolchain and release-qualification workflow policy tests;
 - repository release metadata validation.
 
 A GitHub Actions job that fails before runner allocation, checkout, or any step
@@ -68,11 +68,13 @@ operator/repository-governance responsibility.
 
 ## Immutable workflow dependencies
 
-The production release workflow and the workflows that decide release readiness
-must not execute mutable GitHub Action tags or branches. External `uses:` entries
-in the following files are pinned to reviewed, full 40-character Git commit SHAs:
+The production release workflow and workflows that decide or verify release
+readiness must not execute mutable GitHub Action tags or branches. External
+`uses:` entries in the following files are pinned to reviewed, full 40-character
+Git commit SHAs:
 
 - `.github/workflows/release.yml`;
+- `.github/workflows/release-qualification.yml`;
 - `.github/workflows/ci.yml`;
 - `.github/workflows/quality.yml`;
 - `.github/workflows/integration-openssh.yml`.
@@ -116,7 +118,9 @@ runs `cargo +1.98.1 audit --file Cargo.lock`.
 workflow toolchain counts and fails closed on missing toolchain inputs,
 `toolchain: stable`, `cargo +stable`, changes to the 1.98.1 release compiler,
 changes to the 1.85.0 MSRV lane, or restoration of the moving composite audit
-path.
+path. The release-qualification workflow intentionally has no Rust toolchain and
+must not run `cargo build`: it verifies published binaries instead of rebuilding
+them.
 
 The RustSec advisory database is intentionally **not** frozen: it is live security
 intelligence, not a build material. The reproducibility claim fixes the compiler,
@@ -161,7 +165,7 @@ The publish job refuses any release with anything other than exactly four final
 archives and exactly one release-wide SPDX file. It creates a top-level
 `SHA256SUMS` covering all five assets.
 
-Pre-release SemVer tags containing `-` (for example `v0.23.0-rc.1`) are created
+Pre-release SemVer tags containing `-` (for example `v0.24.0-rc.1`) are created
 as GitHub pre-releases automatically.
 
 ## Optional GitHub artifact attestations
@@ -207,21 +211,51 @@ gh attestation verify ./kaduox-ssh-<version>-x86_64-unknown-linux-gnu.tar.gz \
 An attestation establishes provenance and an integrity relationship to the build
 workflow; it is not a statement that the software is vulnerability-free.
 
+## Published release qualification
+
+v0.24 adds `.github/workflows/release-qualification.yml`. It runs on the
+`release.published` event and can be dispatched manually for an exact release tag.
+Each of the same four target platforms checks out qualification code from that tag,
+downloads the assets attached to that GitHub Release, and validates the downloaded
+bytes rather than any local build directory.
+
+`scripts/release/qualification_tool.py` requires exactly four target archives,
+one release-wide SPDX JSON file, and `SHA256SUMS`. It verifies all five SHA-256
+entries, validates archive paths/member types/modes/size budgets before extraction,
+checks the exact manifest tag/version/target/binary sizes and digests, then launches
+all four packaged frontends with `--version` from the extracted archive.
+
+On Linux, the qualification workflow additionally sets `KSSH` to the extracted
+published `kssh` and runs the existing real OpenSSH integration suite. This makes
+direct SSH execution, proxying, agent paths, SFTP upload/download, privileged
+transfer, sync, and forwarding run against the binary users actually downloaded.
+It does not compile a replacement binary during qualification.
+
+Post-publication qualification is an acceptance/announcement gate, not a
+transactional rollback mechanism: the GitHub Release already exists when the
+`release.published` event runs. A failed qualification must therefore block
+announcement/acceptance and require correction or withdrawal of the release.
+
 ## Verification after publication
 
 Before announcing a release:
 
-1. download all four archives, the SPDX JSON file, and `SHA256SUMS` from the
-   GitHub Release;
-2. verify all five assets against `SHA256SUMS` using a trusted local SHA-256 tool;
-3. inspect each archive's `manifest.json` and ensure tag/version/target are correct;
-4. inspect the SPDX document and confirm its tag/version namespace and local
+1. require the four-target `Release Qualification` workflow for the exact tag to
+   execute successfully;
+2. confirm it downloaded exactly four archives, the SPDX JSON file, and
+   `SHA256SUMS` from the GitHub Release and verified all five checksums;
+3. confirm each target safely extracted its expected archive, validated its
+   `manifest.json`, and launched all four packaged frontends with `--version`;
+4. require the Linux job's real OpenSSH suite to pass against the extracted
+   published `kssh` binary;
+5. inspect the SPDX document and confirm its tag/version namespace and local
    Kaduox package records;
-5. when GitHub attestations are enabled, verify each archive and the SPDX asset
-   with `gh attestation verify`;
-6. launch `--version` for each executable on representative target machines;
-7. run at least one strict host-key SSH connection and one file transfer using
-   the published binaries rather than a developer build.
+6. when GitHub attestations are enabled, verify each archive and the SPDX asset
+   with `gh attestation verify`.
+
+The qualification workflow can be rerun manually for an existing release tag if
+infrastructure prevented the automatic `release.published` run from executing.
+A job with no assigned runner/steps is not qualification evidence.
 
 ## V1 signing boundary
 
@@ -234,10 +268,13 @@ v0.20 provides a deterministic release-wide SPDX dependency inventory and an
 optional GitHub provenance-attestation path. v0.21 pins production release Action
 implementations to reviewed immutable commits. v0.22 extends that immutable
 Action boundary to CI, Quality, dependency audit, and real OpenSSH validation.
-v0.23 additionally fixes the normal build/test/audit/release compiler to Rust
-1.98.1 while preserving the Rust 1.85.0 MSRV lane. These controls improve
-supply-chain traceability and workflow/build reproducibility but do not replace
-native platform signing or a future exact per-target SBOM predicate.
+v0.23 fixes the normal build/test/audit/release compiler to Rust 1.98.1 while
+preserving the Rust 1.85.0 MSRV lane. v0.24 adds cross-platform post-publication
+qualification of the actual GitHub Release assets and a real Linux OpenSSH suite
+against the extracted published binary. These controls improve supply-chain
+traceability, workflow/build reproducibility, and release acceptance confidence,
+but do not replace native platform signing or a future exact per-target SBOM
+predicate.
 
 Before Kaduox-SSH declares the V1 release channel complete, the remaining
 publisher-authentication work is primarily:
