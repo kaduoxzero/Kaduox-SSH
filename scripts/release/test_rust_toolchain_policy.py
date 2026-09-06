@@ -86,6 +86,7 @@ class RustToolchainPolicyTests(unittest.TestCase):
             "cargo +1.98.1 install cargo-audit --version 0.22.0 --locked --no-default-features",
             text,
         )
+        self.assertIn("cargo +1.98.1 audit --version | grep -F '0.22.0'", text)
         self.assertIn("cargo +1.98.1 audit --file Cargo.lock", text)
 
     def test_msrv_remains_distinct_from_release_toolchain(self) -> None:
