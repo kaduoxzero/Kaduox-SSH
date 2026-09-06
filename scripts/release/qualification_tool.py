@@ -2,8 +2,9 @@
 """Validate and execute Kaduox-SSH artifacts downloaded from a GitHub Release.
 
 The tool deliberately validates the published bytes rather than a build directory:
-SHA256SUMS, the exact release-asset set, archive member safety, package manifest
-integrity, and each packaged binary's `--version` result are checked fail-closed.
+SHA256SUMS, the exact release-asset set, target-specific SPDX identity, archive
+member safety, package manifest integrity, and each packaged binary's `--version`
+result are checked fail-closed.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from scripts.release import release_tool
 
@@ -32,12 +34,14 @@ EXPECTED_TARGETS: dict[str, tuple[str, str]] = {
 }
 EXPECTED_DOCUMENTS = ("README.md", "README.zh-CN.md", "LICENSE", "manifest.json")
 MAX_CHECKSUM_FILE_BYTES = 64 * 1024
+MAX_SBOM_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 32
 MAX_MEMBER_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = release_tool.MAX_MANIFEST_BYTES
 CHECKSUM_LINE = re.compile(r"^(?P<digest>[0-9a-f]{64})  (?P<name>[^\r\n]+)$")
+SPDX_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 def sha256(path: Path) -> str:
@@ -74,13 +78,18 @@ def archive_name(version: str, target: str, archive_format: str) -> str:
     return f"{package_name(version, target)}{suffix}"
 
 
+def sbom_name(version: str, target: str) -> str:
+    release_tool.safe_component(target, "target")
+    return f"kaduox-ssh-{version}-{target}.spdx.json"
+
+
 def expected_release_assets(tag: str) -> set[str]:
     version = version_from_tag(tag)
     assets = {
         archive_name(version, target, archive_format)
         for target, (archive_format, _exe_suffix) in EXPECTED_TARGETS.items()
     }
-    assets.add(f"kaduox-ssh-{version}.spdx.json")
+    assets.update(sbom_name(version, target) for target in EXPECTED_TARGETS)
     return assets
 
 
@@ -117,6 +126,93 @@ def parse_sha256sums(path: Path) -> dict[str, str]:
     return found
 
 
+def validate_target_sbom(path: Path, tag: str, target: str) -> None:
+    version = version_from_tag(tag)
+    if target not in EXPECTED_TARGETS:
+        raise ValueError(f"unsupported target-specific SPDX target: {target}")
+    require_plain_file(path, "target-specific SPDX SBOM")
+    if path.stat().st_size > MAX_SBOM_BYTES:
+        raise ValueError("target-specific SPDX SBOM exceeds the 8 MiB safety budget")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("target-specific SPDX SBOM is not valid JSON") from exc
+    if not isinstance(document, dict):
+        raise ValueError("target-specific SPDX SBOM root must be an object")
+
+    expected_namespace = (
+        "https://github.com/kaduoxzero/Kaduox-SSH/sbom/"
+        f"{quote(tag, safe='-._~')}/{quote(target, safe='-._~')}/cargo-metadata"
+    )
+    if document.get("spdxVersion") != "SPDX-2.3":
+        raise ValueError("target-specific SPDX SBOM must use SPDX-2.3")
+    if document.get("dataLicense") != "CC0-1.0" or document.get("SPDXID") != "SPDXRef-DOCUMENT":
+        raise ValueError("target-specific SPDX SBOM document identity is invalid")
+    if document.get("name") != f"Kaduox-SSH-{version}-{target}-Cargo-metadata":
+        raise ValueError("target-specific SPDX SBOM name does not match release target")
+    if document.get("documentNamespace") != expected_namespace:
+        raise ValueError("target-specific SPDX SBOM namespace does not match tag/target")
+
+    creation = document.get("creationInfo")
+    if not isinstance(creation, dict) or SPDX_TIMESTAMP.fullmatch(str(creation.get("created", ""))) is None:
+        raise ValueError("target-specific SPDX SBOM has an invalid creation timestamp")
+    comment = creation.get("comment")
+    if not isinstance(comment, str) or target not in comment or "--filter-platform" not in comment:
+        raise ValueError("target-specific SPDX SBOM does not declare its target-pruned Cargo graph")
+
+    packages = document.get("packages")
+    if not isinstance(packages, list) or not packages:
+        raise ValueError("target-specific SPDX SBOM contains no packages")
+    by_id: dict[str, dict] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("target-specific SPDX package entry must be an object")
+        package_id = package.get("SPDXID")
+        if not isinstance(package_id, str) or not package_id.startswith("SPDXRef-"):
+            raise ValueError("target-specific SPDX package has an invalid SPDXID")
+        if package_id in by_id:
+            raise ValueError("target-specific SPDX SBOM contains duplicate SPDXIDs")
+        by_id[package_id] = package
+
+    root = by_id.get("SPDXRef-Kaduox-SSH-Release")
+    if root is None:
+        raise ValueError("target-specific SPDX SBOM is missing the Kaduox release root")
+    if (
+        root.get("name") != "Kaduox-SSH"
+        or root.get("versionInfo") != version
+        or root.get("primaryPackagePurpose") != "APPLICATION"
+        or root.get("comment") != f"Cargo release target: {target}"
+    ):
+        raise ValueError("target-specific SPDX root package does not match release target")
+    package_names = {package.get("name") for package in packages}
+    if not set(release_tool.LOCAL_PACKAGES).issubset(package_names):
+        raise ValueError("target-specific SPDX SBOM is missing local Kaduox packages")
+
+    relationships = document.get("relationships")
+    if not isinstance(relationships, list):
+        raise ValueError("target-specific SPDX relationships must be a list")
+    describes_root = False
+    allowed_ids = set(by_id) | {"SPDXRef-DOCUMENT"}
+    for relationship in relationships:
+        if not isinstance(relationship, dict):
+            raise ValueError("target-specific SPDX relationship must be an object")
+        source = relationship.get("spdxElementId")
+        destination = relationship.get("relatedSpdxElement")
+        relation = relationship.get("relationshipType")
+        if source not in allowed_ids or destination not in allowed_ids:
+            raise ValueError("target-specific SPDX relationship references an unknown element")
+        if not isinstance(relation, str) or not relation:
+            raise ValueError("target-specific SPDX relationship type is invalid")
+        if (
+            source == "SPDXRef-DOCUMENT"
+            and relation == "DESCRIBES"
+            and destination == "SPDXRef-Kaduox-SSH-Release"
+        ):
+            describes_root = True
+    if not describes_root:
+        raise ValueError("target-specific SPDX document does not DESCRIBE the release root")
+
+
 def verify_release_asset_set(tag: str, assets_dir: Path) -> dict[str, str]:
     if assets_dir.is_symlink() or not assets_dir.is_dir():
         raise ValueError("release assets directory must be a real directory")
@@ -147,6 +243,10 @@ def verify_release_asset_set(tag: str, assets_dir: Path) -> dict[str, str]:
             raise ValueError(
                 f"published asset checksum mismatch for {name}: expected {sums[name]}, got {actual_digest}"
             )
+
+    version = version_from_tag(tag)
+    for target in EXPECTED_TARGETS:
+        validate_target_sbom(assets_dir / sbom_name(version, target), tag, target)
     return sums
 
 
