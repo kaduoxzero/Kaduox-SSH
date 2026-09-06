@@ -46,6 +46,19 @@ class ReleaseQualificationWorkflowPolicyTests(unittest.TestCase):
     def test_tag_source_and_published_assets_are_used(self) -> None:
         self.assertIn("ref: ${{ env.KADUOX_RELEASE_TAG }}", self.text)
         self.assertIn("persist-credentials: false", self.text)
+        self.assertIn(
+            'python scripts/release/release_tool.py check --tag "$KADUOX_RELEASE_TAG"',
+            self.text,
+        )
+        self.assertIn(
+            'gh release view "$KADUOX_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName',
+            self.text,
+        )
+        self.assertIn(
+            'gh release view "$KADUOX_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft',
+            self.text,
+        )
+        self.assertIn("is still a draft and is not eligible for qualification", self.text)
         self.assertIn('gh release download "$KADUOX_RELEASE_TAG"', self.text)
         self.assertIn("qualification_tool.py qualify", self.text)
         self.assertNotIn("cargo build", self.text)
