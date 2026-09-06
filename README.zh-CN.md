@@ -71,7 +71,7 @@ v0.29 新增 OpenSSH 风格的 Include `${NAME}` 环境变量展开。展开只�
 
 v0.30 新增 OpenSSH 中完全不依赖连接状态的 `%%` escape：Include 源文本中的 `%%` 会折叠为一个字面 `%`。尤其不会用当前配置目录去近似 `%d`，因为 OpenSSH 的 `%d` 来自本地 passwd 记录的 `pw_dir`，而 Kaduox-SSH 当前配置 home 来自平台环境变量，两者可能不同。
 
-v0.31 新增 OpenSSH Include `%l` / `%L` 本机主机名展开。`%l` 使用平台原生 `gethostname` 返回的完整主机名；`%L` 使用同一个 Include 参数内的主机名快照并在第一个 `.` 处截断。Unix 直接调用 `gethostname`，Windows 在一次 Include 参数展开期间执行成对的 Winsock 2.2 初始化/清理并调用 Winsock `gethostname`，不会用 `HOSTNAME`/`COMPUTERNAME` 环境变量近似。主机名查询失败或非 UTF-8 会 fail-closed，`${ENV}` 产生的 `%l`/`%L` 仍保持字面内容而不会被二次扫描。
+v0.31 新增 OpenSSH Include `%l` / `%L` 本机主机名展开。`%l` 使用平台原生 `gethostname` 返回的完整主机名；`%L` 使用同一个 Include 参数内的主机名快照并在第一个 `.` 处截断。Unix 直接调用 `gethostname`；Windows 在首次需要该能力时按进程 once 初始化 Winsock 2.2，再调用 Winsock `gethostname`，其生命周期与 Rust std 的 Windows socket 初始化策略一致，不会在每次 Include 之间反复 startup/cleanup。主机名值本身不做进程级缓存，因此不同 Include 参数仍可重新查询。主机名查询失败或非 UTF-8 会 fail-closed，`${ENV}` 产生的 `%l`/`%L` 仍保持字面内容而不会被二次扫描。
 
 v0.15 把根配置和所有嵌套 Include 统一放到同一配置文件信任边界。Unix 上要求实际打开文件为 regular file、owner 为当前进程 real uid 或 root、group/other 不可写；metadata 校验和解析读取使用同一个已打开 fd，避免独立 stat/read 的路径 TOCTOU。v0.26 把同一原则扩展到 Windows：owner/DACL 从已经打开的文件 HANDLE 获取，非受信主体的写权限 Allow ACE 会被拒绝，其他主体的只读访问仍允许，复杂 allow ACE 则 fail-closed 而不是做不完整近似。
 
