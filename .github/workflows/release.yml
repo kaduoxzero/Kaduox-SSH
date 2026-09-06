@@ -25,8 +25,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Test release packaging, qualification, SBOM, workflow pins, Rust, and signing policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy scripts.release.test_native_signing_policy
+      - name: Test release packaging, qualification, SBOM, workflow pins, Rust, signing, and attestation policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy scripts.release.test_native_signing_policy scripts.release.test_attestation_policy
       - name: Verify release metadata and tag
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Require release commit to be reachable from main
@@ -34,32 +34,6 @@ jobs:
         run: |
           git fetch origin main --no-tags
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-
-  sbom:
-    needs: preflight
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.12"
-      - name: Generate deterministic SPDX lockfile inventory
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
-          python scripts/release/sbom_tool.py \
-            --tag "$GITHUB_REF_NAME" \
-            --source-date-epoch "$source_date_epoch" \
-            --output-dir dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-sbom
-          path: dist/*.spdx.json
-          if-no-files-found: error
-          retention-days: 7
 
   build:
     needs: preflight
@@ -134,6 +108,16 @@ jobs:
             printf '%s\n' "$output"
             grep -F -- "$version" <<<"$output" >/dev/null
           done
+      - name: Generate target-specific SPDX SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          python scripts/release/sbom_tool.py \
+            --tag "$GITHUB_REF_NAME" \
+            --target "${{ matrix.target }}" \
+            --source-date-epoch "$source_date_epoch" \
+            --output-dir dist
       - name: Package release suite
         shell: bash
         run: >-
@@ -151,10 +135,16 @@ jobs:
           retention-days: 7
 
   attest:
-    needs:
-      - build
-      - sbom
-    if: ${{ vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
+    needs: build
+    if: ${{ !contains(github.ref_name, '-') || vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -163,34 +153,48 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: release-*
+          name: release-${{ matrix.target }}
           path: dist
-          merge-multiple: true
-      - name: Verify exact attestation subject set
+      - name: Verify exact target attestation subject set
+        id: subject
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print | sort)
-          mapfile -t sboms < <(find dist -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
-          mapfile -t unexpected < <(find dist -maxdepth 1 -type f ! \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.spdx.json' \) -print | sort)
-          if [[ ${#archives[@]} -ne 4 || ${#sboms[@]} -ne 1 || ${#unexpected[@]} -ne 0 ]]; then
-            printf 'invalid attestation subject set: archives=%s sboms=%s unexpected=%s\n' \
-              "${#archives[@]}" "${#sboms[@]}" "${#unexpected[@]}" >&2
+          version="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          case "$target" in
+            x86_64-pc-windows-msvc) archive_suffix="zip" ;;
+            x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-apple-darwin) archive_suffix="tar.gz" ;;
+            *) printf 'unsupported attestation target: %s\n' "$target" >&2; exit 1 ;;
+          esac
+          archive="$GITHUB_WORKSPACE/dist/kaduox-ssh-${version}-${target}.${archive_suffix}"
+          sbom="$GITHUB_WORKSPACE/dist/kaduox-ssh-${version}-${target}.spdx.json"
+          mapfile -t files < <(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -print | sort)
+          if [[ ${#files[@]} -ne 2 || ! -f "$archive" || ! -f "$sbom" ]]; then
+            printf 'invalid target attestation input set for %s\n' "$target" >&2
+            printf '%s\n' "${files[@]}" >&2
             exit 1
           fi
-      - name: Attest release asset provenance
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+          printf 'sbom=%s\n' "$sbom" >> "$GITHUB_OUTPUT"
+      - name: Attest target release provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
-          subject-path: dist/*
-          create-storage-record: false
+          subject-path: |
+            ${{ steps.subject.outputs.archive }}
+            ${{ steps.subject.outputs.sbom }}
+      - name: Bind target SBOM to release archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: ${{ steps.subject.outputs.archive }}
+          sbom-path: ${{ steps.subject.outputs.sbom }}
 
   publish:
     needs:
       - preflight
-      - sbom
       - build
       - attest
-    if: ${{ always() && needs.preflight.result == 'success' && needs.sbom.result == 'success' && needs.build.result == 'success' && (needs.attest.result == 'success' || needs.attest.result == 'skipped') }}
+    if: ${{ always() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.attest.result == 'success' || (contains(github.ref_name, '-') && needs.attest.result == 'skipped')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -200,24 +204,35 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - name: Verify release archive and SBOM set
+      - name: Verify release archive and target-SBOM set
         shell: bash
         run: |
           set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          targets=(
+            x86_64-unknown-linux-gnu
+            x86_64-apple-darwin
+            aarch64-apple-darwin
+            x86_64-pc-windows-msvc
+          )
+          for target in "${targets[@]}"; do
+            test -f "dist/kaduox-ssh-${version}-${target}.spdx.json"
+            if [[ "$target" == "x86_64-pc-windows-msvc" ]]; then
+              test -f "dist/kaduox-ssh-${version}-${target}.zip"
+            else
+              test -f "dist/kaduox-ssh-${version}-${target}.tar.gz"
+            fi
+          done
           mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print | sort)
           mapfile -t sboms < <(find dist -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
-          if [[ ${#archives[@]} -ne 4 ]]; then
-            printf 'expected 4 release archives, found %s\n' "${#archives[@]}" >&2
-            printf '%s\n' "${archives[@]}" >&2
-            exit 1
-          fi
-          if [[ ${#sboms[@]} -ne 1 ]]; then
-            printf 'expected 1 release-wide SPDX SBOM, found %s\n' "${#sboms[@]}" >&2
-            printf '%s\n' "${sboms[@]}" >&2
+          mapfile -t unexpected < <(find dist -maxdepth 1 -type f ! \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.spdx.json' \) -print | sort)
+          if [[ ${#archives[@]} -ne 4 || ${#sboms[@]} -ne 4 || ${#unexpected[@]} -ne 0 ]]; then
+            printf 'invalid release asset set before checksums: archives=%s sboms=%s unexpected=%s\n' \
+              "${#archives[@]}" "${#sboms[@]}" "${#unexpected[@]}" >&2
             exit 1
           fi
           (cd dist && sha256sum *.tar.gz *.zip *.spdx.json 2>/dev/null | sort -k2 > SHA256SUMS)
-          test "$(wc -l < dist/SHA256SUMS)" -eq 5
+          test "$(wc -l < dist/SHA256SUMS)" -eq 8
           cat dist/SHA256SUMS
       - name: Create GitHub Release
         shell: bash
