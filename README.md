@@ -8,7 +8,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 
 - SSH connection, command execution, and interactive PTY shell
 - OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion and fail-closed handling for unsupported structural semantics
-- Unix OpenSSH user-config owner/mode enforcement with same-file-descriptor verification and reads
+- cross-platform OpenSSH user-config trust enforcement: Unix uid/mode checks and Windows owner/DACL checks, both tied to the same opened file used for parsing
 - target-scoped OpenSSH Host Certificate verification through clear-text `known_hosts` `@cert-authority` entries, with principal/validity/critical-option/revocation checks
 - clear-text `@revoked` enforcement for ordinary host keys, certificate subject keys, and certificate signing CAs
 - ProxyJump chains and ProxyCommand transports
@@ -79,7 +79,7 @@ Kaduox-SSH resolves supported OpenSSH settings such as `HostName`, `User`, `Port
 
 v0.14 adds bounded `Include` resolution before the downstream host parser. The supported subset includes global or `Host`-scoped includes, multiple/quoted paths, absolute paths, paths relative to `~/.ssh`, current-user `~/...`, `*` and `?` wildcards, lexical processing order, nested includes, OpenSSH-style hidden-file matching, and restoration of the containing global/`Host` scope after every included file. The OpenSSH Host catalog uses the same include graph, so concrete aliases in included files are visible to the TUI picker.
 
-v0.15 applies one trust boundary to the root user config and every nested Include. On Unix, the opened file must be regular, owned by the process real uid or root, and not writable by group/other. Metadata verification and parsing bytes are tied to the same opened file descriptor, removing the path-based stat/read TOCTOU window. Windows still requires a regular file, but NTFS ACL-equivalent OpenSSH trust validation remains V1 work.
+v0.15 applies one trust boundary to the root user config and every nested Include. On Unix, the opened file must be regular, owned by the process real uid or root, and not writable by group/other. Metadata verification and parsing bytes are tied to the same opened file descriptor, removing the path-based stat/read TOCTOU window. v0.26 adds the Windows equivalent boundary: the owner/DACL is queried from the already-open file handle, untrusted write-capable Allow ACEs are rejected, read-only access for other principals remains allowed, and advanced allow ACE layouts fail closed instead of being approximated.
 
 v0.16 adds fail-closed Host Certificate and revocation semantics. Certificate algorithms remain disabled unless the specific final target or ProxyJump hop has a matching clear-text `@cert-authority`. A certificate must be a Host certificate, have a trusted signing CA, valid signature/time window, an acceptable hostname principal, no unsupported critical options, and neither its subject key nor CA may be `@revoked`. Ordinary host keys are also checked against applicable `@revoked` markers before known-hosts acceptance or explicit insecure acceptance. A failed certificate is never downgraded to its embedded ordinary key.
 
@@ -92,7 +92,7 @@ Configuration/trust behavior remains fail-closed where OpenSSH semantics are not
 - Include expansion is capped at 16 nesting levels, 256 processed files, a 4 MiB config budget, 64 paths per directive, 16 KiB per include path, and 1024 bytes per wildcard component; recursive include cycles fail explicitly.
 - Hashed `@cert-authority` / `@revoked` marker host patterns are explicitly rejected rather than silently dropping a CA or revocation rule. Ordinary unmarked hashed known-host entries continue through Russh's existing ordinary host-key path.
 - Host Certificate critical options are not interpreted; any critical option rejects the certificate. RSA Host Certificates and RSA CA/certificate-signature compatibility are not claimed while the RSA feature remains disabled.
-- Windows user-config ACL parity with OpenSSH is not yet implemented.
+- Windows SIDHistory name-equivalence remains intentionally stricter than Win32-OpenSSH: distinct SIDs remain distinct principals instead of gaining trust from reverse account-name equivalence.
 - The upstream parser exposes `StrictHostKeyChecking` only as a boolean. Values other than `no` therefore lose their exact OpenSSH policy. Use Kaduox-SSH's explicit `--host-key strict`, `--host-key accept-new`, or `--host-key insecure` when exact behavior matters.
 
 See `docs/OPENSSH_CONFIG.md` and `docs/HOST_CERTIFICATES.md` for the exact supported and rejected forms.
@@ -222,10 +222,10 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 Some features are deliberately not enabled until they can be implemented completely and tested as security boundaries:
 
 - complete OpenSSH `Match` evaluation and the remaining Include token/environment/`~user`/full-glob semantics;
-- hashed `@cert-authority` / `@revoked` marker matching, Windows ACL-equivalent config trust, and RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
+- hashed `@cert-authority` / `@revoked` marker matching and RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
 - encrypted persistent credential storage and its key-management model;
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol;
 - explicit symbolic-link transfer/sync policy;
-- Windows Authenticode, macOS Developer ID/notarization, and final provenance/SBOM policy.
+- final operator provenance/attestation and target-specific SBOM policy beyond the current release checks.
 
 See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
