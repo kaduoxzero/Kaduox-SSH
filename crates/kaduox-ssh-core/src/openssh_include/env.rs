@@ -20,7 +20,10 @@ where
     let mut rest = value;
 
     while let Some(start) = rest.find("${") {
-        push_bounded(&mut output, &rest[..start], max_bytes)?;
+        let literal = &rest[..start];
+        reject_percent_tokens(literal)?;
+        push_bounded(&mut output, literal, max_bytes)?;
+
         let variable_and_rest = &rest[start + 2..];
         let end = variable_and_rest
             .find('}')
@@ -33,12 +36,23 @@ where
         let value = lookup(name).with_context(|| {
             format!("failed to expand OpenSSH Include environment variable ${{{name}}}")
         })?;
+        // Match OpenSSH's single-pass percent+dollar expansion: bytes produced
+        // by an environment lookup are appended verbatim and are not rescanned
+        // as percent tokens or nested ${...} expressions.
         push_bounded(&mut output, &value, max_bytes)?;
         rest = &variable_and_rest[end + 1..];
     }
 
+    reject_percent_tokens(rest)?;
     push_bounded(&mut output, rest, max_bytes)?;
     Ok(output)
+}
+
+fn reject_percent_tokens(value: &str) -> Result<()> {
+    if value.contains('%') {
+        bail!("OpenSSH Include percent-token expansion is not supported yet");
+    }
+    Ok(())
 }
 
 fn push_bounded(output: &mut String, value: &str, max_bytes: usize) -> Result<()> {
@@ -64,6 +78,7 @@ mod tests {
             "SPACED" => Ok("dir with spaces".to_owned()),
             "PERCENT" => Ok("literal%h.conf".to_owned()),
             "NESTED" => Ok("${FILE}".to_owned()),
+            "A%B" => Ok("percent-name.conf".to_owned()),
             _ => bail!("missing test variable {name}"),
         }
     }
@@ -87,6 +102,20 @@ mod tests {
                 .unwrap(),
             "price$5/dir with spaces/literal%h.conf"
         );
+        assert_eq!(
+            expand_include_environment_with("${A%B}", 1024, lookup).unwrap(),
+            "percent-name.conf"
+        );
+    }
+
+    #[test]
+    fn raw_percent_tokens_remain_fail_closed() {
+        for input in ["%h.conf", "${CONF_ROOT}/%n.conf"] {
+            assert!(
+                expand_include_environment_with(input, 1024, lookup).is_err(),
+                "{input:?}"
+            );
+        }
     }
 
     #[test]
