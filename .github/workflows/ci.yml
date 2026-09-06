@@ -31,6 +31,7 @@ on:
       - integration/v0.28.0-candidate
       - integration/v0.29.0-candidate
       - integration/v0.30.0-candidate
+      - integration/v0.31.0-candidate
   pull_request:
     branches:
       - develop
