@@ -55,11 +55,19 @@ KADUOX_APPLE_NOTARY_ISSUER_ID
 
 The P12 must contain a valid Developer ID Application identity appropriate for signing command-line tools. The App Store Connect API private key is used only for `notarytool`; the workflow does not use an Apple ID or app-specific password.
 
-`scripts/release/sign-macos.sh` creates an isolated temporary keychain, imports the Developer ID identity, signs all four binaries with a secure timestamp and hardened runtime, and verifies each signature. It then creates a temporary ZIP containing the signed binaries and submits that ZIP with `xcrun notarytool submit --wait`. Publication is blocked unless the returned notarization status is exactly `Accepted`.
+`scripts/release/sign-macos.sh` creates an isolated temporary keychain, imports the Developer ID identity, signs all four binaries with a secure timestamp and hardened runtime, verifies each signature and timestamp, then creates a temporary ZIP containing the signed binaries and submits that ZIP with `xcrun notarytool submit --wait`. Publication is blocked unless the returned notarization status is exactly `Accepted`; the same build job then asks `spctl --assess --type exec` to accept every signed binary before packaging continues.
 
 The temporary P12, API key, ZIP, result JSON, and keychain are removed by an EXIT cleanup handler.
 
 Kaduox-SSH currently distributes macOS release suites as `.tar.gz`. A tar archive is not a staplable notarization container, so v0.25 does not claim to staple a ticket to the tarball. The notarization service records acceptance for the signed code submitted inside the temporary ZIP. Post-publication qualification uses `codesign` and `spctl --assess --type exec` against the extracted published binaries so the release gate verifies the bytes users actually download.
+
+## Reproducibility boundary
+
+Native publisher signatures intentionally include trusted external timestamps, and Apple notarization is an external service ceremony. Stable signed executable bytes are therefore **not** claimed to be reproducible byte-for-byte solely from the source tree and compiler inputs.
+
+The deterministic packaging guarantee remains narrower and useful: given the same final signed binary byte set, Kaduox-SSH's archive/manifest tooling continues to normalize package structure and metadata deterministically. The release manifest and `SHA256SUMS` identify the exact signed bytes that were actually published. SBOM generation remains deterministic from the committed lockfile/source metadata.
+
+This distinction prevents the native-signing feature from silently weakening the meaning of the earlier reproducible-packaging claims.
 
 ## Post-publication verification
 
