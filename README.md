@@ -7,7 +7,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 ## Current capabilities
 
 - SSH connection, command execution, and interactive PTY shell
-- OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion (including single-pass `${ENV}` and literal `%%` paths), supported `Match all` / `Match originalhost` evaluation, and fail-closed handling for unsupported structural semantics
+- OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion (including single-pass `${ENV}`, literal `%%`, and native `%l`/`%L` local-hostname paths), supported `Match all` / `Match originalhost` evaluation, and fail-closed handling for unsupported structural semantics
 - cross-platform OpenSSH user-config trust enforcement: Unix uid/mode checks and Windows owner/DACL checks, both tied to the same opened file used for parsing
 - target-scoped OpenSSH Host Certificate verification through matching clear-text or OpenSSH-hashed `known_hosts` `@cert-authority` entries, with principal/validity/critical-option/revocation checks
 - clear-text and OpenSSH-hashed `@revoked` enforcement for ordinary host keys, certificate subject keys, and certificate signing CAs
@@ -88,7 +88,9 @@ v0.28 integrates that Match subset with the Include scope machine. Includes unde
 
 v0.29 adds OpenSSH-style `${NAME}` environment expansion for Include paths. Expansion is single-pass: bytes produced by an environment value are not rescanned as nested `${...}` expressions or percent tokens. Missing, empty, unterminated, or non-UTF-8 environment values fail closed, and the expanded result remains subject to the existing 16 KiB path limit and all normal Include trust/resource checks.
 
-v0.30 adds the context-free OpenSSH `%%` escape for a literal percent in Include paths. Named percent tokens remain fail-closed. In particular, `%d` is not approximated with the selected config home because OpenSSH derives `%d` from the local passwd entry's `pw_dir`, while Kaduox-SSH currently locates its config home from platform environment variables; those values can differ.
+v0.30 adds the context-free OpenSSH `%%` escape for a literal percent in Include paths. `%d` is deliberately not approximated with the selected config home because OpenSSH derives `%d` from the local passwd entry's `pw_dir`, while Kaduox-SSH currently locates its config home from platform environment variables; those values can differ.
+
+v0.31 adds OpenSSH `%l` and `%L` Include expansion from the platform-native local hostname. `%l` uses the full hostname returned by `gethostname`; `%L` uses the same per-argument hostname snapshot truncated at the first dot. Unix calls `gethostname` directly. Windows initializes Winsock 2.2 once per process before using Winsock `gethostname`, following Rust std's socket initialization lifetime rather than repeatedly starting and cleaning up Winsock. The hostname value itself is not cached process-wide. Hostname lookup/non-UTF-8 failures remain fail-closed, and `${ENV}` substitution bytes are still never rescanned as percent tokens.
 
 v0.15 applies one trust boundary to the root user config and every nested Include. On Unix, the opened file must be regular, owned by the process real uid or root, and not writable by group/other. Metadata verification and parsing bytes are tied to the same opened file descriptor, removing the path-based stat/read TOCTOU window. v0.26 adds the Windows equivalent boundary: the owner/DACL is queried from the already-open file handle, untrusted write-capable Allow ACEs are rejected, read-only access for other principals remains allowed, and advanced allow ACE layouts fail closed instead of being approximated.
 
@@ -99,7 +101,7 @@ Configuration/trust behavior remains fail-closed where OpenSSH semantics are not
 - A missing `~/.ssh/config` is normal and falls back to direct/default connection settings.
 - Read, trust, expansion, and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
 - `Match all` and single-criterion `Match originalhost <pattern-list>` are supported. `canonical`, `final`, `exec`, `localnetwork`, `host`, `tagged`, `command`, `user`, `localuser`, `version`, combined criteria, criterion negation/`criterion=value`, and quoted/escaped Match arguments remain explicitly rejected.
-- Include `%%` is supported as a literal percent. Named percent tokens (`%C`, `%L`, `%d`, `%h`, `%k`, `%l`, `%n`, `%p`, `%r`, `%u`, `%i`, `%j`), `~other-user` expansion, and full bracket/collation glob expressions are explicitly rejected instead of being approximated.
+- Include `%%`, `%l`, and `%L` are supported. The remaining named percent tokens (`%C`, `%d`, `%h`, `%k`, `%n`, `%p`, `%r`, `%u`, `%i`, `%j`), `~other-user` expansion, and full bracket/collation glob expressions are explicitly rejected instead of being approximated.
 - Include expansion is capped at 16 nesting levels, 256 processed files, a 4 MiB config budget, 64 paths per directive, 16 KiB per include path after environment/percent expansion, and 1024 bytes per wildcard component; recursive include cycles fail explicitly.
 - Hashed marker names are exact HMAC-SHA1 matches over the effective known-hosts target bytes; they are not case-folded wildcard patterns. Non-default ports use OpenSSH's `[host]:port` target form.
 - Host Certificate critical options are not interpreted; any critical option rejects the certificate. RSA Host Certificates and RSA CA/certificate-signature compatibility are not claimed while the RSA feature remains disabled.

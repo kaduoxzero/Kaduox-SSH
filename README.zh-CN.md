@@ -7,7 +7,7 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 ## 当前能力
 
 - SSH 远程连接、命令执行与交互式 PTY Shell
-- OpenSSH `~/.ssh/config` Host 解析、受控 `Include` 展开（含单次 `${ENV}` 与 literal `%%` 路径处理）、受限 `Match all` / `Match originalhost` 计算，并对未支持结构保持 fail-closed
+- OpenSSH `~/.ssh/config` Host 解析、受控 `Include` 展开（含单次 `${ENV}`、字面 `%%` 与原生 `%l`/`%L` 本机主机名路径处理）、受限 `Match all` / `Match originalhost` 计算，并对未支持结构保持 fail-closed
 - 跨平台 OpenSSH 用户配置可信校验：Unix 使用 uid/mode，Windows 使用 owner/DACL，并且都绑定到后续实际读取的同一个已打开文件对象
 - 基于当前目标匹配的明文或 OpenSSH hashed `known_hosts` `@cert-authority` 进行 OpenSSH Host Certificate 验证
 - 对普通主机密钥、证书 subject key 和证书签发 CA 执行明文及 OpenSSH hashed `@revoked` 吊销检查
@@ -69,7 +69,9 @@ v0.28 把这个 Match 子集正式整合进 Include scope machine。活跃 Host/
 
 v0.29 新增 OpenSSH 风格的 Include `${NAME}` 环境变量展开。展开只执行一遍：环境变量值本身不会再次作为 `${...}` 或 `%` token 被扫描。变量缺失、空变量名、未闭合 `${...}`、非 UTF-8 环境值都会 fail-closed；展开后的路径继续受现有 16 KiB 单路径上限以及全部 Include trust/循环/资源边界约束。
 
-v0.30 新增 OpenSSH 中完全不依赖连接状态的 `%%` escape：Include 源文本中的 `%%` 会折叠为一个字面 `%`。所有 named percent token 继续 fail-closed。尤其不会用当前配置目录去近似 `%d`，因为 OpenSSH 的 `%d` 来自本地 passwd 记录的 `pw_dir`，而 Kaduox-SSH 当前配置 home 来自平台环境变量，两者可能不同。
+v0.30 新增 OpenSSH 中完全不依赖连接状态的 `%%` escape：Include 源文本中的 `%%` 会折叠为一个字面 `%`。尤其不会用当前配置目录去近似 `%d`，因为 OpenSSH 的 `%d` 来自本地 passwd 记录的 `pw_dir`，而 Kaduox-SSH 当前配置 home 来自平台环境变量，两者可能不同。
+
+v0.31 新增 OpenSSH Include `%l` / `%L` 本机主机名展开。`%l` 使用平台原生 `gethostname` 返回的完整主机名；`%L` 使用同一个 Include 参数内的主机名快照并在第一个 `.` 处截断。Unix 直接调用 `gethostname`；Windows 在首次需要该能力时按进程 once 初始化 Winsock 2.2，再调用 Winsock `gethostname`，其生命周期与 Rust std 的 Windows socket 初始化策略一致，不会在每次 Include 之间反复 startup/cleanup。主机名值本身不做进程级缓存，因此不同 Include 参数仍可重新查询。主机名查询失败或非 UTF-8 会 fail-closed，`${ENV}` 产生的 `%l`/`%L` 仍保持字面内容而不会被二次扫描。
 
 v0.15 把根配置和所有嵌套 Include 统一放到同一配置文件信任边界。Unix 上要求实际打开文件为 regular file、owner 为当前进程 real uid 或 root、group/other 不可写；metadata 校验和解析读取使用同一个已打开 fd，避免独立 stat/read 的路径 TOCTOU。v0.26 把同一原则扩展到 Windows：owner/DACL 从已经打开的文件 HANDLE 获取，非受信主体的写权限 Allow ACE 会被拒绝，其他主体的只读访问仍允许，复杂 allow ACE 则 fail-closed 而不是做不完整近似。
 
@@ -89,7 +91,7 @@ v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语�
 仍然采用 fail-closed 的部分：
 
 - 已支持 `Match all` 和单条件 `Match originalhost <pattern-list>`；`canonical`、`final`、`exec`、`localnetwork`、`host`、`tagged`、`command`、`user`、`localuser`、`version`、组合条件、条件否定/`criterion=value`、带引号或反斜杠转义的 Match 参数继续明确拒绝；
-- Include 的 `%%` 已支持为字面 `%`；named percent token（`%C`、`%L`、`%d`、`%h`、`%k`、`%l`、`%n`、`%p`、`%r`、`%u`、`%i`、`%j`）、`~other-user` 和完整 bracket/collation glob 暂不实现，会明确报错而不是做近似处理；
+- Include 的 `%%`、`%l`、`%L` 已支持；其余 named percent token（`%C`、`%d`、`%h`、`%k`、`%n`、`%p`、`%r`、`%u`、`%i`、`%j`）、`~other-user` 和完整 bracket/collation glob 暂不实现，会明确报错而不是做近似处理；
 - Include 最大 16 层、256 个处理文件、4 MiB 配置预算、单行 64 个路径、环境/percent 展开后单路径 16 KiB、单 wildcard component 1024 bytes，并检测循环 include；
 - hashed marker name 使用 effective known-hosts target bytes 做精确 HMAC-SHA1 匹配，不执行大小写折叠或 wildcard；非默认端口使用 OpenSSH `[host]:port` 形式；
 - RSA Host Certificate 与 RSA CA/证书签名兼容性当前不宣称支持；

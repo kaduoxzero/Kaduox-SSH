@@ -26,7 +26,9 @@ be combined with the supported Match subset without allowing an included file
 to escape the caller's inactive scope. v0.29 adds bounded `${ENV}` expansion at
 the shared Include-path anchoring boundary used by both connection resolution
 and host-catalog discovery. v0.30 adds OpenSSH's context-free `%%` escape for a
-literal percent character while leaving every named percent token fail-closed.
+literal percent character. v0.31 adds the target-independent local-hostname
+percent tokens `%l` and `%L` while leaving the remaining named tokens
+fail-closed.
 
 Supported behavior:
 
@@ -36,6 +38,8 @@ Supported behavior:
 - single-quoted and double-quoted paths plus backslash escaping;
 - `${ENVIRONMENT_VARIABLE}` expansion from the client process environment;
 - `%%` percent escaping, producing one literal `%` in the resulting path;
+- `%l` expansion to the platform hostname returned by the native hostname API;
+- `%L` expansion to that same local hostname truncated at the first `.`;
 - absolute paths;
 - relative paths anchored at `~/.ssh`, matching user-config OpenSSH behavior;
 - `~/...` expansion for the current user's selected configuration home;
@@ -57,12 +61,26 @@ Supported behavior:
 `${ENV}` and percent handling are deliberately single-pass, matching OpenSSH's
 combined percent/dollar scanner. Environment lookup bytes are appended verbatim
 and are not rescanned as nested `${...}` expressions or percent tokens. Source
-`%%` collapses to one literal `%`; a plain `$` not followed by `{` remains a
-literal character. Empty or unterminated `${...}` expressions, missing
-variables, non-UTF-8 values, incomplete `%`, named percent tokens, and paths
-whose final UTF-8 representation exceeds the 16 KiB Include path limit fail
-closed. Expanded values are still checked for control characters and all
-remaining unsupported path forms before filesystem access.
+`%%` collapses to one literal `%` and that produced percent is not rescanned;
+source `%l`/`%L` use one native hostname snapshot for that Include argument; a
+plain `$` not followed by `{` remains a literal character. Empty or unterminated
+`${...}` expressions, missing variables, non-UTF-8 environment or local-hostname
+values, incomplete `%`, unsupported named percent tokens, and paths whose final
+UTF-8 representation exceeds the 16 KiB Include path limit fail closed.
+Expanded values are still checked for control characters and all remaining
+unsupported path forms before filesystem access.
+
+The local-hostname source deliberately does not use `HOSTNAME`, `COMPUTERNAME`,
+or another environment-variable approximation. Unix targets call the platform
+`gethostname` function directly. Windows targets initialize Winsock 2.2 once per
+process before using Winsock `gethostname`; this follows Rust std's Windows
+socket initialization lifetime and avoids repeated startup/cleanup around
+Include expansion. Only the Winsock initialization is process-scoped: the
+hostname value itself is queried at most once for each Include argument and is
+not cached process-wide. `%L` is derived from exactly the same hostname snapshot
+as `%l` by taking the bytes before the first dot, matching OpenSSH portable's
+`thishost` / `shorthost` construction. A hostname change between separate
+Include expansions can therefore remain observable.
 
 The inactive-scope rule is security-sensitive. OpenSSH parses an included file
 with a never-match flag when the caller is inactive. v0.28 mirrors that property
@@ -181,7 +199,9 @@ Include expansion is bounded before parsing:
 - maximum cumulative input/expanded configuration budget: 4 MiB;
 - maximum physical config-file read: 4 MiB;
 - maximum include arguments on one directive: 64;
-- maximum final include path length after environment/`%%` expansion: 16 KiB;
+- maximum final include path length after environment/percent expansion: 16 KiB;
+- maximum native local-hostname length accepted by the UTF-8 path layer: less
+  than 256 bytes;
 - maximum wildcard path-component length: 1024 bytes.
 
 Canonicalized active paths are tracked while recursing, so an include cycle
@@ -194,8 +214,9 @@ Current OpenSSH also supports forms that require additional parsing context or
 full `glob(7)` behavior. Kaduox-SSH deliberately rejects them instead of
 treating them as literal paths:
 
-- named percent tokens (`%C`, `%L`, `%d`, `%h`, `%k`, `%l`, `%n`, `%p`, `%r`,
-  `%u`, `%i`, `%j`); only context-free `%%` is supported;
+- the remaining named percent tokens (`%C`, `%d`, `%h`, `%k`, `%n`, `%p`, `%r`,
+  `%u`, `%i`, `%j`); v0.31 supports only `%%`, `%l`, and `%L` from the OpenSSH
+  percent-token set;
 - `~other-user/...` home expansion;
 - bracket/collation wildcard expressions such as `[0-9]`, POSIX character
   classes, collating symbols, and equivalence classes.
@@ -205,6 +226,11 @@ treating them as literal paths:
 its config home from platform environment variables. These values can differ,
 so supporting `%d` requires an explicit local-user identity source rather than a
 silent substitution.
+
+Target-dependent tokens such as `%n`, `%h`, `%p`, `%r`, `%k`, and `%C` also need
+additional connection state that the targetless host-catalog path cannot supply.
+They remain fail-closed until connection resolution and catalog discovery can
+retain a coherent contract for those dynamic paths.
 
 These forms can be added only when their OpenSSH behavior is reproduced and
 covered by fixtures on the supported platforms.
@@ -252,7 +278,8 @@ limits.
 Unit coverage includes Include ordering, global/Host scope restoration, inactive
 Host/Match Include non-reactivation, supported Match+Include resolution,
 `${ENV}` single-pass expansion and failure/resource bounds, OpenSSH `%%`
-literal-percent collapse, named/incomplete percent-token rejection, inactive
+literal-percent collapse/no-rescan behavior, native `%l`/`%L` local-hostname
+expansion, remaining named/incomplete percent-token rejection, inactive
 ordinary-option syntax validation, unsupported Match rejection, nested cycles,
 hidden-file wildcard behavior, unsupported path-form rejection, catalog
 discovery, regular-file enforcement, accepted Unix 0600/0640/0644 modes,
