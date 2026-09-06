@@ -141,6 +141,38 @@ class SbomToolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported Cargo dependency kind"):
             sbom_tool.release_graph(metadata)
 
+    def test_duplicate_or_unknown_workspace_members_fail_closed(self) -> None:
+        _lock_data, metadata = self.fixture_graph()
+        metadata["workspace_members"].append(metadata["workspace_members"][0])
+        with self.assertRaisesRegex(ValueError, "duplicate workspace member"):
+            sbom_tool.release_graph(metadata)
+
+        _lock_data, metadata = self.fixture_graph()
+        metadata["workspace_members"][1] = "path+file:///repo/missing#missing@1.0.0"
+        with self.assertRaisesRegex(ValueError, "unknown package id"):
+            sbom_tool.release_graph(metadata)
+
+    def test_duplicate_reachable_package_identity_fails_closed(self) -> None:
+        lock_data, metadata = self.fixture_graph()
+        runtime = next(package for package in metadata["packages"] if package["name"] == "runtime")
+        duplicate_id = runtime["id"] + "-duplicate"
+        duplicate = dict(runtime)
+        duplicate["id"] = duplicate_id
+        metadata["packages"].append(duplicate)
+        metadata["resolve"]["nodes"].append({"id": duplicate_id, "deps": []})
+        core = next(node for node in metadata["resolve"]["nodes"] if "kaduox-ssh-core" in node["id"])
+        core["deps"].append(
+            {"pkg": duplicate_id, "dep_kinds": [{"kind": None, "target": None}]}
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate package identities"):
+            sbom_tool.build_spdx_document(
+                lock_data,
+                metadata,
+                f"v{release_tool.workspace_version()}",
+                "x86_64-unknown-linux-gnu",
+                sbom_tool.spdx_created_from_epoch(0),
+            )
+
     def test_missing_lock_package_for_resolved_target_fails_closed(self) -> None:
         lock_data, metadata = self.fixture_graph()
         lock_data["package"] = [
