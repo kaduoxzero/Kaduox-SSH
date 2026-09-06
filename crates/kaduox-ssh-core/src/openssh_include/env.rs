@@ -20,9 +20,7 @@ where
     let mut rest = value;
 
     while let Some(start) = rest.find("${") {
-        let literal = &rest[..start];
-        reject_percent_tokens(literal)?;
-        push_bounded(&mut output, literal, max_bytes)?;
+        expand_literal_percent(&mut output, &rest[..start], max_bytes)?;
 
         let variable_and_rest = &rest[start + 2..];
         let end = variable_and_rest
@@ -43,23 +41,37 @@ where
         rest = &variable_and_rest[end + 1..];
     }
 
-    reject_percent_tokens(rest)?;
-    push_bounded(&mut output, rest, max_bytes)?;
+    expand_literal_percent(&mut output, rest, max_bytes)?;
     Ok(output)
 }
 
-fn reject_percent_tokens(value: &str) -> Result<()> {
-    if value.contains('%') {
-        bail!("OpenSSH Include percent-token expansion is not supported yet");
+fn expand_literal_percent(output: &mut String, value: &str, max_bytes: usize) -> Result<()> {
+    let mut rest = value;
+    loop {
+        let Some(index) = rest.find('%') else {
+            push_bounded(output, rest, max_bytes)?;
+            return Ok(());
+        };
+        push_bounded(output, &rest[..index], max_bytes)?;
+
+        let after_percent = &rest[index + 1..];
+        let Some(token) = after_percent.chars().next() else {
+            bail!("OpenSSH Include ends with an incomplete percent token");
+        };
+        if token != '%' {
+            bail!("OpenSSH Include percent token %{token} is not supported yet");
+        }
+
+        push_bounded(output, "%", max_bytes)?;
+        rest = &after_percent[token.len_utf8()..];
     }
-    Ok(())
 }
 
 fn push_bounded(output: &mut String, value: &str, max_bytes: usize) -> Result<()> {
     let new_len = output
         .len()
         .checked_add(value.len())
-        .context("OpenSSH Include environment expansion byte accounting overflow")?;
+        .context("OpenSSH Include environment/percent expansion byte accounting overflow")?;
     if new_len > max_bytes {
         bail!("expanded OpenSSH Include path exceeds the {max_bytes}-byte safety limit");
     }
@@ -109,8 +121,24 @@ mod tests {
     }
 
     #[test]
-    fn raw_percent_tokens_remain_fail_closed() {
-        for input in ["%h.conf", "${CONF_ROOT}/%n.conf"] {
+    fn literal_percent_escape_matches_openssh() {
+        assert_eq!(
+            expand_include_environment_with("conf.d/100%%.conf", 1024, lookup).unwrap(),
+            "conf.d/100%.conf"
+        );
+        assert_eq!(
+            expand_include_environment_with("%%%%", 1024, lookup).unwrap(),
+            "%%"
+        );
+        assert_eq!(
+            expand_include_environment_with("${CONF_ROOT}/%%done", 1024, lookup).unwrap(),
+            "conf.d/%done"
+        );
+    }
+
+    #[test]
+    fn named_or_incomplete_percent_tokens_remain_fail_closed() {
+        for input in ["%h.conf", "${CONF_ROOT}/%n.conf", "%", "ok%%/%d"] {
             assert!(
                 expand_include_environment_with(input, 1024, lookup).is_err(),
                 "{input:?}"
@@ -129,11 +157,12 @@ mod tests {
     }
 
     #[test]
-    fn expanded_size_is_bounded() {
+    fn expanded_size_is_bounded_after_percent_collapse() {
         assert!(expand_include_environment_with("${SPACED}", 3, lookup).is_err());
         assert_eq!(
-            expand_include_environment_with("abc", 3, lookup).unwrap(),
-            "abc"
+            expand_include_environment_with("%%a", 2, lookup).unwrap(),
+            "%a"
         );
+        assert!(expand_include_environment_with("%%ab", 2, lookup).is_err());
     }
 }
