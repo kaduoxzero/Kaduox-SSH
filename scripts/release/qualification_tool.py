@@ -13,12 +13,10 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tarfile
-import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -34,6 +32,7 @@ EXPECTED_TARGETS: dict[str, tuple[str, str]] = {
 }
 EXPECTED_DOCUMENTS = ("README.md", "README.zh-CN.md", "LICENSE", "manifest.json")
 MAX_CHECKSUM_FILE_BYTES = 64 * 1024
+MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 32
 MAX_MEMBER_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
@@ -66,7 +65,12 @@ def package_name(version: str, target: str) -> str:
 
 
 def archive_name(version: str, target: str, archive_format: str) -> str:
-    suffix = ".tar.gz" if archive_format == "tar.gz" else ".zip"
+    if archive_format == "tar.gz":
+        suffix = ".tar.gz"
+    elif archive_format == "zip":
+        suffix = ".zip"
+    else:
+        raise ValueError(f"unsupported release archive format: {archive_format}")
     return f"{package_name(version, target)}{suffix}"
 
 
@@ -89,8 +93,7 @@ def require_plain_file(path: Path, label: str) -> None:
 
 def parse_sha256sums(path: Path) -> dict[str, str]:
     require_plain_file(path, "SHA256SUMS")
-    size = path.stat().st_size
-    if size > MAX_CHECKSUM_FILE_BYTES:
+    if path.stat().st_size > MAX_CHECKSUM_FILE_BYTES:
         raise ValueError("SHA256SUMS exceeds the qualification safety budget")
     text = path.read_text(encoding="utf-8")
     found: dict[str, str] = {}
@@ -122,8 +125,6 @@ def verify_release_asset_set(tag: str, assets_dir: Path) -> dict[str, str]:
     expected_with_sums = expected | {"SHA256SUMS"}
     actual: set[str] = set()
     for entry in assets_dir.iterdir():
-        if entry.name in {".", ".."}:
-            raise ValueError("release assets directory contains an unsafe entry")
         require_plain_file(entry, "release asset")
         actual.add(entry.name)
     if actual != expected_with_sums:
@@ -157,11 +158,14 @@ def expected_package_files(exe_suffix: str) -> set[str]:
 
 
 def validate_member_name(name: str, root: str) -> str | None:
-    if "\\" in name or "\0" in name:
+    if not name or "\\" in name or "\0" in name or name.startswith("/"):
         raise ValueError(f"archive member has unsafe path syntax: {name!r}")
-    path = PurePosixPath(name)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    raw_parts = name.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
         raise ValueError(f"archive member escapes the package root: {name!r}")
+    path = PurePosixPath(name)
+    if path.is_absolute() or path.parts != tuple(raw_parts):
+        raise ValueError(f"archive member has non-canonical path syntax: {name!r}")
     if path.parts[0] != root:
         raise ValueError(f"archive member is outside expected package root {root!r}: {name!r}")
     if len(path.parts) == 1:
@@ -211,52 +215,56 @@ def _prepare_extract_dir(extract_dir: Path) -> None:
         raise ValueError("qualification extract directory must not be a symbolic link")
 
 
-def extract_tar_gz(
-    archive: Path, extract_dir: Path, root: str, exe_suffix: str
-) -> Path:
+def _validate_tar(handle: tarfile.TarFile, root: str, exe_suffix: str) -> None:
     expected_files = expected_package_files(exe_suffix)
     seen_files: set[str] = set()
     root_seen = False
     total = 0
-    with tarfile.open(archive, mode="r:gz") as handle:
-        members = handle.getmembers()
-        if len(members) > MAX_ARCHIVE_MEMBERS:
+    count = 0
+    for member in handle:
+        count += 1
+        if count > MAX_ARCHIVE_MEMBERS:
             raise ValueError("release archive contains too many members")
-        for member in members:
-            leaf = validate_member_name(member.name, root)
-            if member.isdir():
-                if leaf is not None or root_seen:
-                    raise ValueError(f"release archive contains unexpected directory {member.name!r}")
-                root_seen = True
-                if stat.S_IMODE(member.mode) != expected_mode(None, exe_suffix):
-                    raise ValueError("release archive root directory has unexpected mode")
-                continue
-            if not member.isfile():
-                raise ValueError(f"release archive contains unsupported member type: {member.name!r}")
-            if leaf is None or leaf not in expected_files or leaf in seen_files:
-                raise ValueError(f"release archive contains unexpected or duplicate file: {member.name!r}")
-            if stat.S_IMODE(member.mode) != expected_mode(leaf, exe_suffix):
-                raise ValueError(f"release archive member {leaf!r} has unexpected mode")
-            total = validate_declared_size(member.name, member.size, total)
-            seen_files.add(leaf)
+        leaf = validate_member_name(member.name, root)
+        if member.isdir():
+            if leaf is not None or root_seen:
+                raise ValueError(f"release archive contains unexpected directory {member.name!r}")
+            root_seen = True
+            if stat.S_IMODE(member.mode) != expected_mode(None, exe_suffix):
+                raise ValueError("release archive root directory has unexpected mode")
+            continue
+        if not member.isfile() or getattr(member, "sparse", None):
+            raise ValueError(f"release archive contains unsupported member type: {member.name!r}")
+        if leaf is None or leaf not in expected_files or leaf in seen_files:
+            raise ValueError(f"release archive contains unexpected or duplicate file: {member.name!r}")
+        if stat.S_IMODE(member.mode) != expected_mode(leaf, exe_suffix):
+            raise ValueError(f"release archive member {leaf!r} has unexpected mode")
+        total = validate_declared_size(member.name, member.size, total)
+        seen_files.add(leaf)
+    if not root_seen or seen_files != expected_files:
+        raise ValueError("release tar member set differs from the packaging contract")
 
-        if not root_seen or seen_files != expected_files:
-            raise ValueError("release tar member set differs from the packaging contract")
 
+def extract_tar_gz(archive: Path, extract_dir: Path, root: str, exe_suffix: str) -> Path:
+    with archive.open("rb") as raw:
+        with tarfile.open(fileobj=raw, mode="r:gz") as handle:
+            _validate_tar(handle, root, exe_suffix)
+        raw.seek(0)
         package_dir = extract_dir / root
         package_dir.mkdir(mode=0o755)
-        for member in members:
-            if not member.isfile():
-                continue
-            leaf = validate_member_name(member.name, root)
-            assert leaf is not None
-            source = handle.extractfile(member)
-            if source is None:
-                raise ValueError(f"cannot read archive member {member.name!r}")
-            destination = package_dir / leaf
-            with source, destination.open("xb") as output:
-                _copy_exact(source, output, member.size)
-            os.chmod(destination, expected_mode(leaf, exe_suffix))
+        with tarfile.open(fileobj=raw, mode="r:gz") as handle:
+            for member in handle:
+                if not member.isfile():
+                    continue
+                leaf = validate_member_name(member.name, root)
+                assert leaf is not None
+                source = handle.extractfile(member)
+                if source is None:
+                    raise ValueError(f"cannot read archive member {member.name!r}")
+                destination = package_dir / leaf
+                with source, destination.open("xb") as output:
+                    _copy_exact(source, output, member.size)
+                os.chmod(destination, expected_mode(leaf, exe_suffix))
     return extract_dir / root
 
 
@@ -264,7 +272,7 @@ def extract_zip(archive: Path, extract_dir: Path, root: str, exe_suffix: str) ->
     expected_files = expected_package_files(exe_suffix)
     seen_files: set[str] = set()
     total = 0
-    with zipfile.ZipFile(archive, mode="r") as handle:
+    with archive.open("rb") as raw, zipfile.ZipFile(raw, mode="r") as handle:
         members = handle.infolist()
         if len(members) > MAX_ARCHIVE_MEMBERS:
             raise ValueError("release archive contains too many members")
@@ -274,6 +282,10 @@ def extract_zip(archive: Path, extract_dir: Path, root: str, exe_suffix: str) ->
                 raise ValueError(f"release zip contains unexpected directory: {member.filename!r}")
             if leaf not in expected_files or leaf in seen_files:
                 raise ValueError(f"release zip contains unexpected or duplicate file: {member.filename!r}")
+            if member.flag_bits & 0x1:
+                raise ValueError(f"release zip contains encrypted member: {member.filename!r}")
+            if member.compress_type != zipfile.ZIP_DEFLATED or member.create_system != 3:
+                raise ValueError(f"release zip member has unexpected encoding metadata: {member.filename!r}")
             unix_mode = (member.external_attr >> 16) & 0xFFFF
             if stat.S_IFMT(unix_mode) != stat.S_IFREG:
                 raise ValueError(f"release zip contains non-regular member: {member.filename!r}")
@@ -305,6 +317,8 @@ def extract_release_archive(
     exe_suffix: str,
 ) -> Path:
     require_plain_file(archive, "release archive")
+    if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("release archive exceeds the qualification safety budget")
     _prepare_extract_dir(extract_dir)
     root = package_name(version, target)
     if archive_format == "tar.gz":
@@ -358,15 +372,17 @@ def validate_manifest(
         expected_file = f"{name}{exe_suffix}"
         if entry["file"] != expected_file:
             raise ValueError(f"release manifest filename mismatch for {name}")
-        if not isinstance(entry["bytes"], int) or entry["bytes"] < 0:
+        byte_length = entry["bytes"]
+        if isinstance(byte_length, bool) or not isinstance(byte_length, int) or byte_length < 0:
             raise ValueError(f"release manifest byte length is invalid for {name}")
-        if not isinstance(entry["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is None:
+        checksum = entry["sha256"]
+        if not isinstance(checksum, str) or re.fullmatch(r"[0-9a-f]{64}", checksum) is None:
             raise ValueError(f"release manifest checksum is invalid for {name}")
         binary = package_dir / expected_file
         require_plain_file(binary, f"packaged binary {name}")
-        if binary.stat().st_size != entry["bytes"]:
+        if binary.stat().st_size != byte_length:
             raise ValueError(f"packaged binary size mismatch for {name}")
-        if sha256(binary) != entry["sha256"]:
+        if sha256(binary) != checksum:
             raise ValueError(f"packaged binary checksum mismatch for {name}")
 
 
