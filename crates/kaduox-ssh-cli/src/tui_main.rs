@@ -3,6 +3,7 @@ mod tui_app;
 mod tui_broadcast;
 mod tui_group_open;
 mod tui_group_picker;
+mod tui_local_picker;
 mod tui_picker;
 mod tui_task_panel;
 mod tui_transfer_control;
