@@ -14,9 +14,7 @@ use crate::remote_path::{join_remote_under_root, validate_remote_child_name};
 pub use crate::transfer_engine::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
 };
-pub(crate) use crate::transfer_engine::{
-    download_file, download_tree, ensure_remote_dir, unique_staging_path,
-};
+pub(crate) use crate::transfer_engine::{ensure_remote_dir, unique_staging_path};
 
 static REMOTE_STAGING_SERIAL: AtomicU64 = AtomicU64::new(0);
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
@@ -399,7 +397,7 @@ async fn collect_next_transfer(
     let bytes = tasks
         .join_next()
         .await
-        .context("recursive atomic upload task set unexpectedly empty")??;
+        .context("recursive atomic upload task set unexpectedly empty")???;
     summary.bytes = summary
         .bytes
         .checked_add(bytes)

@@ -99,10 +99,7 @@ pub struct SshClient {
 impl SshClient {
     pub async fn connect(config: ConnectionConfig, authentication: Authentication) -> Result<Self> {
         config.validate_timeouts()?;
-        let state = HandlerState {
-            agent_forwarding: config.agent_forwarding,
-            ..Default::default()
-        };
+        let state = HandlerState::with_agent_forwarding(config.agent_forwarding);
         let ssh_config = ssh_config(&config)?;
         let (mut session, jump_sessions) = if !config.jump_hosts.is_empty() {
             connect_via_jumps(&config, ssh_config, &state).await?
@@ -515,7 +512,6 @@ async fn wait_for_resize(
 
 fn ssh_config(config: &ConnectionConfig) -> Result<Arc<client::Config>> {
     Ok(Arc::new(client::Config {
-        connection_timeout: Some(config.connect_timeout),
         inactivity_timeout: config.inactivity_timeout,
         keepalive_interval: config.keepalive_interval,
         keepalive_max: 3,
@@ -530,9 +526,8 @@ fn ssh_config(config: &ConnectionConfig) -> Result<Arc<client::Config>> {
     }))
 }
 
-fn jump_ssh_config(config: &ConnectionConfig, jump: &JumpHost) -> Result<Arc<client::Config>> {
+fn jump_ssh_config(_config: &ConnectionConfig, jump: &JumpHost) -> Result<Arc<client::Config>> {
     Ok(Arc::new(client::Config {
-        connection_timeout: Some(config.connect_timeout),
         nodelay: true,
         preferred: preferred_for_target(
             &jump.host,

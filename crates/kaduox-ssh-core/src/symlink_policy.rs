@@ -47,6 +47,7 @@ impl SshClient {
     /// Privileged recursive upload with an explicit local source-tree link
     /// policy. Strict preflight runs before exclusive `/tmp` staging is created,
     /// so a rejected tree does not leave remote staging mutations behind.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload_privileged_recursive_with_symlink_policy(
         &self,
         local_path: &Path,
@@ -278,7 +279,7 @@ fn is_local_link_like(metadata: &std::fs::Metadata) -> bool {
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     {

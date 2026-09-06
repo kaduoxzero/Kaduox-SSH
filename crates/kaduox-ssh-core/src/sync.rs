@@ -198,7 +198,7 @@ async fn collect_next_sync_upload(
     let bytes = tasks
         .join_next()
         .await
-        .context("sync upload task set unexpectedly empty")??;
+        .context("sync upload task set unexpectedly empty")???;
     summary.bytes = summary
         .bytes
         .checked_add(bytes)

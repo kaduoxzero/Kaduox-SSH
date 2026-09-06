@@ -167,7 +167,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!(
+        let base = if cfg!(windows) {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+        } else {
+            std::env::temp_dir()
+        };
+        base.join(format!(
             "kaduox-host-catalog-{label}-{}-{nonce}",
             std::process::id()
         ))

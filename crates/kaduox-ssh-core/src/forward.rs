@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn forward_resource_limits_are_nonzero() {
-        assert!(MAX_ACTIVE_FORWARD_CONNECTIONS > 0);
+        const { assert!(MAX_ACTIVE_FORWARD_CONNECTIONS > 0) };
         assert!(!FORWARD_CHANNEL_OPEN_TIMEOUT.is_zero());
         assert!(!SOCKS_HANDSHAKE_TIMEOUT.is_zero());
     }

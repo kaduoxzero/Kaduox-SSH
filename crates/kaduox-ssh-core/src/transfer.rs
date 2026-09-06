@@ -534,7 +534,7 @@ async fn collect_next_transfer(
     let bytes = tasks
         .join_next()
         .await
-        .context("recursive transfer task set unexpectedly empty")??;
+        .context("recursive transfer task set unexpectedly empty")???;
     summary.bytes += bytes;
     summary.files += 1;
     Ok(())
@@ -830,7 +830,12 @@ async fn preserve_local_mtime(path: &Path, mtime: Option<u32>) -> Result<()> {
     };
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let file = std::fs::File::open(&path)
+        // Windows requires a write-capable handle to set file times
+        // (FILE_WRITE_ATTRIBUTES); a read-only File::open handle fails with
+        // ERROR_ACCESS_DENIED there, while Unix accepts either.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
             .with_context(|| format!("failed to open {} to preserve mtime", path.display()))?;
         let modified = UNIX_EPOCH + Duration::from_secs(u64::from(mtime));
         file.set_modified(modified)

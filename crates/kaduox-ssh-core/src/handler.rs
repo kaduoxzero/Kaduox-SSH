@@ -17,6 +17,7 @@ use crate::diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 use crate::host_trust::HostTrustPolicy;
 
 const REMOTE_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(unix)]
 const AGENT_FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_SERVER_INITIATED_FORWARD_CHANNELS: usize = 128;
 
@@ -46,6 +47,13 @@ impl Default for HandlerState {
 }
 
 impl HandlerState {
+    pub(crate) fn with_agent_forwarding(agent_forwarding: bool) -> Self {
+        Self {
+            agent_forwarding,
+            ..Default::default()
+        }
+    }
+
     pub async fn register_remote_forward(
         &self,
         bind_address: String,

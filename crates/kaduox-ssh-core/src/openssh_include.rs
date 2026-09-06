@@ -355,8 +355,20 @@ fn supported_match_directive_matches(line: &str, original_host: &str) -> Result<
 }
 
 fn validate_inactive_option(line: &str, original_host: &str) -> Result<()> {
-    if directive_key(line).is_none() {
+    let Some(key) = directive_key(line) else {
         return Ok(());
+    };
+    // russh-config silently ignores unparseable Port values, so validate the
+    // numeric port explicitly; OpenSSH rejects a non-numeric Port outright.
+    if key.eq_ignore_ascii_case("port") {
+        let trimmed = line.trim_start();
+        let value = trimmed[key.len()..]
+            .trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == '=')
+            .trim();
+        let valid = value.parse::<u16>().is_ok_and(|port| port > 0);
+        if !valid {
+            bail!("invalid OpenSSH Port value {value:?}");
+        }
     }
     let probe = format!("Host *\n{line}\n");
     russh_config::parse(&probe, original_host)
@@ -686,7 +698,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!(
+        let base = if cfg!(windows) {
+            std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+        } else {
+            std::env::temp_dir()
+        };
+        base.join(format!(
             "kaduox-openssh-include-{label}-{}-{nonce}",
             std::process::id()
         ))

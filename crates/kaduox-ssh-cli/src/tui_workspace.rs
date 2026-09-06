@@ -87,9 +87,6 @@ pub(crate) async fn run(cli: &Cli, initial_host: Option<String>) -> Result<()> {
             KeyCode::Char('n') => {
                 terminal.suspend()?;
                 let host_result = select_catalog_host();
-                if let Ok(Some(host)) = host_result.as_ref() {
-                    status = format!("connecting {host} ...");
-                }
                 let connect_result = match host_result {
                     Ok(Some(host)) => {
                         connect_session(&manager, cli, host, &mut sessions, &mut selected).await

@@ -1193,7 +1193,7 @@ mod tests {
 
     #[test]
     fn progress_queue_capacity_is_bounded() {
-        assert!(PROGRESS_QUEUE_CAPACITY > 0);
+        const { assert!(PROGRESS_QUEUE_CAPACITY > 0) };
     }
 
     #[test]

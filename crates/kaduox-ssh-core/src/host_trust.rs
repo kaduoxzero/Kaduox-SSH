@@ -223,7 +223,7 @@ fn clear_host_patterns_match(target: &str, patterns: &[String]) -> Result<bool> 
             bail!("known_hosts host pattern list contains an empty entry");
         }
         let (negated, pattern) = match pattern.strip_prefix('!') {
-            Some(pattern) if pattern.is_empty() => bail!("known_hosts negated host pattern is empty"),
+            Some("") => bail!("known_hosts negated host pattern is empty"),
             Some(pattern) => (true, pattern),
             None => (false, pattern.as_str()),
         };
