@@ -2,7 +2,6 @@ use std::ffi::CStr;
 #[cfg(windows)]
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int};
-use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
@@ -13,8 +12,6 @@ struct LocalHostnames {
     full: String,
     short: String,
 }
-
-static LOCAL_HOSTNAMES: OnceLock<std::result::Result<LocalHostnames, String>> = OnceLock::new();
 
 pub(super) fn expand_include_environment(value: &str, max_bytes: usize) -> Result<String> {
     expand_include_environment_with(value, max_bytes, |name| {
@@ -34,9 +31,15 @@ where
 {
     let mut output = String::with_capacity(value.len().min(max_bytes));
     let mut rest = value;
+    let mut local_names: Option<LocalHostnames> = None;
 
     while let Some(start) = rest.find("${") {
-        expand_percent_tokens(&mut output, &rest[..start], max_bytes)?;
+        expand_percent_tokens(
+            &mut output,
+            &rest[..start],
+            max_bytes,
+            &mut local_names,
+        )?;
 
         let variable_and_rest = &rest[start + 2..];
         let end = variable_and_rest
@@ -57,11 +60,16 @@ where
         rest = &variable_and_rest[end + 1..];
     }
 
-    expand_percent_tokens(&mut output, rest, max_bytes)?;
+    expand_percent_tokens(&mut output, rest, max_bytes, &mut local_names)?;
     Ok(output)
 }
 
-fn expand_percent_tokens(output: &mut String, value: &str, max_bytes: usize) -> Result<()> {
+fn expand_percent_tokens(
+    output: &mut String,
+    value: &str,
+    max_bytes: usize,
+    local_names: &mut Option<LocalHostnames>,
+) -> Result<()> {
     let mut rest = value;
     loop {
         let Some(index) = rest.find('%') else {
@@ -78,7 +86,12 @@ fn expand_percent_tokens(output: &mut String, value: &str, max_bytes: usize) -> 
         match token {
             '%' => push_bounded(output, "%", max_bytes)?,
             'l' | 'L' => {
-                let names = local_hostnames()?;
+                if local_names.is_none() {
+                    *local_names = Some(query_local_hostnames()?);
+                }
+                let names = local_names
+                    .as_ref()
+                    .context("local hostname cache was not initialized")?;
                 let replacement = if token == 'l' {
                     names.full.as_str()
                 } else {
@@ -93,27 +106,17 @@ fn expand_percent_tokens(output: &mut String, value: &str, max_bytes: usize) -> 
     }
 }
 
-fn local_hostnames() -> Result<&'static LocalHostnames> {
-    match LOCAL_HOSTNAMES.get_or_init(|| {
-        query_local_hostname()
-            .and_then(|full| {
-                if full.is_empty() {
-                    bail!("local hostname is empty");
-                }
-                let short = full
-                    .split('.')
-                    .next()
-                    .unwrap_or(full.as_str())
-                    .to_owned();
-                Ok(LocalHostnames { full, short })
-            })
-            .map_err(|error| format!("{error:#}"))
-    }) {
-        Ok(names) => Ok(names),
-        Err(message) => bail!(
-            "failed to resolve local hostname for OpenSSH Include percent expansion: {message}"
-        ),
+fn query_local_hostnames() -> Result<LocalHostnames> {
+    let full = query_local_hostname()?;
+    if full.is_empty() {
+        bail!("local hostname is empty");
     }
+    let short = full
+        .split('.')
+        .next()
+        .unwrap_or(full.as_str())
+        .to_owned();
+    Ok(LocalHostnames { full, short })
 }
 
 fn hostname_from_buffer(buffer: &[c_char]) -> Result<String> {
@@ -271,7 +274,7 @@ mod tests {
 
     #[test]
     fn local_hostname_tokens_match_native_hostname() {
-        let names = local_hostnames().unwrap();
+        let names = query_local_hostnames().unwrap();
         assert_eq!(
             expand_include_environment_with("%l/%L", 1024, lookup).unwrap(),
             format!("{}/{}", names.full, names.short)
@@ -314,7 +317,7 @@ mod tests {
         );
         assert!(expand_include_environment_with("%%ab", 2, lookup).is_err());
 
-        let names = local_hostnames().unwrap();
+        let names = query_local_hostnames().unwrap();
         assert!(
             expand_include_environment_with("%l", names.full.len() - 1, lookup).is_err()
         );
