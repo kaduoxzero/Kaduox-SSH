@@ -15,7 +15,7 @@ Use the repository release tool instead of editing the version strings by hand:
 
 ```bash
 python scripts/release/release_tool.py check
-python scripts/release/release_tool.py set-version 0.22.0-rc.1
+python scripts/release/release_tool.py set-version 0.23.0-rc.1
 python scripts/release/release_tool.py check
 ```
 
@@ -29,15 +29,16 @@ versions, not registry dependency versions or checksums.
 
 A release candidate is not ready to tag until all of these execute successfully:
 
-- `cargo fmt --all -- --check`;
+- Rust 1.98.1 formatting/check/test on the normal release-readiness lanes;
 - `cargo check --workspace --all-targets --locked` on Linux, macOS, and Windows;
 - `cargo test --workspace --locked`;
-- Rust 1.85 MSRV check;
-- Clippy with warnings denied;
-- dependency audit;
-- real OpenSSH integration fixtures;
+- Rust 1.85.0 MSRV check;
+- Clippy with warnings denied on Rust 1.98.1;
+- dependency audit using `cargo-audit 0.22.0` built and executed with Rust 1.98.1;
+- real OpenSSH integration fixtures built with Rust 1.98.1;
 - release packaging and SPDX SBOM Python unit tests;
 - immutable workflow-action pin policy tests;
+- Rust toolchain policy tests;
 - repository release metadata validation.
 
 A GitHub Actions job that fails before runner allocation, checkout, or any step
@@ -93,13 +94,34 @@ by the checked-out repository commit. Updating any external workflow dependency
 therefore requires changing both the workflow reference and the exact expected
 pin policy in the same reviewed change.
 
-The pinned `actions-rust-lang/audit` commit used by Quality currently pins its
-internal `actions/cache` dependency and installs `cargo-audit` 0.22.0 explicitly.
-It invokes `cargo +stable`, and the normal CI/release Rust setup also intentionally
-tracks the Rust `stable` toolchain channel. v0.22 freezes the Action implementation
-commits, not the Rust stable channel itself; changing that toolchain-version policy
-is a separate reproducibility decision. The MSRV lane remains explicitly fixed at
-Rust 1.85.0.
+## Pinned Rust toolchain policy
+
+v0.23 removes the moving Rust `stable` compiler channel from the workflows that
+build, test, audit, and package Kaduox-SSH. Normal CI, Clippy, real OpenSSH
+integration, dependency audit, and the four-platform release build use Rust
+**1.98.1** explicitly. Rust 1.98.1 is selected instead of 1.98.0 because the Rust
+project released 1.98.1 on 2026-09-03 to fix a vtable-generation miscompilation
+in 1.98.0.
+
+The MSRV lane remains a distinct Rust **1.85.0** check. The workspace's declared
+minimum Rust version is therefore not silently raised to the release compiler.
+
+Quality no longer delegates dependency auditing to a composite Action that
+invokes `cargo +stable`. The audit job installs the same Rust 1.98.1 toolchain,
+uses SHA-pinned `actions/cache` v5.0.1 for the scanner binary, installs exactly
+`cargo-audit 0.22.0` with `--locked --no-default-features` on cache misses, and
+runs `cargo +1.98.1 audit --file Cargo.lock`.
+
+`scripts/release/test_rust_toolchain_policy.py` enforces the exact protected
+workflow toolchain counts and fails closed on missing toolchain inputs,
+`toolchain: stable`, `cargo +stable`, changes to the 1.98.1 release compiler,
+changes to the 1.85.0 MSRV lane, or restoration of the moving composite audit
+path.
+
+The RustSec advisory database is intentionally **not** frozen: it is live security
+intelligence, not a build material. The reproducibility claim fixes the compiler,
+scanner version, workflow Action commits, source, and Cargo.lock dependency graph;
+it does not make the vulnerability database stale for the sake of byte identity.
 
 ## Release artifacts
 
@@ -139,7 +161,7 @@ The publish job refuses any release with anything other than exactly four final
 archives and exactly one release-wide SPDX file. It creates a top-level
 `SHA256SUMS` covering all five assets.
 
-Pre-release SemVer tags containing `-` (for example `v0.22.0-rc.1`) are created
+Pre-release SemVer tags containing `-` (for example `v0.23.0-rc.1`) are created
 as GitHub pre-releases automatically.
 
 ## Optional GitHub artifact attestations
@@ -212,8 +234,10 @@ v0.20 provides a deterministic release-wide SPDX dependency inventory and an
 optional GitHub provenance-attestation path. v0.21 pins production release Action
 implementations to reviewed immutable commits. v0.22 extends that immutable
 Action boundary to CI, Quality, dependency audit, and real OpenSSH validation.
-These controls improve supply-chain traceability and workflow integrity but do
-not replace native platform signing or a future exact per-target SBOM predicate.
+v0.23 additionally fixes the normal build/test/audit/release compiler to Rust
+1.98.1 while preserving the Rust 1.85.0 MSRV lane. These controls improve
+supply-chain traceability and workflow/build reproducibility but do not replace
+native platform signing or a future exact per-target SBOM predicate.
 
 Before Kaduox-SSH declares the V1 release channel complete, the remaining
 publisher-authentication work is primarily:
