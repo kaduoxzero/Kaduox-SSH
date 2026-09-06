@@ -1072,6 +1072,8 @@ dependencies = [
  "clap",
  "crossterm",
  "kaduox-ssh-core",
+ "kaduox-ssh-daemon",
+ "kaduox-ssh-hosts",
  "rpassword",
  "tokio",
  "tracing-subscriber",
@@ -1088,6 +1090,25 @@ dependencies = [
  "russh-sftp",
  "sha1",
  "tokio",
+]
+
+[[package]]
+name = "kaduox-ssh-daemon"
+version = "0.6.0-rc.1"
+dependencies = [
+ "anyhow",
+ "kaduox-ssh-core",
+ "kaduox-ssh-hosts",
+ "tokio",
+ "windows-sys",
+]
+
+[[package]]
+name = "kaduox-ssh-hosts"
+version = "0.6.0-rc.1"
+dependencies = [
+ "anyhow",
+ "kaduox-ssh-core",
 ]
 
 [[package]]
