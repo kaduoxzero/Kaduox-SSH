@@ -75,6 +75,11 @@ jobs:
       - name: Install cargo-audit 0.22.0
         if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
         run: cargo +1.98.1 install cargo-audit --version 0.22.0 --locked --no-default-features
+      - name: Verify cargo-audit 0.22.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.98.1 audit --version | grep -F '0.22.0'
       - name: Audit resolved dependencies
         run: cargo +1.98.1 audit --file Cargo.lock
 
