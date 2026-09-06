@@ -1,5 +1,6 @@
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{
@@ -12,8 +13,47 @@ use crate::tui_local_picker::{LocalPickKind, pick_local_path};
 const LOCAL_FILE_UPLOAD_PROMPT: &str = "local file to upload (empty cancels): ";
 const LOCAL_DIRECTORY_UPLOAD_PROMPT: &str =
     "local directory to upload recursively (empty cancels): ";
+const RECURSIVE_DOWNLOAD_PREFIX: &str = "recursively download ";
+const RECURSIVE_DOWNLOAD_DESTINATION_MARKER: &str = " to local directory [";
+const RECURSIVE_DOWNLOAD_DESTINATION_SUFFIX: &str = "]: ";
+const RECURSIVE_DOWNLOAD_CONFIRM_PREFIX: &str = "recursive download to ";
+const RECURSIVE_DOWNLOAD_CONFIRM_SUFFIX: &str =
+    " uses bounded concurrency and skips symlinks; type YES to continue: ";
+
+static RECURSIVE_DOWNLOAD_PICKER_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 pub async fn prompt_line(prompt: String) -> Result<String> {
+    if is_recursive_download_confirmation_prompt(&prompt)
+        && RECURSIVE_DOWNLOAD_PICKER_CANCELLED.swap(false, Ordering::AcqRel)
+    {
+        return Ok(String::new());
+    }
+
+    if let Some(default_name) = recursive_download_default_name(&prompt).map(ToOwned::to_owned) {
+        return tokio::task::spawn_blocking(move || -> Result<String> {
+            let start = std::env::current_dir().context(
+                "failed to determine local working directory for TUI download destination picker",
+            )?;
+            let Some(parent) = pick_local_path(&start, LocalPickKind::Directory)? else {
+                RECURSIVE_DOWNLOAD_PICKER_CANCELLED.store(true, Ordering::Release);
+                return Ok(String::new());
+            };
+            let Some(name) = prompt_local_download_leaf(&default_name)? else {
+                RECURSIVE_DOWNLOAD_PICKER_CANCELLED.store(true, Ordering::Release);
+                return Ok(String::new());
+            };
+
+            let destination = parent.join(name);
+            RECURSIVE_DOWNLOAD_PICKER_CANCELLED.store(false, Ordering::Release);
+            path_to_tracked_string(
+                destination,
+                "selected local recursive-download destination is not valid UTF-8",
+            )
+        })
+        .await
+        .context("TUI recursive-download destination picker task failed")?;
+    }
+
     if let Some(kind) = local_picker_kind(&prompt) {
         return tokio::task::spawn_blocking(move || -> Result<String> {
             let start = std::env::current_dir()
@@ -21,32 +61,76 @@ pub async fn prompt_line(prompt: String) -> Result<String> {
             let Some(path) = pick_local_path(&start, kind)? else {
                 return Ok(String::new());
             };
-            path.into_os_string().into_string().map_err(|path| {
-                anyhow::anyhow!(
-                    "selected local upload path is not valid UTF-8: {}",
-                    path.to_string_lossy()
-                )
-            })
+            path_to_tracked_string(path, "selected local upload path is not valid UTF-8")
         })
         .await
         .context("TUI local-picker task failed")?;
     }
 
-    tokio::task::spawn_blocking(move || -> io::Result<String> {
-        let mut stdout = io::stdout();
-        stdout.write_all(prompt.as_bytes())?;
-        stdout.flush()?;
+    tokio::task::spawn_blocking(move || read_prompt_line(&prompt))
+        .await
+        .context("terminal prompt task failed")?
+        .context("failed to read terminal prompt")
+}
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        while matches!(input.chars().last(), Some('\n' | '\r')) {
-            input.pop();
+fn read_prompt_line(prompt: &str) -> io::Result<String> {
+    let mut stdout = io::stdout();
+    stdout.write_all(prompt.as_bytes())?;
+    stdout.flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    while matches!(input.chars().last(), Some('\n' | '\r')) {
+        input.pop();
+    }
+    Ok(input)
+}
+
+fn prompt_local_download_leaf(default_name: &str) -> Result<Option<String>> {
+    loop {
+        let input = read_prompt_line(&format!(
+            "local download directory name [{default_name}] (empty uses default; CANCEL cancels): "
+        ))
+        .context("failed to read local recursive-download directory name")?;
+        let input = input.trim();
+        if input == "CANCEL" {
+            return Ok(None);
         }
-        Ok(input)
-    })
-    .await
-    .context("terminal prompt task failed")?
-    .context("failed to read terminal prompt")
+
+        let candidate = if input.is_empty() {
+            default_name.to_owned()
+        } else {
+            input.to_owned()
+        };
+        match validate_local_leaf(&candidate) {
+            Ok(()) => return Ok(Some(candidate)),
+            Err(error) => {
+                let mut stderr = io::stderr();
+                writeln!(
+                    stderr,
+                    "invalid local download directory name: {error}"
+                )?;
+                stderr.flush()?;
+            }
+        }
+    }
+}
+
+fn path_to_tracked_string(path: PathBuf, context: &str) -> Result<String> {
+    path.into_os_string()
+        .into_string()
+        .map_err(|path| anyhow::anyhow!("{context}: {}", path.to_string_lossy()))
+}
+
+fn recursive_download_default_name(prompt: &str) -> Option<&str> {
+    let remainder = prompt.strip_prefix(RECURSIVE_DOWNLOAD_PREFIX)?;
+    let (_, default_name) = remainder.rsplit_once(RECURSIVE_DOWNLOAD_DESTINATION_MARKER)?;
+    default_name.strip_suffix(RECURSIVE_DOWNLOAD_DESTINATION_SUFFIX)
+}
+
+fn is_recursive_download_confirmation_prompt(prompt: &str) -> bool {
+    prompt.starts_with(RECURSIVE_DOWNLOAD_CONFIRM_PREFIX)
+        && prompt.ends_with(RECURSIVE_DOWNLOAD_CONFIRM_SUFFIX)
 }
 
 fn local_picker_kind(prompt: &str) -> Option<LocalPickKind> {
@@ -190,6 +274,15 @@ pub fn safe_local_filename(remote_name: &str) -> String {
     output
 }
 
+fn validate_local_leaf(name: &str) -> Result<()> {
+    if name.is_empty() || safe_local_filename(name) != name {
+        bail!(
+            "local download name must be a portable leaf name without path separators, controls, reserved punctuation/device names, or trailing space/dot"
+        );
+    }
+    Ok(())
+}
+
 pub fn validate_remote_leaf(name: &str) -> Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         bail!("remote upload name must be a non-empty leaf name");
@@ -261,6 +354,38 @@ mod tests {
         );
         assert_eq!(local_picker_kind("remote file name [app.tar]: "), None);
         assert_eq!(local_picker_kind("download /tmp/a to local path [a]: "), None);
+    }
+
+    #[test]
+    fn recursive_download_prompt_extracts_default_leaf() {
+        assert_eq!(
+            recursive_download_default_name(
+                "recursively download /srv/logs to local directory [logs]: "
+            ),
+            Some("logs")
+        );
+        assert_eq!(
+            recursive_download_default_name("download /srv/logs to local path [logs]: "),
+            None
+        );
+    }
+
+    #[test]
+    fn recursive_download_confirmation_is_narrow() {
+        assert!(is_recursive_download_confirmation_prompt(
+            "recursive download to ./logs uses bounded concurrency and skips symlinks; type YES to continue: "
+        ));
+        assert!(!is_recursive_download_confirmation_prompt(
+            "recursively upload ./logs -> /srv/logs; type YES to continue: "
+        ));
+    }
+
+    #[test]
+    fn local_download_leaf_validation_is_portable() {
+        for value in ["", ".", "..", "a/b", "bad\\name", "NUL.txt", "trail."] {
+            assert!(validate_local_leaf(value).is_err(), "{value:?}");
+        }
+        assert!(validate_local_leaf("logs-2026").is_ok());
     }
 
     #[test]
