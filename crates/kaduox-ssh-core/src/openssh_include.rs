@@ -136,6 +136,14 @@ impl<'a> ExpansionState<'a> {
             else {
                 if active {
                     push_line_bounded(&mut expanded, line)?;
+                } else {
+                    validate_inactive_option(line, &original_host).with_context(|| {
+                        format!(
+                            "invalid inactive OpenSSH option on {}:{}",
+                            path.display(),
+                            line_index + 1
+                        )
+                    })?;
                 }
                 continue;
             };
@@ -347,6 +355,16 @@ fn supported_match_directive_matches(line: &str, original_host: &str) -> Result<
     let parsed = russh_config::parse(&rewritten, original_host)
         .context("failed to parse supported OpenSSH Match probe")?;
     Ok(parsed.port() == ACTIVE_PROBE_PORT)
+}
+
+fn validate_inactive_option(line: &str, original_host: &str) -> Result<()> {
+    if directive_key(line).is_none() {
+        return Ok(());
+    }
+    let probe = format!("Host *\n{line}\n");
+    russh_config::parse(&probe, original_host)
+        .context("failed to validate inactive OpenSSH option")?;
+    Ok(())
 }
 
 fn push_line_bounded(output: &mut String, line: &str) -> Result<()> {
@@ -891,6 +909,26 @@ mod tests {
         assert_eq!(parsed.port(), 2200);
         assert!(!expanded.contains("User wrong"));
         assert!(!expanded.contains("2999"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inactive_include_still_validates_ordinary_option_syntax() {
+        let home = temp_root("inactive-invalid-option");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Host prod\n  Port not-a-port\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host other\n  Include nested.conf\nHost prod\n  User deploy\n",
+        )
+        .unwrap();
+
+        assert!(expand_user_config(&ssh.join("config"), &home, "prod").is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
