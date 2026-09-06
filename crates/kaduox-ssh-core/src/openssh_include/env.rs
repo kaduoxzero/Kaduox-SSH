@@ -2,6 +2,8 @@ use std::ffi::CStr;
 #[cfg(windows)]
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int};
+#[cfg(windows)]
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
@@ -12,6 +14,9 @@ struct LocalHostnames {
     full: String,
     short: String,
 }
+
+#[cfg(windows)]
+static WINSOCK_INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 pub(super) fn expand_include_environment(value: &str, max_bytes: usize) -> Result<String> {
     expand_include_environment_with(value, max_bytes, |name| {
@@ -149,12 +154,7 @@ fn query_local_hostname() -> Result<String> {
 
 #[cfg(windows)]
 fn query_local_hostname() -> Result<String> {
-    let mut startup = WsaStartupBuffer([0; 512]);
-    let startup_result = unsafe { wsa_startup(0x0202, startup.0.as_mut_ptr().cast()) };
-    if startup_result != 0 {
-        bail!("WSAStartup(2.2) failed with error {startup_result}");
-    }
-    let _cleanup = WinsockCleanup;
+    ensure_winsock_started()?;
 
     let mut buffer = [0 as c_char; HOST_NAME_BUFFER_BYTES + 1];
     let result = unsafe {
@@ -170,6 +170,22 @@ fn query_local_hostname() -> Result<String> {
     hostname_from_buffer(&buffer)
 }
 
+#[cfg(windows)]
+fn ensure_winsock_started() -> Result<()> {
+    match WINSOCK_INIT.get_or_init(|| {
+        let mut startup = WsaStartupBuffer([0; 512]);
+        let result = unsafe { wsa_startup(0x0202, startup.0.as_mut_ptr().cast()) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(format!("WSAStartup(2.2) failed with error {result}"))
+        }
+    }) {
+        Ok(()) => Ok(()),
+        Err(message) => bail!("failed to initialize Winsock for OpenSSH Include: {message}"),
+    }
+}
+
 #[cfg(not(windows))]
 unsafe extern "C" {
     #[link_name = "gethostname"]
@@ -181,22 +197,10 @@ unsafe extern "C" {
 struct WsaStartupBuffer([u8; 512]);
 
 #[cfg(windows)]
-struct WinsockCleanup;
-
-#[cfg(windows)]
-impl Drop for WinsockCleanup {
-    fn drop(&mut self) {
-        let _ = unsafe { wsa_cleanup() };
-    }
-}
-
-#[cfg(windows)]
 #[link(name = "ws2_32")]
 unsafe extern "system" {
     #[link_name = "WSAStartup"]
     fn wsa_startup(version: u16, data: *mut c_void) -> c_int;
-    #[link_name = "WSACleanup"]
-    fn wsa_cleanup() -> c_int;
     #[link_name = "WSAGetLastError"]
     fn wsa_get_last_error() -> c_int;
     #[link_name = "gethostname"]
@@ -257,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn literal_percent_escape_matches_openssh() {
+    fn literal_percent_escape_matches_openssh_without_rescanning_output() {
         assert_eq!(
             expand_include_environment_with("conf.d/100%%.conf", 1024, lookup).unwrap(),
             "conf.d/100%.conf"
@@ -265,6 +269,10 @@ mod tests {
         assert_eq!(
             expand_include_environment_with("%%%%", 1024, lookup).unwrap(),
             "%%"
+        );
+        assert_eq!(
+            expand_include_environment_with("%%l", 1024, lookup).unwrap(),
+            "%l"
         );
         assert_eq!(
             expand_include_environment_with("${CONF_ROOT}/%%done", 1024, lookup).unwrap(),
