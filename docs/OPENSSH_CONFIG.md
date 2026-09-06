@@ -61,24 +61,26 @@ Supported behavior:
 `${ENV}` and percent handling are deliberately single-pass, matching OpenSSH's
 combined percent/dollar scanner. Environment lookup bytes are appended verbatim
 and are not rescanned as nested `${...}` expressions or percent tokens. Source
-`%%` collapses to one literal `%`; source `%l`/`%L` use one native hostname
-snapshot for that Include argument; a plain `$` not followed by `{` remains a
-literal character. Empty or unterminated `${...}` expressions, missing
-variables, non-UTF-8 environment or local-hostname values, incomplete `%`,
-unsupported named percent tokens, and paths whose final UTF-8 representation
-exceeds the 16 KiB Include path limit fail closed. Expanded values are still
-checked for control characters and all remaining unsupported path forms before
-filesystem access.
+`%%` collapses to one literal `%` and that produced percent is not rescanned;
+source `%l`/`%L` use one native hostname snapshot for that Include argument; a
+plain `$` not followed by `{` remains a literal character. Empty or unterminated
+`${...}` expressions, missing variables, non-UTF-8 environment or local-hostname
+values, incomplete `%`, unsupported named percent tokens, and paths whose final
+UTF-8 representation exceeds the 16 KiB Include path limit fail closed.
+Expanded values are still checked for control characters and all remaining
+unsupported path forms before filesystem access.
 
 The local-hostname source deliberately does not use `HOSTNAME`, `COMPUTERNAME`,
 or another environment-variable approximation. Unix targets call the platform
-`gethostname` function directly. Windows targets initialize Winsock 2.2 for the
-Include expansion call and then use Winsock `gethostname`; the matching cleanup
-runs before the argument expansion returns. `%L` is derived from exactly the
-same hostname snapshot as `%l` by taking the bytes before the first dot, matching
-OpenSSH portable's `thishost` / `shorthost` construction. The hostname is queried
-at most once for one Include argument and is not cached process-wide, so a
-hostname change between separate Include expansions remains observable.
+`gethostname` function directly. Windows targets initialize Winsock 2.2 once per
+process before using Winsock `gethostname`; this follows Rust std's Windows
+socket initialization lifetime and avoids repeated startup/cleanup around
+Include expansion. Only the Winsock initialization is process-scoped: the
+hostname value itself is queried at most once for each Include argument and is
+not cached process-wide. `%L` is derived from exactly the same hostname snapshot
+as `%l` by taking the bytes before the first dot, matching OpenSSH portable's
+`thishost` / `shorthost` construction. A hostname change between separate
+Include expansions can therefore remain observable.
 
 The inactive-scope rule is security-sensitive. OpenSSH parses an included file
 with a never-match flag when the caller is inactive. v0.28 mirrors that property
@@ -276,14 +278,14 @@ limits.
 Unit coverage includes Include ordering, global/Host scope restoration, inactive
 Host/Match Include non-reactivation, supported Match+Include resolution,
 `${ENV}` single-pass expansion and failure/resource bounds, OpenSSH `%%`
-literal-percent collapse, native `%l`/`%L` local-hostname expansion,
-remaining named/incomplete percent-token rejection, inactive ordinary-option
-syntax validation, unsupported Match rejection, nested cycles, hidden-file
-wildcard behavior, unsupported path-form rejection, catalog discovery,
-regular-file enforcement, accepted Unix 0600/0640/0644 modes, rejected
-group/other-writable modes, an insecure nested Include fixture, oversized
-single-file rejection, Windows read-only/untrusted-write ACL cases, clear and
-hashed marker host-pattern matching, CA/revocation classification, and
+literal-percent collapse/no-rescan behavior, native `%l`/`%L` local-hostname
+expansion, remaining named/incomplete percent-token rejection, inactive
+ordinary-option syntax validation, unsupported Match rejection, nested cycles,
+hidden-file wildcard behavior, unsupported path-form rejection, catalog
+discovery, regular-file enforcement, accepted Unix 0600/0640/0644 modes,
+rejected group/other-writable modes, an insecure nested Include fixture,
+oversized single-file rejection, Windows read-only/untrusted-write ACL cases,
+clear and hashed marker host-pattern matching, CA/revocation classification, and
 certificate-principal matching.
 
 The real OpenSSH workflow also contains a host-certificate fixture that creates
