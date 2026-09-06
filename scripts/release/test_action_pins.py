@@ -21,9 +21,9 @@ FULL_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 CHECKOUT_V4 = "11d5960a326750d5838078e36cf38b85af677262"
 CHECKOUT_V7 = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 SETUP_PYTHON_V7 = "5fda3b95a4ea91299a34e894583c3862153e4b97"
-RUST_TOOLCHAIN_STABLE = "6bed0761d98439e5a578e2877258200ad565ba87"
+RUST_TOOLCHAIN_ACTION = "6bed0761d98439e5a578e2877258200ad565ba87"
 RUST_CACHE_V2 = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
-RUST_AUDIT_V1 = "72c09e02f132669d52284a3323acdb503cfc1a24"
+ACTIONS_CACHE_V5 = "9255dc7a253b0ccc959486e2bca901246202afeb"
 UPLOAD_ARTIFACT_V4 = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 DOWNLOAD_ARTIFACT_V4 = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
 ATTEST_V4 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
@@ -38,7 +38,7 @@ EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
         {
             spec("actions/checkout", CHECKOUT_V7): 3,
             spec("actions/setup-python", SETUP_PYTHON_V7): 3,
-            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_STABLE): 1,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 1,
             spec("Swatinem/rust-cache", RUST_CACHE_V2): 1,
             spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 2,
             spec("actions/download-artifact", DOWNLOAD_ARTIFACT_V4): 2,
@@ -48,16 +48,16 @@ EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
     "ci": Counter(
         {
             spec("actions/checkout", CHECKOUT_V4): 2,
-            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_STABLE): 2,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 2,
             spec("Swatinem/rust-cache", RUST_CACHE_V2): 2,
         }
     ),
     "quality": Counter(
         {
             spec("actions/checkout", CHECKOUT_V4): 2,
-            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_STABLE): 1,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 2,
             spec("Swatinem/rust-cache", RUST_CACHE_V2): 1,
-            spec("actions-rust-lang/audit", RUST_AUDIT_V1): 1,
+            spec("actions/cache", ACTIONS_CACHE_V5): 1,
             spec("actions/checkout", CHECKOUT_V7): 1,
             spec("actions/setup-python", SETUP_PYTHON_V7): 1,
         }
@@ -65,7 +65,7 @@ EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
     "openssh": Counter(
         {
             spec("actions/checkout", CHECKOUT_V4): 1,
-            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_STABLE): 1,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 1,
             spec("Swatinem/rust-cache", RUST_CACHE_V2): 1,
         }
     ),
