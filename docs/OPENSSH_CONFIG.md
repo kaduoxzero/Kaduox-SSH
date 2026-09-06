@@ -87,7 +87,10 @@ the same read boundary:
   `read_ok=1` policy Win32-OpenSSH applies to user configuration;
 - an otherwise-untrusted principal is rejected if its allow ACE contains any
   of `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`,
-  `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`, or `WRITE_OWNER`;
+  `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER`,
+  `GENERIC_WRITE`, or `GENERIC_ALL`;
+- the variable-length SID in every standard allow ACE must fit completely
+  inside that ACE before the SID is passed to Windows validation helpers;
 - advanced allow ACE layouts (object/callback/compound allow ACEs) fail closed
   instead of being partially decoded and potentially underestimating write
   authority.
