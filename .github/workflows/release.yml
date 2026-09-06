@@ -22,8 +22,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Test release packaging, SBOM, workflow pins, and Rust toolchain policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy
+      - name: Test release packaging, qualification, SBOM, workflow pins, and Rust policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy
       - name: Verify release metadata and tag
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Require release commit to be reachable from main
