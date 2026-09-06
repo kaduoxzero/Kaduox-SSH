@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+mod env;
+
 use crate::openssh_config_trust::read_user_config_file;
 use crate::openssh_match::rewrite_supported_match_config;
 
@@ -286,15 +288,10 @@ impl<'a> ExpansionState<'a> {
         if value.chars().any(char::is_control) {
             bail!("OpenSSH Include path cannot contain control characters");
         }
-        if value.contains('%') {
-            bail!(
-                "OpenSSH Include token expansion is not supported yet; refusing path {value:?}"
-            );
-        }
-        if value.contains("${") {
-            bail!(
-                "OpenSSH Include environment expansion is not supported yet; refusing path {value:?}"
-            );
+
+        let value = env::expand_include_environment(value, MAX_INCLUDE_PATH_BYTES)?;
+        if value.chars().any(char::is_control) {
+            bail!("expanded OpenSSH Include path cannot contain control characters");
         }
         if value.contains('[') || value.contains(']') {
             bail!(
@@ -317,7 +314,7 @@ impl<'a> ExpansionState<'a> {
             );
         }
 
-        let path = PathBuf::from(value);
+        let path = PathBuf::from(&value);
         if path.is_absolute() {
             Ok(path)
         } else {
@@ -712,16 +709,11 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_include_expansions_fail_closed() {
+    fn unsupported_include_forms_fail_closed() {
         let home = temp_root("unsupported");
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
-        for include in [
-            "%d/conf",
-            "${SSH_CONF}/prod",
-            "~other/.ssh/config",
-            "conf.d/[0-9]*",
-        ] {
+        for include in ["%d/conf", "~other/.ssh/config", "conf.d/[0-9]*"] {
             fs::write(ssh.join("config"), format!("Include {include}\n")).unwrap();
             assert!(
                 expand_user_config(&ssh.join("config"), &home, "prod").is_err(),

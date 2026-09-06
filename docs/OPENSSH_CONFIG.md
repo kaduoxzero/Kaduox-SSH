@@ -23,7 +23,9 @@ the result to `russh-config`.
 v0.14 introduced a bounded, explicitly defined subset of OpenSSH `Include`.
 v0.28 moves connection resolution to a host-aware scope machine so Include can
 be combined with the supported Match subset without allowing an included file
-to escape the caller's inactive scope.
+to escape the caller's inactive scope. v0.29 adds bounded `${ENV}` expansion at
+the shared Include-path anchoring boundary used by both connection resolution
+and host-catalog discovery.
 
 Supported behavior:
 
@@ -31,6 +33,7 @@ Supported behavior:
   `Match` block;
 - multiple include path arguments on one line;
 - single-quoted and double-quoted paths plus backslash escaping;
+- `${ENVIRONMENT_VARIABLE}` expansion from the client process environment;
 - absolute paths;
 - relative paths anchored at `~/.ssh`, matching user-config OpenSSH behavior;
 - `~/...` expansion for the current user's home directory;
@@ -49,11 +52,20 @@ Supported behavior:
 - host-catalog discovery across the same bounded include graph, so aliases in
   included files appear in the TUI/OpenSSH host picker.
 
-This last inactive-scope rule is security-sensitive. OpenSSH parses an included
-file with a never-match flag when the caller is inactive. v0.28 mirrors that
-property instead of simply inlining the child's Host blocks, which could
-otherwise allow a child `Host <target>` to become active even though the
-containing parent block did not match.
+`${ENV}` expansion is deliberately single-pass, matching OpenSSH's combined
+percent/dollar expansion model: bytes produced by an environment lookup are
+appended verbatim and are not rescanned as nested `${...}` expressions or `%`
+tokens. A plain `$` that is not followed by `{` remains a literal character.
+Empty or unterminated `${...}` expressions, missing variables, non-UTF-8 values,
+and paths whose expanded UTF-8 representation exceeds the 16 KiB Include path
+limit fail closed. Expanded values are still checked for control characters and
+all remaining unsupported path forms before filesystem access.
+
+The inactive-scope rule is security-sensitive. OpenSSH parses an included file
+with a never-match flag when the caller is inactive. v0.28 mirrors that property
+instead of simply inlining the child's Host blocks, which could otherwise allow
+a child `Host <target>` to become active even though the containing parent block
+did not match.
 
 The implementation intentionally has no shell invocation and performs no
 command substitution.
@@ -166,7 +178,7 @@ Include expansion is bounded before parsing:
 - maximum cumulative input/expanded configuration budget: 4 MiB;
 - maximum physical config-file read: 4 MiB;
 - maximum include arguments on one directive: 64;
-- maximum include path length: 16 KiB;
+- maximum raw or environment-expanded include path length: 16 KiB;
 - maximum wildcard path-component length: 1024 bytes.
 
 Canonicalized active paths are tracked while recursing, so an include cycle
@@ -179,8 +191,8 @@ Current OpenSSH also supports forms that require additional parsing context or
 full `glob(7)` behavior. Kaduox-SSH deliberately rejects them instead of
 treating them as literal paths:
 
-- `%` token expansion;
-- `${ENVIRONMENT_VARIABLE}` expansion;
+- `%` token expansion, including otherwise-safe-looking tokens, until the full
+  supported token set is resolved against the correct OpenSSH parse state;
 - `~other-user/...` home expansion;
 - bracket/collation wildcard expressions such as `[0-9]`, POSIX character
   classes, collating symbols, and equivalence classes.
@@ -230,13 +242,14 @@ limits.
 
 Unit coverage includes Include ordering, global/Host scope restoration, inactive
 Host/Match Include non-reactivation, supported Match+Include resolution,
-inactive ordinary-option syntax validation, unsupported Match rejection, nested
-cycles, hidden-file wildcard behavior, unsupported expansion rejection, catalog
-discovery, regular-file enforcement, accepted Unix 0600/0640/0644 modes,
-rejected group/other-writable modes, an insecure nested Include fixture,
-oversized single-file rejection, Windows read-only/untrusted-write ACL cases,
-clear and hashed marker host-pattern matching, CA/revocation classification, and
-certificate-principal matching.
+`${ENV}` single-pass expansion and failure/resource bounds, raw percent-token
+rejection, inactive ordinary-option syntax validation, unsupported Match
+rejection, nested cycles, hidden-file wildcard behavior, unsupported path-form
+rejection, catalog discovery, regular-file enforcement, accepted Unix
+0600/0640/0644 modes, rejected group/other-writable modes, an insecure nested
+Include fixture, oversized single-file rejection, Windows read-only/untrusted-
+write ACL cases, clear and hashed marker host-pattern matching, CA/revocation
+classification, and certificate-principal matching.
 
 The real OpenSSH workflow also contains a host-certificate fixture that creates
 an Ed25519 CA and `HostCertificate` with `ssh-keygen`/`sshd`, then tests
