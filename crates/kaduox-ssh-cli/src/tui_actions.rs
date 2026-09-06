@@ -38,19 +38,10 @@ pub async fn prompt_line(prompt: String) -> Result<String> {
                 RECURSIVE_DOWNLOAD_PICKER_CANCELLED.store(true, Ordering::Release);
                 return Ok(String::new());
             };
-
-            let rename = read_prompt_line(&format!(
-                "local download directory name [{default_name}] (empty uses default): "
-            ))
-            .context("failed to read local recursive-download directory name")?;
-            let name = if rename.trim().is_empty() {
-                default_name
-            } else {
-                let value = rename.trim().to_owned();
-                validate_local_leaf(&value)?;
-                value
+            let Some(name) = prompt_local_download_leaf(&default_name)? else {
+                RECURSIVE_DOWNLOAD_PICKER_CANCELLED.store(true, Ordering::Release);
+                return Ok(String::new());
             };
-            validate_local_leaf(&name)?;
 
             let destination = parent.join(name);
             RECURSIVE_DOWNLOAD_PICKER_CANCELLED.store(false, Ordering::Release);
@@ -95,10 +86,40 @@ fn read_prompt_line(prompt: &str) -> io::Result<String> {
     Ok(input)
 }
 
+fn prompt_local_download_leaf(default_name: &str) -> Result<Option<String>> {
+    loop {
+        let input = read_prompt_line(&format!(
+            "local download directory name [{default_name}] (empty uses default; CANCEL cancels): "
+        ))
+        .context("failed to read local recursive-download directory name")?;
+        let input = input.trim();
+        if input == "CANCEL" {
+            return Ok(None);
+        }
+
+        let candidate = if input.is_empty() {
+            default_name.to_owned()
+        } else {
+            input.to_owned()
+        };
+        match validate_local_leaf(&candidate) {
+            Ok(()) => return Ok(Some(candidate)),
+            Err(error) => {
+                let mut stderr = io::stderr();
+                writeln!(
+                    stderr,
+                    "invalid local download directory name: {error}"
+                )?;
+                stderr.flush()?;
+            }
+        }
+    }
+}
+
 fn path_to_tracked_string(path: PathBuf, context: &str) -> Result<String> {
-    path.into_os_string().into_string().map_err(|path| {
-        anyhow::anyhow!("{context}: {}", path.to_string_lossy())
-    })
+    path.into_os_string()
+        .into_string()
+        .map_err(|path| anyhow::anyhow!("{context}: {}", path.to_string_lossy()))
 }
 
 fn recursive_download_default_name(prompt: &str) -> Option<&str> {
