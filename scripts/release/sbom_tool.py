@@ -217,11 +217,15 @@ def release_graph(metadata: dict) -> tuple[set[str], set[tuple[str, str, str]]]:
         raise ValueError("cargo metadata workspace_members must be a list")
     if any(not isinstance(item, str) for item in workspace_members):
         raise ValueError("cargo metadata workspace member id must be a string")
+    if len(workspace_members) != len(set(workspace_members)):
+        raise ValueError("cargo metadata contains duplicate workspace member ids")
+    if len(workspace_members) != len(release_tool.LOCAL_PACKAGES):
+        raise ValueError("cargo metadata workspace member count changed")
+    if any(package_id not in packages_by_id for package_id in workspace_members):
+        raise ValueError("cargo metadata workspace member references an unknown package id")
 
     workspace_names = {
-        packages_by_id[package_id].get("name")
-        for package_id in workspace_members
-        if package_id in packages_by_id
+        packages_by_id[package_id].get("name") for package_id in workspace_members
     }
     if workspace_names != set(release_tool.LOCAL_PACKAGES):
         raise ValueError(
@@ -230,8 +234,7 @@ def release_graph(metadata: dict) -> tuple[set[str], set[tuple[str, str, str]]]:
     cli_roots = [
         package_id
         for package_id in workspace_members
-        if package_id in packages_by_id
-        and packages_by_id[package_id].get("name") == "kaduox-ssh-cli"
+        if packages_by_id[package_id].get("name") == "kaduox-ssh-cli"
     ]
     if len(cli_roots) != 1:
         raise ValueError("cargo metadata must contain exactly one kaduox-ssh-cli workspace package")
@@ -309,6 +312,13 @@ def build_spdx_document(
     packages_by_id, _nodes_by_id = _metadata_indexes(metadata)
     reachable, metadata_relationships = release_graph(metadata)
     lock_by_identity = _lock_packages_by_identity(lock_data)
+
+    reachable_identities = [
+        metadata_package_identity(packages_by_id[package_id])
+        for package_id in sorted(reachable)
+    ]
+    if len(reachable_identities) != len(set(reachable_identities)):
+        raise ValueError("target-resolved Cargo graph contains duplicate package identities")
 
     lock_for_metadata_id: dict[str, dict] = {}
     for package_id in sorted(reachable):
