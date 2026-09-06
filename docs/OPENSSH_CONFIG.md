@@ -25,7 +25,8 @@ v0.28 moves connection resolution to a host-aware scope machine so Include can
 be combined with the supported Match subset without allowing an included file
 to escape the caller's inactive scope. v0.29 adds bounded `${ENV}` expansion at
 the shared Include-path anchoring boundary used by both connection resolution
-and host-catalog discovery.
+and host-catalog discovery. v0.30 adds OpenSSH's context-free `%%` escape for a
+literal percent character while leaving every named percent token fail-closed.
 
 Supported behavior:
 
@@ -34,9 +35,10 @@ Supported behavior:
 - multiple include path arguments on one line;
 - single-quoted and double-quoted paths plus backslash escaping;
 - `${ENVIRONMENT_VARIABLE}` expansion from the client process environment;
+- `%%` percent escaping, producing one literal `%` in the resulting path;
 - absolute paths;
 - relative paths anchored at `~/.ssh`, matching user-config OpenSSH behavior;
-- `~/...` expansion for the current user's home directory;
+- `~/...` expansion for the current user's selected configuration home;
 - `*` and `?` pathname wildcards;
 - wildcard matches processed in deterministic lexical order;
 - unmatched wildcard/literal paths are ignored;
@@ -52,14 +54,15 @@ Supported behavior:
 - host-catalog discovery across the same bounded include graph, so aliases in
   included files appear in the TUI/OpenSSH host picker.
 
-`${ENV}` expansion is deliberately single-pass, matching OpenSSH's combined
-percent/dollar expansion model: bytes produced by an environment lookup are
-appended verbatim and are not rescanned as nested `${...}` expressions or `%`
-tokens. A plain `$` that is not followed by `{` remains a literal character.
-Empty or unterminated `${...}` expressions, missing variables, non-UTF-8 values,
-and paths whose expanded UTF-8 representation exceeds the 16 KiB Include path
-limit fail closed. Expanded values are still checked for control characters and
-all remaining unsupported path forms before filesystem access.
+`${ENV}` and percent handling are deliberately single-pass, matching OpenSSH's
+combined percent/dollar scanner. Environment lookup bytes are appended verbatim
+and are not rescanned as nested `${...}` expressions or percent tokens. Source
+`%%` collapses to one literal `%`; a plain `$` not followed by `{` remains a
+literal character. Empty or unterminated `${...}` expressions, missing
+variables, non-UTF-8 values, incomplete `%`, named percent tokens, and paths
+whose final UTF-8 representation exceeds the 16 KiB Include path limit fail
+closed. Expanded values are still checked for control characters and all
+remaining unsupported path forms before filesystem access.
 
 The inactive-scope rule is security-sensitive. OpenSSH parses an included file
 with a never-match flag when the caller is inactive. v0.28 mirrors that property
@@ -178,7 +181,7 @@ Include expansion is bounded before parsing:
 - maximum cumulative input/expanded configuration budget: 4 MiB;
 - maximum physical config-file read: 4 MiB;
 - maximum include arguments on one directive: 64;
-- maximum raw or environment-expanded include path length: 16 KiB;
+- maximum final include path length after environment/`%%` expansion: 16 KiB;
 - maximum wildcard path-component length: 1024 bytes.
 
 Canonicalized active paths are tracked while recursing, so an include cycle
@@ -191,14 +194,20 @@ Current OpenSSH also supports forms that require additional parsing context or
 full `glob(7)` behavior. Kaduox-SSH deliberately rejects them instead of
 treating them as literal paths:
 
-- `%` token expansion, including otherwise-safe-looking tokens, until the full
-  supported token set is resolved against the correct OpenSSH parse state;
+- named percent tokens (`%C`, `%L`, `%d`, `%h`, `%k`, `%l`, `%n`, `%p`, `%r`,
+  `%u`, `%i`, `%j`); only context-free `%%` is supported;
 - `~other-user/...` home expansion;
 - bracket/collation wildcard expressions such as `[0-9]`, POSIX character
   classes, collating symbols, and equivalence classes.
 
-These can be added only when their OpenSSH behavior is reproduced and covered
-by fixtures on the supported platforms.
+`%d` is not approximated with Kaduox-SSH's selected config home: OpenSSH derives
+`%d` from the local passwd entry's `pw_dir`, while Kaduox-SSH currently locates
+its config home from platform environment variables. These values can differ,
+so supporting `%d` requires an explicit local-user identity source rather than a
+silent substitution.
+
+These forms can be added only when their OpenSSH behavior is reproduced and
+covered by fixtures on the supported platforms.
 
 ## Host-key and host-certificate trust boundary
 
@@ -242,14 +251,15 @@ limits.
 
 Unit coverage includes Include ordering, global/Host scope restoration, inactive
 Host/Match Include non-reactivation, supported Match+Include resolution,
-`${ENV}` single-pass expansion and failure/resource bounds, raw percent-token
-rejection, inactive ordinary-option syntax validation, unsupported Match
-rejection, nested cycles, hidden-file wildcard behavior, unsupported path-form
-rejection, catalog discovery, regular-file enforcement, accepted Unix
-0600/0640/0644 modes, rejected group/other-writable modes, an insecure nested
-Include fixture, oversized single-file rejection, Windows read-only/untrusted-
-write ACL cases, clear and hashed marker host-pattern matching, CA/revocation
-classification, and certificate-principal matching.
+`${ENV}` single-pass expansion and failure/resource bounds, OpenSSH `%%`
+literal-percent collapse, named/incomplete percent-token rejection, inactive
+ordinary-option syntax validation, unsupported Match rejection, nested cycles,
+hidden-file wildcard behavior, unsupported path-form rejection, catalog
+discovery, regular-file enforcement, accepted Unix 0600/0640/0644 modes,
+rejected group/other-writable modes, an insecure nested Include fixture,
+oversized single-file rejection, Windows read-only/untrusted-write ACL cases,
+clear and hashed marker host-pattern matching, CA/revocation classification, and
+certificate-principal matching.
 
 The real OpenSSH workflow also contains a host-certificate fixture that creates
 an Ed25519 CA and `HostCertificate` with `ssh-keygen`/`sshd`, then tests
