@@ -37,13 +37,13 @@ def spec(action: str, commit: str) -> str:
 EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
     "release": Counter(
         {
-            spec("actions/checkout", CHECKOUT_V7): 3,
-            spec("actions/setup-python", SETUP_PYTHON_V7): 3,
+            spec("actions/checkout", CHECKOUT_V7): 2,
+            spec("actions/setup-python", SETUP_PYTHON_V7): 2,
             spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 1,
             spec("Swatinem/rust-cache", RUST_CACHE_V2): 1,
-            spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 2,
+            spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 1,
             spec("actions/download-artifact", DOWNLOAD_ARTIFACT_V4): 2,
-            spec("actions/attest", ATTEST_V4): 1,
+            spec("actions/attest", ATTEST_V4): 2,
         }
     ),
     "qualification": Counter(
