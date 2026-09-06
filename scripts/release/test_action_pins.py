@@ -9,6 +9,7 @@ from scripts.release import release_tool
 
 WORKFLOW_FILES = {
     "release": release_tool.ROOT / ".github" / "workflows" / "release.yml",
+    "qualification": release_tool.ROOT / ".github" / "workflows" / "release-qualification.yml",
     "ci": release_tool.ROOT / ".github" / "workflows" / "ci.yml",
     "quality": release_tool.ROOT / ".github" / "workflows" / "quality.yml",
     "openssh": release_tool.ROOT / ".github" / "workflows" / "integration-openssh.yml",
@@ -43,6 +44,12 @@ EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
             spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 2,
             spec("actions/download-artifact", DOWNLOAD_ARTIFACT_V4): 2,
             spec("actions/attest", ATTEST_V4): 1,
+        }
+    ),
+    "qualification": Counter(
+        {
+            spec("actions/checkout", CHECKOUT_V7): 1,
+            spec("actions/setup-python", SETUP_PYTHON_V7): 1,
         }
     ),
     "ci": Counter(
