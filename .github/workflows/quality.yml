@@ -50,8 +50,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 ref 2026-07-16
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-09-03
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
         with:
+          toolchain: 1.98.1
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Clippy
@@ -63,11 +64,25 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 ref 2026-07-16
-      - name: Audit resolved dependencies
-        uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1.2.7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
         with:
-          file: Cargo.lock
-          createIssues: false
+          toolchain: 1.98.1
+      - name: Cache cargo-audit 0.22.0
+        id: cargo-audit-cache
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.0-rust-1.98.1-${{ runner.os }}
+      - name: Install cargo-audit 0.22.0
+        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
+        run: cargo +1.98.1 install cargo-audit --version 0.22.0 --locked --no-default-features
+      - name: Verify cargo-audit 0.22.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.98.1 audit --version | grep -F '0.22.0'
+      - name: Audit resolved dependencies
+        run: cargo +1.98.1 audit --file Cargo.lock
 
   release-policy:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -77,7 +92,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Test release packaging, SBOM, and workflow action-pin policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_sbom_tool scripts.release.test_action_pins
+      - name: Test release packaging, SBOM, workflow pins, and Rust toolchain policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy
       - name: Validate repository release metadata
         run: python scripts/release/release_tool.py check
