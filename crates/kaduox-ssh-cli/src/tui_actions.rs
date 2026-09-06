@@ -7,7 +7,31 @@ use kaduox_ssh_core::{
 };
 use tokio::sync::watch;
 
+use crate::tui_local_picker::{LocalPickKind, pick_local_path};
+
+const LOCAL_FILE_UPLOAD_PROMPT: &str = "local file to upload (empty cancels): ";
+const LOCAL_DIRECTORY_UPLOAD_PROMPT: &str =
+    "local directory to upload recursively (empty cancels): ";
+
 pub async fn prompt_line(prompt: String) -> Result<String> {
+    if let Some(kind) = local_picker_kind(&prompt) {
+        return tokio::task::spawn_blocking(move || -> Result<String> {
+            let start = std::env::current_dir()
+                .context("failed to determine local working directory for TUI upload picker")?;
+            let Some(path) = pick_local_path(&start, kind)? else {
+                return Ok(String::new());
+            };
+            path.into_os_string().into_string().map_err(|path| {
+                anyhow::anyhow!(
+                    "selected local upload path is not valid UTF-8: {}",
+                    path.to_string_lossy()
+                )
+            })
+        })
+        .await
+        .context("TUI local-picker task failed")?;
+    }
+
     tokio::task::spawn_blocking(move || -> io::Result<String> {
         let mut stdout = io::stdout();
         stdout.write_all(prompt.as_bytes())?;
@@ -23,6 +47,14 @@ pub async fn prompt_line(prompt: String) -> Result<String> {
     .await
     .context("terminal prompt task failed")?
     .context("failed to read terminal prompt")
+}
+
+fn local_picker_kind(prompt: &str) -> Option<LocalPickKind> {
+    match prompt {
+        LOCAL_FILE_UPLOAD_PROMPT => Some(LocalPickKind::File),
+        LOCAL_DIRECTORY_UPLOAD_PROMPT => Some(LocalPickKind::Directory),
+        _ => None,
+    }
 }
 
 pub async fn run_shell(ssh: &SshClient, remote_user: RemoteUser) -> Result<Option<u32>> {
@@ -216,6 +248,20 @@ impl Drop for ShellRawModeGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_upload_prompts_route_only_to_expected_picker_modes() {
+        assert_eq!(
+            local_picker_kind(LOCAL_FILE_UPLOAD_PROMPT),
+            Some(LocalPickKind::File)
+        );
+        assert_eq!(
+            local_picker_kind(LOCAL_DIRECTORY_UPLOAD_PROMPT),
+            Some(LocalPickKind::Directory)
+        );
+        assert_eq!(local_picker_kind("remote file name [app.tar]: "), None);
+        assert_eq!(local_picker_kind("download /tmp/a to local path [a]: "), None);
+    }
 
     #[test]
     fn safe_local_filename_blocks_cross_platform_path_syntax() {
