@@ -7,24 +7,17 @@ const MAX_MATCH_ARGUMENTS: usize = 8;
 const MAX_PATTERN_LIST_BYTES: usize = 16 * 1024;
 const MAX_PATTERN_BYTES: usize = 1023;
 
-/// Return true when an uncommented structural directive is present.
-pub(crate) fn has_directive(contents: &str, keyword: &str) -> bool {
-    contents.lines().any(|line| {
-        directive_key(line).is_some_and(|key| key.eq_ignore_ascii_case(keyword))
-    })
-}
-
-/// Rewrite the deliberately supported single-file OpenSSH Match subset into
-/// ordinary Host blocks before passing configuration to russh-config.
+/// Rewrite the deliberately supported OpenSSH Match subset into ordinary Host
+/// blocks before passing configuration to russh-config.
 ///
-/// Supported in v0.19:
+/// Supported since v0.19:
 /// - `Match all`
 /// - one `Match originalhost <pattern-list>` criterion
 ///
-/// Other Match criteria/combinations remain fail-closed. Include is rejected in
-/// this path because correct OpenSSH Include semantics require restoring the
-/// parent Match scope after each included file; the existing Include expander
-/// still owns that boundary until Match is integrated into its scope machine.
+/// v0.28 integrates this evaluator into the Include scope machine. This
+/// standalone rewriter still rejects raw Include directives deliberately: the
+/// Include expander owns recursion, parent-state restoration, and never-match
+/// semantics, while this helper is used only on Include-free input/probes.
 pub(crate) fn rewrite_supported_match_config(
     contents: &str,
     original_host: &str,
@@ -42,7 +35,7 @@ pub(crate) fn rewrite_supported_match_config(
 
         if key.eq_ignore_ascii_case("include") {
             bail!(
-                "OpenSSH Match support cannot yet be combined with Include (line {}); refusing partial scope restoration",
+                "standalone OpenSSH Match rewrite cannot process Include on line {}; Include scope must be resolved by the bounded Include expander",
                 line_index + 1
             );
         }
@@ -79,7 +72,7 @@ pub(crate) fn rewrite_supported_match_config(
 
 fn evaluate_supported_match(arguments: &[String], original_host: &str) -> Result<bool> {
     if arguments.len() > MAX_MATCH_ARGUMENTS {
-        bail!("Match contains too many arguments for the supported v0.19 subset");
+        bail!("Match contains too many arguments for the supported subset");
     }
 
     match arguments {
@@ -225,7 +218,7 @@ fn parse_arguments(input: &str) -> Result<Vec<String>> {
         .any(|ch| matches!(ch, '\\' | '\'' | '"'))
     {
         bail!(
-            "quoted or backslash-escaped Match arguments are not supported in the v0.19 subset"
+            "quoted or backslash-escaped Match arguments are not supported in the bounded subset"
         );
     }
     Ok(input
@@ -323,14 +316,8 @@ mod tests {
     }
 
     #[test]
-    fn match_path_rejects_include_until_scope_restoration_is_integrated() {
+    fn standalone_rewriter_rejects_include_structural_lines() {
         let config = "Host prod\n  User deploy\nMatch originalhost prod\n  Include conf.d/*.conf\n";
         assert!(rewrite_supported_match_config(config, "prod").is_err());
-    }
-
-    #[test]
-    fn directive_detection_ignores_comments() {
-        assert!(has_directive("Match all\n", "match"));
-        assert!(!has_directive("# Match all\nHost prod\n", "match"));
     }
 }
