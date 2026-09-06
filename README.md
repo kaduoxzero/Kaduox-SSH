@@ -7,10 +7,10 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 ## Current capabilities
 
 - SSH connection, command execution, and interactive PTY shell
-- OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion and fail-closed handling for unsupported structural semantics
+- OpenSSH `~/.ssh/config` host resolution with bounded user-config `Include` expansion, supported `Match all` / `Match originalhost` evaluation, and fail-closed handling for unsupported structural semantics
 - cross-platform OpenSSH user-config trust enforcement: Unix uid/mode checks and Windows owner/DACL checks, both tied to the same opened file used for parsing
-- target-scoped OpenSSH Host Certificate verification through clear-text `known_hosts` `@cert-authority` entries, with principal/validity/critical-option/revocation checks
-- clear-text `@revoked` enforcement for ordinary host keys, certificate subject keys, and certificate signing CAs
+- target-scoped OpenSSH Host Certificate verification through matching clear-text or OpenSSH-hashed `known_hosts` `@cert-authority` entries, with principal/validity/critical-option/revocation checks
+- clear-text and OpenSSH-hashed `@revoked` enforcement for ordinary host keys, certificate subject keys, and certificate signing CAs
 - ProxyJump chains and ProxyCommand transports
 - password, keyboard-interactive, Ed25519/ECDSA private-key, OpenSSH-agent, and Pageant/Windows-agent authentication paths
 - RSA authentication through an external SSH agent while local RSA private-key signing is disabled by security policy
@@ -29,6 +29,7 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - sudo-backed privileged single-file and recursive directory upload using unprivileged SFTP staging
 - SFTP-native local-to-remote directory synchronization with non-mutating planning
 - explicit `--delete` policy for destructive sync operations
+- explicit recursive transfer/sync symbolic-link policy with `skip` and fail-closed `reject` modes; links are never followed
 - reusable in-process authenticated connection manager with explicit long-lived leases
 - `kssh-tui` multi-host Session Dashboard with persistent authenticated sessions
 - TUI OpenSSH Host picker, remote SFTP workspace, interactive shell/sudo shell, tracked transfers, and remote file actions
@@ -79,20 +80,24 @@ The real OpenSSH integration suite is designed to verify direct RSA-key rejectio
 
 Kaduox-SSH resolves supported OpenSSH settings such as `HostName`, `User`, `Port`, `IdentityFile`, `UserKnownHostsFile`, `ProxyCommand`, and `ProxyJump` from `~/.ssh/config`.
 
-v0.14 adds bounded `Include` resolution before the downstream host parser. The supported subset includes global or `Host`-scoped includes, multiple/quoted paths, absolute paths, paths relative to `~/.ssh`, current-user `~/...`, `*` and `?` wildcards, lexical processing order, nested includes, OpenSSH-style hidden-file matching, and restoration of the containing global/`Host` scope after every included file. The OpenSSH Host catalog uses the same include graph, so concrete aliases in included files are visible to the TUI picker.
+v0.14 adds bounded `Include` resolution before the downstream host parser. The supported subset includes global or `Host`-scoped includes, multiple/quoted paths, absolute paths, paths relative to `~/.ssh`, current-user `~/...`, `*` and `?` wildcards, lexical processing order, nested includes, OpenSSH-style hidden-file matching, and restoration of the containing scope after every included file. The OpenSSH Host catalog uses the same include graph, so concrete aliases in included files are visible to the TUI picker.
+
+v0.19 adds a deliberately bounded `Match` subset for connection resolution: standalone `Match all` and a single `Match originalhost <pattern-list>` criterion. `originalhost` is evaluated against the lookup alias before `HostName` rewriting; its pattern list is ASCII case-insensitive, comma-separated, supports `*`/`?`, and honors `!` negation. Other Match criteria and combinations remain fail-closed.
+
+v0.28 integrates that Match subset with the Include scope machine. Includes under active Host/Match scopes are evaluated normally and the caller's active state is restored after each included file. An Include reached from an inactive Host/Match scope is still opened, trust-checked, cycle/resource checked, and syntax-validated, but child Host/Match blocks cannot reactivate configuration for the target. This closes the earlier scope-reentry gap where an included `Host <target>` could otherwise escape an inactive parent block.
 
 v0.15 applies one trust boundary to the root user config and every nested Include. On Unix, the opened file must be regular, owned by the process real uid or root, and not writable by group/other. Metadata verification and parsing bytes are tied to the same opened file descriptor, removing the path-based stat/read TOCTOU window. v0.26 adds the Windows equivalent boundary: the owner/DACL is queried from the already-open file handle, untrusted write-capable Allow ACEs are rejected, read-only access for other principals remains allowed, and advanced allow ACE layouts fail closed instead of being approximated.
 
-v0.16 adds fail-closed Host Certificate and revocation semantics. Certificate algorithms remain disabled unless the specific final target or ProxyJump hop has a matching clear-text `@cert-authority`. A certificate must be a Host certificate, have a trusted signing CA, valid signature/time window, an acceptable hostname principal, no unsupported critical options, and neither its subject key nor CA may be `@revoked`. Ordinary host keys are also checked against applicable `@revoked` markers before known-hosts acceptance or explicit insecure acceptance. A failed certificate is never downgraded to its embedded ordinary key.
+v0.16 adds fail-closed Host Certificate and revocation semantics. Certificate algorithms remain disabled unless the specific final target or ProxyJump hop has a matching `@cert-authority`. Marker host patterns may be clear-text or OpenSSH `|1|base64-salt|base64-hmac-sha1` hashed names. A certificate must be a Host certificate, have a trusted signing CA, valid signature/time window, an acceptable hostname principal, no unsupported critical options, and neither its subject key nor CA may be `@revoked`. Ordinary host keys are also checked against applicable `@revoked` markers before known-hosts acceptance or explicit insecure acceptance. A failed certificate is never downgraded to its embedded ordinary key.
 
 Configuration/trust behavior remains fail-closed where OpenSSH semantics are not yet reproduced exactly:
 
 - A missing `~/.ssh/config` is normal and falls back to direct/default connection settings.
 - Read, trust, expansion, and parse errors in an existing config are returned to the caller; they are never silently converted into a direct connection.
-- `Match` remains rejected for connection resolution because modern OpenSSH conditions depend on host/original host, user/local user, canonical/final passes, command/session context, `exec`, local network, tags, version, and other state that `russh-config 0.58.0` does not evaluate.
+- `Match all` and single-criterion `Match originalhost <pattern-list>` are supported. `canonical`, `final`, `exec`, `localnetwork`, `host`, `tagged`, `command`, `user`, `localuser`, `version`, combined criteria, criterion negation/`criterion=value`, and quoted/escaped Match arguments remain explicitly rejected.
 - Include `%` tokens, `${ENV}` expansion, `~other-user` expansion, and full bracket/collation glob expressions are explicitly rejected instead of being treated as literal paths.
 - Include expansion is capped at 16 nesting levels, 256 processed files, a 4 MiB config budget, 64 paths per directive, 16 KiB per include path, and 1024 bytes per wildcard component; recursive include cycles fail explicitly.
-- Hashed `@cert-authority` / `@revoked` marker host patterns are explicitly rejected rather than silently dropping a CA or revocation rule. Ordinary unmarked hashed known-host entries continue through Russh's existing ordinary host-key path.
+- Hashed marker names are exact HMAC-SHA1 matches over the effective known-hosts target bytes; they are not case-folded wildcard patterns. Non-default ports use OpenSSH's `[host]:port` target form.
 - Host Certificate critical options are not interpreted; any critical option rejects the certificate. RSA Host Certificates and RSA CA/certificate-signature compatibility are not claimed while the RSA feature remains disabled.
 - Windows SIDHistory name-equivalence remains intentionally stricter than Win32-OpenSSH: distinct SIDs remain distinct principals instead of gaining trust from reverse account-name equivalence.
 - The upstream parser exposes `StrictHostKeyChecking` only as a boolean. Values other than `no` therefore lose their exact OpenSSH policy. Use Kaduox-SSH's explicit `--host-key strict`, `--host-key accept-new`, or `--host-key insecure` when exact behavior matters.
@@ -156,9 +161,9 @@ kssh server.example.com download /var/log/app.log ./app.log
 kssh server.example.com upload ./large.img /srv/large.img --resume
 kssh server.example.com download /srv/large.img ./large.img --resume
 
-# Recursive directory transfers
-kssh server.example.com upload ./dist /srv/www/dist -r --jobs 8
-kssh server.example.com download /srv/logs ./logs -r --jobs 8
+# Recursive directory transfers; reject any symbolic link instead of skipping it
+kssh server.example.com upload ./dist /srv/www/dist -r --jobs 8 --symlinks reject
+kssh server.example.com download /srv/logs ./logs -r --jobs 8 --symlinks reject
 
 # Install a staged upload as root, without running SFTP as root
 kssh server.example.com upload ./nginx.conf /etc/nginx/nginx.conf --as-user root --mode 0644
@@ -175,6 +180,9 @@ kssh server.example.com sync ./dist /srv/www/dist
 # Mirror the local tree, explicitly allowing deletion of remote-only entries
 kssh server.example.com sync ./dist /srv/www/dist --delete
 
+# Reject symbolic links during synchronization instead of the default skip policy
+kssh server.example.com sync ./dist /srv/www/dist --symlinks reject
+
 # Open the multi-host TUI dashboard
 kssh-tui production
 
@@ -185,7 +193,7 @@ kssh-fleet -H web-01 -H web-02 -H deploy@web-03 --jobs 3 -- uname -a
 kssh-inventory check
 ```
 
-By default host keys use `accept-new`: unknown ordinary keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing ordinary key or a matching trusted Host Certificate CA. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments; applicable clear-text `@revoked` entries still reject the key.
+By default host keys use `accept-new`: unknown ordinary keys are written to the normal OpenSSH `known_hosts` file while changed keys are rejected. Use `--host-key strict` to require a pre-existing ordinary key or a matching trusted Host Certificate CA. `--host-key insecure` is intentionally explicit and should only be used for disposable/test environments; applicable `@revoked` entries still reject the key.
 
 ## Transfer and sync design
 
@@ -195,7 +203,7 @@ Transfer tuning is fail-closed rather than unbounded: file concurrency is limite
 
 Synchronization scans both local and remote directory trees and builds a typed action plan before mutation. The CLI prints the plan before applying it. Remote-only entries are preserved by default; deletion and file/directory conflict replacement are only permitted when `--delete` is explicitly supplied. `--dry-run` never mutates the remote tree.
 
-Symbolic links encountered during recursive transfer or synchronization scans are currently skipped rather than followed. This prevents accidental traversal outside the requested tree; explicit symlink policy is intentionally separate.
+Recursive upload/download and synchronization expose an explicit symbolic-link policy. `skip` is the compatibility default and never follows a symbolic link/reparse point; `reject` performs a fail-closed preflight and aborts when a link-like entry is encountered. Follow/preserve semantics remain intentionally unsupported because they require bounded cycle/escape handling and complete cross-platform target encoding.
 
 ## Fleet resource model
 
@@ -225,10 +233,10 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 
 Some features are deliberately not enabled until they can be implemented completely and tested as security boundaries:
 
-- complete OpenSSH `Match` evaluation and the remaining Include token/environment/`~user`/full-glob semantics;
-- hashed `@cert-authority` / `@revoked` marker matching and RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
+- complete OpenSSH `Match` evaluation beyond the bounded `all` / `originalhost` subset, plus the remaining Include token/environment/`~user`/full-glob semantics;
+- RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
 - encrypted persistent credential storage and its key-management model;
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol;
-- explicit symbolic-link transfer/sync policy.
+- symbolic-link follow/preserve transfer/sync semantics with bounded cycle, escape, and cross-platform target handling.
 
 See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.

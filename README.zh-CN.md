@@ -7,10 +7,10 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 ## 当前能力
 
 - SSH 远程连接、命令执行与交互式 PTY Shell
-- OpenSSH `~/.ssh/config` Host 解析，以及受限、fail-closed 的用户配置 `Include` 展开
+- OpenSSH `~/.ssh/config` Host 解析、受控 `Include` 展开、受限 `Match all` / `Match originalhost` 计算，并对未支持结构保持 fail-closed
 - 跨平台 OpenSSH 用户配置可信校验：Unix 使用 uid/mode，Windows 使用 owner/DACL，并且都绑定到后续实际读取的同一个已打开文件对象
-- 基于当前目标匹配的明文 `known_hosts` `@cert-authority` 进行 OpenSSH Host Certificate 验证
-- 对普通主机密钥、证书 subject key 和证书签发 CA 执行明文 `@revoked` 吊销检查
+- 基于当前目标匹配的明文或 OpenSSH hashed `known_hosts` `@cert-authority` 进行 OpenSSH Host Certificate 验证
+- 对普通主机密钥、证书 subject key 和证书签发 CA 执行明文及 OpenSSH hashed `@revoked` 吊销检查
 - ProxyJump 链与 ProxyCommand 传输
 - 密码、keyboard-interactive、Ed25519/ECDSA 私钥、OpenSSH Agent、Pageant/Windows Agent 认证
 - 本地 RSA 私钥签名因安全策略禁用，但仍支持通过外部 SSH Agent 使用 RSA 认证
@@ -22,6 +22,7 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 - 有界内存 SFTP 单文件/递归上传下载、`.kaduox.part` 断点续传、默认原子暂存、进度与协作式取消
 - 使用普通用户 SFTP 暂存 + sudo 的特权单文件及递归目录上传
 - 先计划后变更的本地到远端目录同步，并对破坏性删除要求显式 `--delete`
+- 递归传输/同步提供显式符号链接策略：`skip` 与 fail-closed 的 `reject`；不会跟随链接
 - 进程内已认证连接管理器和显式长生命周期 lease
 - `kssh-tui` 多主机 Session Dashboard、OpenSSH Host picker、远端文件浏览、Shell/sudo Shell、文件操作和可恢复传输任务
 - `kssh-fleet` 有界并发的多目标 typed command 执行，逐主机故障隔离与输出上限
@@ -60,13 +61,18 @@ SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 
 
 Kaduox-SSH 会从 `~/.ssh/config` 解析受支持的 `HostName`、`User`、`Port`、`IdentityFile`、`UserKnownHostsFile`、`ProxyCommand`、`ProxyJump` 等配置。
 
-v0.14 新增受控 `Include` 展开，包括全局/`Host` 作用域、一行多路径、引号/转义、绝对路径、相对 `~/.ssh`、当前用户 `~/...`、`*`/`?`、lexical 顺序、嵌套 Include、隐藏文件规则，以及每个 included 文件结束后恢复父 global/`Host` 作用域。Host catalog 使用同一 Include 图。
+v0.14 新增受控 `Include` 展开，包括全局/`Host` 作用域、一行多路径、引号/转义、绝对路径、相对 `~/.ssh`、当前用户 `~/...`、`*`/`?`、lexical 顺序、嵌套 Include、隐藏文件规则，以及每个 included 文件结束后恢复父作用域。Host catalog 使用同一 Include 图。
+
+v0.19 新增刻意受限的 `Match` 子集：支持独立的 `Match all`，以及单条件 `Match originalhost <pattern-list>`。`originalhost` 使用 HostName 改写前的查询 alias；pattern-list 不区分 ASCII 大小写、以逗号分隔、支持 `*`/`?`，并支持前导 `!` 否定。其它 Match 条件和组合继续 fail-closed。
+
+v0.28 把这个 Match 子集正式整合进 Include scope machine。活跃 Host/Match 下的 Include 正常计算，返回 included 文件后恢复父 active state；inactive Host/Match 下的 Include 仍会实际打开文件、执行 trust/循环/资源限制/语法校验，但 included 文件中的 Host/Match 不能重新激活当前目标配置。这修复了旧路径中 child `Host <target>` 可能逃逸 inactive parent scope 的问题。
 
 v0.15 把根配置和所有嵌套 Include 统一放到同一配置文件信任边界。Unix 上要求实际打开文件为 regular file、owner 为当前进程 real uid 或 root、group/other 不可写；metadata 校验和解析读取使用同一个已打开 fd，避免独立 stat/read 的路径 TOCTOU。v0.26 把同一原则扩展到 Windows：owner/DACL 从已经打开的文件 HANDLE 获取，非受信主体的写权限 Allow ACE 会被拒绝，其他主体的只读访问仍允许，复杂 allow ACE 则 fail-closed 而不是做不完整近似。
 
 v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语义：
 
-- 证书算法默认不广告；只有最终目标或某个 ProxyJump hop 自己的 `UserKnownHostsFile` 中存在匹配的明文 `@cert-authority` 时才为该目标开启；
+- 证书算法默认不广告；只有最终目标或某个 ProxyJump hop 自己的 `UserKnownHostsFile` 中存在匹配的 `@cert-authority` 时才为该目标开启；
+- marker host pattern 可使用明文或 OpenSSH `|1|base64-salt|base64-hmac-sha1` hashed name；
 - Host Certificate 必须是 Host 类型；
 - CA 必须属于当前目标匹配的受信 `@cert-authority`；
 - 校验证书签名和当前有效期；
@@ -78,10 +84,10 @@ v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语�
 
 仍然采用 fail-closed 的部分：
 
-- `Match` 继续禁止用于连接解析，因为现代 OpenSSH 的条件依赖 host/originalhost、user/localuser、canonical/final pass、command/session、`exec`、local network、tag、version 等上下文；
+- 已支持 `Match all` 和单条件 `Match originalhost <pattern-list>`；`canonical`、`final`、`exec`、`localnetwork`、`host`、`tagged`、`command`、`user`、`localuser`、`version`、组合条件、条件否定/`criterion=value`、带引号或反斜杠转义的 Match 参数继续明确拒绝；
 - Include 的 `%` token、`${ENV}`、`~other-user` 和完整 bracket/collation glob 暂不实现，会明确报错而不是当成普通字符串；
 - Include 最大 16 层、256 个处理文件、4 MiB 配置预算、单行 64 个路径、单路径 16 KiB、单 wildcard component 1024 bytes，并检测循环 include；
-- hashed `@cert-authority` / `@revoked` marker host pattern（`|1|...`）当前明确拒绝，不会静默忽略 CA/吊销策略；普通未带 marker 的 hashed known_hosts 继续走 Russh 原有普通 host-key 路径；
+- hashed marker name 使用 effective known-hosts target bytes 做精确 HMAC-SHA1 匹配，不执行大小写折叠或 wildcard；非默认端口使用 OpenSSH `[host]:port` 形式；
 - RSA Host Certificate 与 RSA CA/证书签名兼容性当前不宣称支持；
 - Windows SIDHistory 账户名等价兼容性有意比 Win32-OpenSSH 更严格：不同 SID 始终按不同主体处理，不会因反向解析得到相同账户名而扩展信任；
 - 上游解析器只以布尔值暴露 `StrictHostKeyChecking`，需要精确行为时请使用 `--host-key strict`、`--host-key accept-new` 或 `--host-key insecure`。
@@ -132,9 +138,9 @@ kssh server.example.com --user deploy shell
 kssh target.internal -J bastion.example -L 8080:127.0.0.1:80 tunnel
 kssh target.internal -D 1080 tunnel
 
-# 单文件和递归传输
+# 单文件和递归传输；reject 会在扫描到符号链接时 fail-closed
 kssh server.example.com upload ./app.tar.zst /tmp/app.tar.zst
-kssh server.example.com download /srv/logs ./logs -r --jobs 8
+kssh server.example.com download /srv/logs ./logs -r --jobs 8 --symlinks reject
 
 # 断点恢复
 kssh server.example.com upload ./large.img /srv/large.img --resume
@@ -143,6 +149,7 @@ kssh server.example.com upload ./large.img /srv/large.img --resume
 kssh server.example.com sync ./dist /srv/www/dist --dry-run
 kssh server.example.com sync ./dist /srv/www/dist
 kssh server.example.com sync ./dist /srv/www/dist --delete
+kssh server.example.com sync ./dist /srv/www/dist --symlinks reject
 
 # TUI
 kssh-tui production
@@ -154,7 +161,7 @@ kssh-fleet -H web-01 -H web-02 --jobs 2 -- uname -a
 kssh-inventory check
 ```
 
-普通主机密钥默认采用 `accept-new`：未知普通 key 会写入标准 OpenSSH `known_hosts`，变化的 key 会被拒绝。`--host-key strict` 要求普通 key 预先存在，或者服务端 Host Certificate 可由当前目标匹配的 CA 完整验证。`--host-key insecure` 只适合一次性/测试环境；当前目标匹配的明文 `@revoked` 仍优先拒绝。
+普通主机密钥默认采用 `accept-new`：未知普通 key 会写入标准 OpenSSH `known_hosts`，变化的 key 会被拒绝。`--host-key strict` 要求普通 key 预先存在，或者服务端 Host Certificate 可由当前目标匹配的 CA 完整验证。`--host-key insecure` 只适合一次性/测试环境；当前目标匹配的 `@revoked` 仍优先拒绝。
 
 ## 文件传输与同步设计
 
@@ -162,7 +169,7 @@ kssh-inventory check
 
 同步会先扫描本地和远端目录树并构建 typed action plan。默认保留仅存在于远端的内容；只有显式 `--delete` 才允许删除和类型冲突替换。`--dry-run` 永远不修改远端目录树。
 
-递归传输和同步扫描目前跳过符号链接而不是跟随它们，以防遍历出请求目录树；显式 symlink 策略仍是独立的 V1 安全边界。
+递归上传/下载和同步已经提供显式符号链接策略。`skip` 是兼容默认值，会忽略链接/重解析点且绝不跟随；`reject` 会先执行 fail-closed preflight，只要扫描到 link-like entry 就中止。Follow/preserve 仍不支持，因为它们需要有界的循环/越界处理，以及完整的跨平台 target encoding 语义。
 
 ## 验证与发布
 
@@ -184,10 +191,10 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 
 ## 尚未完成的安全敏感能力
 
-- 完整 `Match` 计算，以及剩余 Include token/环境变量/`~user`/完整 glob；
-- hashed `@cert-authority` / `@revoked` marker 匹配，以及 RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
+- 超出当前 `all` / `originalhost` 子集的完整 OpenSSH `Match` 计算，以及剩余 Include token/环境变量/`~user`/完整 glob；
+- RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
 - 加密持久凭据存储及密钥管理模型；
 - 通过本地 daemon/IPC 实现跨进程 ControlMaster 风格连接复用；
-- 显式符号链接传输/同步策略。
+- 符号链接 follow/preserve 传输/同步语义，以及有界循环、越界和跨平台 target 处理。
 
 更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/HOST_CERTIFICATES.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。

@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::openssh_config_trust::read_user_config_file;
+use crate::openssh_match::rewrite_supported_match_config;
 
 const MAX_INCLUDE_DEPTH: usize = 16;
 const MAX_INCLUDE_FILES: usize = 256;
@@ -13,15 +14,22 @@ const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_INCLUDE_ARGUMENTS_PER_LINE: usize = 64;
 const MAX_INCLUDE_PATH_BYTES: usize = 16 * 1024;
 const MAX_GLOB_COMPONENT_BYTES: usize = 1024;
+const ACTIVE_PROBE_PORT: u16 = 65_534;
+const FALLBACK_PROBE_PORT: u16 = 65_535;
 
-pub(crate) fn expand_user_config(root: &Path, home: &Path) -> Result<String> {
-    let mut state = ExpansionState::new(home);
+pub(crate) fn expand_user_config(
+    root: &Path,
+    home: &Path,
+    original_host: &str,
+) -> Result<String> {
+    let mut state = ExpansionState::for_connection(home, original_host);
 
-    // russh-config models only explicit Host entries, while OpenSSH permits
-    // options in the implicit global scope before the first Host. Represent
-    // that scope as Host * so first-value-wins ordering remains intact.
+    // Connection resolution is target-specific. Flatten only directives that
+    // are active for this original host into one Host * stream so downstream
+    // first-value-wins ordering is preserved without letting an included Host
+    // or Match block escape its caller's inactive scope.
     let mut expanded = String::from("Host *\n");
-    let root_contents = state.expand_connection_file(root, 0, Scope::Global)?;
+    let root_contents = state.expand_connection_file(root, 0, true, false)?;
     push_bounded(&mut expanded, &root_contents)?;
     Ok(expanded)
 }
@@ -30,23 +38,9 @@ pub(crate) fn expand_user_config_for_catalog(root: &Path, home: &Path) -> Result
     ExpansionState::new(home).expand_catalog_file(root, 0)
 }
 
-#[derive(Clone, Debug)]
-enum Scope {
-    Global,
-    Host(String),
-}
-
-impl Scope {
-    fn restore_directive(&self) -> &str {
-        match self {
-            Self::Global => "Host *",
-            Self::Host(line) => line,
-        }
-    }
-}
-
 struct ExpansionState<'a> {
     home: &'a Path,
+    original_host: Option<&'a str>,
     files_seen: usize,
     bytes_read: usize,
     active_paths: HashSet<PathBuf>,
@@ -56,20 +50,38 @@ impl<'a> ExpansionState<'a> {
     fn new(home: &'a Path) -> Self {
         Self {
             home,
+            original_host: None,
             files_seen: 0,
             bytes_read: 0,
             active_paths: HashSet::new(),
         }
     }
 
+    fn for_connection(home: &'a Path, original_host: &'a str) -> Self {
+        Self {
+            home,
+            original_host: Some(original_host),
+            files_seen: 0,
+            bytes_read: 0,
+            active_paths: HashSet::new(),
+        }
+    }
+
+    fn connection_host(&self) -> Result<&str> {
+        self.original_host
+            .context("OpenSSH connection expansion requires an original host")
+    }
+
     fn expand_connection_file(
         &mut self,
         path: &Path,
         depth: usize,
-        inherited_scope: Scope,
+        inherited_active: bool,
+        never_match: bool,
     ) -> Result<String> {
         let identity = self.enter_file(path, depth)?;
-        let result = self.expand_connection_file_inner(path, depth, inherited_scope);
+        let result =
+            self.expand_connection_file_inner(path, depth, inherited_active, never_match);
         self.active_paths.remove(&identity);
         result
     }
@@ -78,25 +90,39 @@ impl<'a> ExpansionState<'a> {
         &mut self,
         path: &Path,
         depth: usize,
-        inherited_scope: Scope,
+        inherited_active: bool,
+        never_match: bool,
     ) -> Result<String> {
         let contents = self.read_config(path)?;
-        let mut scope = inherited_scope;
+        let original_host = self.connection_host()?.to_owned();
+        let mut active = inherited_active && !never_match;
         let mut expanded = String::with_capacity(contents.len());
 
         for (line_index, line) in contents.lines().enumerate() {
             let key = directive_key(line);
-            if key.is_some_and(|key| key.eq_ignore_ascii_case("match")) {
-                bail!(
-                    "OpenSSH Match on {}:{} is not safely supported yet; refusing partial configuration resolution",
-                    path.display(),
-                    line_index + 1
-                );
-            }
 
             if key.is_some_and(|key| key.eq_ignore_ascii_case("host")) {
-                scope = Scope::Host(line.trim().to_owned());
-                push_line_bounded(&mut expanded, line)?;
+                let matched = host_directive_matches(line, &original_host).with_context(|| {
+                    format!(
+                        "invalid OpenSSH Host on {}:{}",
+                        path.display(),
+                        line_index + 1
+                    )
+                })?;
+                active = !never_match && matched;
+                continue;
+            }
+
+            if key.is_some_and(|key| key.eq_ignore_ascii_case("match")) {
+                let matched = supported_match_directive_matches(line, &original_host)
+                    .with_context(|| {
+                        format!(
+                            "unsupported OpenSSH Match on {}:{}",
+                            path.display(),
+                            line_index + 1
+                        )
+                    })?;
+                active = !never_match && matched;
                 continue;
             }
 
@@ -108,16 +134,32 @@ impl<'a> ExpansionState<'a> {
                 )
             })?
             else {
-                push_line_bounded(&mut expanded, line)?;
+                if active {
+                    push_line_bounded(&mut expanded, line)?;
+                } else {
+                    validate_inactive_option(line, &original_host).with_context(|| {
+                        format!(
+                            "invalid inactive OpenSSH option on {}:{}",
+                            path.display(),
+                            line_index + 1
+                        )
+                    })?;
+                }
                 continue;
             };
 
             self.validate_include_arguments(path, line_index, &arguments)?;
+            let child_never_match = never_match || !active;
             for argument in arguments {
                 let pattern = self.anchor_user_include(&argument)?;
                 for include in expand_path_pattern(&pattern)? {
                     let included = self
-                        .expand_connection_file(&include, depth + 1, scope.clone())
+                        .expand_connection_file(
+                            &include,
+                            depth + 1,
+                            active,
+                            child_never_match,
+                        )
                         .with_context(|| {
                             format!(
                                 "while expanding OpenSSH Include from {}:{}",
@@ -126,14 +168,14 @@ impl<'a> ExpansionState<'a> {
                             )
                         })?;
                     push_bounded(&mut expanded, &included)?;
-                    if !included.ends_with('\n') {
+                    if !included.is_empty() && !included.ends_with('\n') {
                         push_bounded(&mut expanded, "\n")?;
                     }
 
-                    // OpenSSH restores the parent file's active Host/Match state
-                    // after each included file. Match is still rejected, so the
-                    // only states we need to re-emit are global and Host.
-                    push_line_bounded(&mut expanded, scope.restore_directive())?;
+                    // OpenSSH restores the containing file's active state after
+                    // each Include. Because this resolver emits only active
+                    // options instead of structural Host/Match lines, recursion
+                    // cannot mutate the caller's `active` value.
                 }
             }
         }
@@ -293,6 +335,36 @@ impl<'a> ExpansionState<'a> {
         }
         Ok(())
     }
+}
+
+fn host_directive_matches(line: &str, original_host: &str) -> Result<bool> {
+    let probe = format!(
+        "{line}\n  Port {ACTIVE_PROBE_PORT}\nHost *\n  Port {FALLBACK_PROBE_PORT}\n"
+    );
+    let parsed = russh_config::parse(&probe, original_host)
+        .context("failed to evaluate OpenSSH Host directive")?;
+    Ok(parsed.port() == ACTIVE_PROBE_PORT)
+}
+
+fn supported_match_directive_matches(line: &str, original_host: &str) -> Result<bool> {
+    let probe = format!(
+        "{line}\n  Port {ACTIVE_PROBE_PORT}\nHost *\n  Port {FALLBACK_PROBE_PORT}\n"
+    );
+    let rewritten = rewrite_supported_match_config(&probe, original_host)
+        .context("failed to evaluate supported OpenSSH Match directive")?;
+    let parsed = russh_config::parse(&rewritten, original_host)
+        .context("failed to parse supported OpenSSH Match probe")?;
+    Ok(parsed.port() == ACTIVE_PROBE_PORT)
+}
+
+fn validate_inactive_option(line: &str, original_host: &str) -> Result<()> {
+    if directive_key(line).is_none() {
+        return Ok(());
+    }
+    let probe = format!("Host *\n{line}\n");
+    russh_config::parse(&probe, original_host)
+        .context("failed to validate inactive OpenSSH option")?;
+    Ok(())
 }
 
 fn push_line_bounded(output: &mut String, line: &str) -> Result<()> {
@@ -652,7 +724,7 @@ mod tests {
         ] {
             fs::write(ssh.join("config"), format!("Include {include}\n")).unwrap();
             assert!(
-                expand_user_config(&ssh.join("config"), &home).is_err(),
+                expand_user_config(&ssh.join("config"), &home, "prod").is_err(),
                 "{include}"
             );
         }
@@ -673,7 +745,7 @@ mod tests {
         )
         .unwrap();
 
-        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
         assert!(expanded.contains("User visible"));
         assert!(!expanded.contains("Port 2022"));
         fs::remove_dir_all(home).unwrap();
@@ -692,7 +764,7 @@ mod tests {
         )
         .unwrap();
 
-        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
         assert!(expanded.contains("Port 2022"));
         fs::remove_dir_all(home).unwrap();
     }
@@ -711,7 +783,7 @@ mod tests {
         )
         .unwrap();
 
-        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
         let first = expanded.find("User first").unwrap();
         let second = expanded.find("IdentityFile /tmp/second").unwrap();
         let port = expanded.rfind("Port 2200").unwrap();
@@ -739,10 +811,35 @@ mod tests {
         )
         .unwrap();
 
-        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
         let parsed = russh_config::parse(&expanded, "prod").unwrap();
         assert_eq!(parsed.user(), "deploy");
         assert_eq!(parsed.port(), 2200);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inactive_host_include_cannot_reactivate_inside_child() {
+        let home = temp_root("inactive-host");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Host target\n  Port 2999\n  User wrong\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host outer\n  Include nested.conf\nHost target\n  Port 2200\n  User correct\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home, "target").unwrap();
+        let parsed = russh_config::parse(&expanded, "target").unwrap();
+        assert_eq!(parsed.port(), 2200);
+        assert_eq!(parsed.user(), "correct");
+        assert!(!expanded.contains("2999"));
+        assert!(!expanded.contains("User wrong"));
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -758,11 +855,80 @@ mod tests {
         )
         .unwrap();
 
-        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
         let parsed = russh_config::parse(&expanded, "prod").unwrap();
         assert_eq!(parsed.user(), "global-user");
         assert_eq!(parsed.port(), 2200);
         assert_eq!(parsed.host(), "prod.example");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn supported_match_in_include_is_applied_and_parent_state_is_restored() {
+        let home = temp_root("match-include");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Match originalhost prod\n  User included\nHost other\n  Port 2999\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Match originalhost prod\n  Include nested.conf\n  Port 2200\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
+        let parsed = russh_config::parse(&expanded, "prod").unwrap();
+        assert_eq!(parsed.user(), "included");
+        assert_eq!(parsed.port(), 2200);
+        assert!(!expanded.contains("2999"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inactive_match_include_is_parse_only_and_cannot_reactivate() {
+        let home = temp_root("inactive-match");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Host prod\n  User wrong\nMatch all\n  Port 2999\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Match originalhost other\n  Include nested.conf\nHost prod\n  User correct\n  Port 2200\n",
+        )
+        .unwrap();
+
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
+        let parsed = russh_config::parse(&expanded, "prod").unwrap();
+        assert_eq!(parsed.user(), "correct");
+        assert_eq!(parsed.port(), 2200);
+        assert!(!expanded.contains("User wrong"));
+        assert!(!expanded.contains("2999"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inactive_include_still_validates_ordinary_option_syntax() {
+        let home = temp_root("inactive-invalid-option");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Host prod\n  Port not-a-port\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host other\n  Include nested.conf\nHost prod\n  User deploy\n",
+        )
+        .unwrap();
+
+        assert!(expand_user_config(&ssh.join("config"), &home, "prod").is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -795,14 +961,14 @@ mod tests {
             "Include conf.d/*.conf\nHost prod\n  User deploy\n",
         )
         .unwrap();
-        let expanded = expand_user_config(&ssh.join("config"), &home).unwrap();
+        let expanded = expand_user_config(&ssh.join("config"), &home, "prod").unwrap();
         let parsed = russh_config::parse(&expanded, "prod").unwrap();
         assert_eq!(parsed.user(), "deploy");
         fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn match_in_included_file_fails_closed_for_connection_resolution() {
+    fn unsupported_match_in_included_file_fails_closed_for_connection_resolution() {
         let home = temp_root("match");
         let ssh = home.join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
@@ -812,7 +978,26 @@ mod tests {
         )
         .unwrap();
         fs::write(ssh.join("config"), "Host prod\n  Include nested.conf\n").unwrap();
-        assert!(expand_user_config(&ssh.join("config"), &home).is_err());
+        assert!(expand_user_config(&ssh.join("config"), &home, "prod").is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn inactive_include_still_validates_unsupported_match_syntax() {
+        let home = temp_root("inactive-unsupported-match");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(
+            ssh.join("nested.conf"),
+            "Match host *.internal\n  User wrong\n",
+        )
+        .unwrap();
+        fs::write(
+            ssh.join("config"),
+            "Host other\n  Include nested.conf\nHost prod\n  User deploy\n",
+        )
+        .unwrap();
+        assert!(expand_user_config(&ssh.join("config"), &home, "prod").is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -831,7 +1016,7 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
         fs::set_permissions(&included, fs::Permissions::from_mode(0o666)).unwrap();
 
-        assert!(expand_user_config(&root, &home).is_err());
+        assert!(expand_user_config(&root, &home, "prod").is_err());
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -842,7 +1027,7 @@ mod tests {
         fs::create_dir_all(&ssh).unwrap();
         fs::write(ssh.join("config"), "Include nested.conf\n").unwrap();
         fs::write(ssh.join("nested.conf"), "Include config\n").unwrap();
-        let error = expand_user_config(&ssh.join("config"), &home).unwrap_err();
+        let error = expand_user_config(&ssh.join("config"), &home, "prod").unwrap_err();
         assert!(error.to_string().contains("Include"));
         fs::remove_dir_all(home).unwrap();
     }
