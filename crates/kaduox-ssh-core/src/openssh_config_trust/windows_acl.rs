@@ -12,11 +12,11 @@ type Sid = *mut c_void;
 type SidStorage = Vec<usize>;
 type SecurityDescriptor = *mut c_void;
 
-const SE_FILE_OBJECT: u32 = 1;
+const SE_FILE_OBJECT: i32 = 1;
 const OWNER_SECURITY_INFORMATION: u32 = 0x0000_0001;
 const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
 const TOKEN_QUERY: u32 = 0x0008;
-const TOKEN_USER: u32 = 1;
+const TOKEN_USER: i32 = 1;
 
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0x00;
 const ACCESS_ALLOWED_COMPOUND_ACE_TYPE: u8 = 0x04;
@@ -34,13 +34,17 @@ const FILE_WRITE_ATTRIBUTES: u32 = 0x0000_0100;
 const DELETE: u32 = 0x0001_0000;
 const WRITE_DAC: u32 = 0x0004_0000;
 const WRITE_OWNER: u32 = 0x0008_0000;
+const GENERIC_ALL: u32 = 0x1000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
 const SSH_SECURE_WRITE_MASK: u32 = FILE_WRITE_DATA
     | FILE_APPEND_DATA
     | FILE_WRITE_EA
     | FILE_WRITE_ATTRIBUTES
     | DELETE
     | WRITE_DAC
-    | WRITE_OWNER;
+    | WRITE_OWNER
+    | GENERIC_ALL
+    | GENERIC_WRITE;
 
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const ERROR_NONE_MAPPED: u32 = 1332;
@@ -98,7 +102,7 @@ unsafe extern "system" {
     #[link_name = "GetSecurityInfo"]
     fn get_security_info(
         handle: Handle,
-        object_type: u32,
+        object_type: i32,
         security_info: u32,
         owner: *mut Sid,
         group: *mut Sid,
@@ -121,7 +125,7 @@ unsafe extern "system" {
     #[link_name = "GetTokenInformation"]
     fn get_token_information(
         token: Handle,
-        class: u32,
+        class: i32,
         information: *mut c_void,
         information_len: u32,
         return_len: *mut u32,
@@ -240,13 +244,7 @@ pub(super) fn verify_open_file_acl(path: &Path, file: &fs::File) -> Result<()> {
 
     let ace_count = unsafe { (*dacl).ace_count };
     for index in 0..u32::from(ace_count) {
-        inspect_ace(
-            path,
-            dacl,
-            index,
-            user_sid,
-            trusted_installer_sid,
-        )?;
+        inspect_ace(path, dacl, index, user_sid, trusted_installer_sid)?;
     }
 
     Ok(())
@@ -365,10 +363,7 @@ fn sid_is_trusted(sid: Sid, user_sid: Sid, trusted_installer_sid: Option<Sid>) -
 fn current_user_sid() -> Result<SidStorage> {
     let mut raw_token: Handle = null_mut();
     if unsafe { open_process_token(get_current_process(), TOKEN_QUERY, &mut raw_token) } == 0 {
-        bail!(
-            "OpenProcessToken failed: {}",
-            std::io::Error::last_os_error()
-        );
+        bail!("OpenProcessToken failed: {}", std::io::Error::last_os_error());
     }
     let token = TokenHandle(raw_token);
 
@@ -450,9 +445,7 @@ fn lookup_account_sid_optional(account: &str) -> Option<SidStorage> {
         return None;
     }
 
-    let error = std::io::Error::last_os_error()
-        .raw_os_error()
-        .unwrap_or_default() as u32;
+    let error = std::io::Error::last_os_error().raw_os_error().unwrap_or_default() as u32;
     if error == ERROR_NONE_MAPPED {
         return None;
     }
