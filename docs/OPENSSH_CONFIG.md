@@ -50,7 +50,8 @@ command substitution.
 
 v0.15 applies the same trust check at the single config-file read boundary, so
 it covers the root `~/.ssh/config`, every nested `Include`, and the read-only
-host-catalog path.
+host-catalog path. v0.26 extends that boundary with native Windows owner/DACL
+validation instead of treating regular-file validation as sufficient.
 
 On Unix targets:
 
@@ -69,16 +70,41 @@ The implementation deliberately uses the process uid rather than trusting the
 owner of a path selected through `$HOME`. Redirecting `$HOME` therefore cannot
 change which uid is trusted to author SSH configuration.
 
+On Windows targets, v0.26 follows the Win32-OpenSSH user-config trust model at
+the same read boundary:
+
+- the resolved path must be a regular file;
+- owner and DACL are queried from the already-open file `HANDLE` with
+  `GetSecurityInfo`, so ACL validation and the bytes subsequently parsed refer
+  to the same opened object instead of a second pathname lookup;
+- the owner SID must be the current user, `BUILTIN\\Administrators`,
+  `LocalSystem`, or `NT SERVICE\\TrustedInstaller` when that service SID can be
+  resolved on the machine;
+- a missing/NULL/invalid DACL is rejected; in particular, a NULL DACL is not
+  confused with an empty DACL because NULL grants full access;
+- ordinary `ACCESS_ALLOWED_ACE` entries for the trusted SIDs above are allowed;
+- an otherwise-untrusted principal may retain read-only access, matching the
+  `read_ok=1` policy Win32-OpenSSH applies to user configuration;
+- an otherwise-untrusted principal is rejected if its allow ACE contains any
+  of `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`,
+  `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER`,
+  `GENERIC_WRITE`, or `GENERIC_ALL`;
+- the variable-length SID in every standard allow ACE must fit completely
+  inside that ACE before the SID is passed to Windows validation helpers;
+- advanced allow ACE layouts (object/callback/compound allow ACEs) fail closed
+  instead of being partially decoded and potentially underestimating write
+  authority.
+
+Win32-OpenSSH also contains a reverse-account-name compatibility exception for
+SIDHistory entries that resolve to the same account. Kaduox-SSH intentionally
+does not broaden trust through account-name equivalence in v0.26: distinct SIDs
+remain distinct principals. This is stricter than that compatibility exception
+and avoids turning name resolution into an additional authorization boundary.
+
 Configuration reads are also bounded before allocation: one physical config
 file is read through a 4 MiB + 1 byte probe and rejected if it exceeds 4 MiB.
 The Include expansion layer separately enforces its 4 MiB cumulative input and
 expanded-output budgets.
-
-Windows does not use POSIX uid/mode semantics. Kaduox-SSH still requires the
-resolved config path to be a regular file there, but v0.15 does **not** claim
-that this is equivalent to OpenSSH's Windows ACL trust policy. A proper ACL
-implementation remains separate V1 security work rather than translating Unix
-mode checks into a misleading approximation.
 
 ## Include limits
 
@@ -168,8 +194,9 @@ Unit coverage includes include ordering, global/Host scope restoration, nested
 cycles, hidden-file wildcard behavior, unsupported expansion rejection,
 catalog discovery, regular-file enforcement, accepted Unix 0600/0640/0644
 modes, rejected group/other-writable modes, an insecure nested Include fixture,
-oversized single-file rejection, marker host-pattern matching, CA/revocation
-classification, and certificate-principal matching.
+oversized single-file rejection, Windows read-only/untrusted-write ACL cases,
+marker host-pattern matching, CA/revocation classification, and
+certificate-principal matching.
 
 The real OpenSSH workflow also contains a v0.16 host-certificate fixture that
 creates an Ed25519 CA and `HostCertificate` with `ssh-keygen`/`sshd`, then tests

@@ -6,6 +6,9 @@ use anyhow::{Context, Result, bail};
 
 const MAX_CONFIG_FILE_BYTES: usize = 4 * 1024 * 1024;
 
+#[cfg(windows)]
+mod windows_acl;
+
 #[cfg(unix)]
 unsafe extern "C" {
     fn getuid() -> std::os::raw::c_uint;
@@ -21,7 +24,7 @@ pub(crate) fn read_user_config_file(path: &Path, home: &Path) -> Result<String> 
         bail!("OpenSSH config path is not a regular file: {}", path.display());
     }
 
-    verify_platform_trust(path, home, &metadata)?;
+    verify_platform_trust(path, home, &file, &metadata)?;
 
     let read_limit = u64::try_from(MAX_CONFIG_FILE_BYTES)
         .expect("4 MiB OpenSSH config limit fits u64")
@@ -41,7 +44,12 @@ pub(crate) fn read_user_config_file(path: &Path, home: &Path) -> Result<String> 
 }
 
 #[cfg(unix)]
-fn verify_platform_trust(path: &Path, _home: &Path, metadata: &fs::Metadata) -> Result<()> {
+fn verify_platform_trust(
+    path: &Path,
+    _home: &Path,
+    _file: &fs::File,
+    metadata: &fs::Metadata,
+) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
 
     let owner = metadata.uid();
@@ -73,11 +81,23 @@ fn current_real_uid() -> u32 {
     unsafe { getuid() }
 }
 
-#[cfg(not(unix))]
-fn verify_platform_trust(_path: &Path, _home: &Path, _metadata: &fs::Metadata) -> Result<()> {
-    // Windows ACL semantics are not equivalent to POSIX ownership/mode bits.
-    // Keep the cross-platform boundary explicit instead of pretending a Unix
-    // policy can validate an NTFS ACL. Regular-file validation still applies.
+#[cfg(windows)]
+fn verify_platform_trust(
+    path: &Path,
+    _home: &Path,
+    file: &fs::File,
+    _metadata: &fs::Metadata,
+) -> Result<()> {
+    windows_acl::verify_open_file_acl(path, file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn verify_platform_trust(
+    _path: &Path,
+    _home: &Path,
+    _file: &fs::File,
+    _metadata: &fs::Metadata,
+) -> Result<()> {
     Ok(())
 }
 
@@ -91,7 +111,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!(
+        let base = if cfg!(windows) {
+            std::env::var_os("USERPROFILE")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+        } else {
+            std::env::temp_dir()
+        };
+        base.join(format!(
             "kaduox-openssh-trust-{label}-{}-{nonce}",
             std::process::id()
         ))
@@ -181,6 +208,54 @@ mod tests {
         let file = home.join("owned");
         fs::write(&file, "x").unwrap();
         assert_eq!(fs::metadata(&file).unwrap().uid(), current_real_uid());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn grant_builtin_users(config: &Path, rights: &str) {
+        let grant = format!("*S-1-5-32-545:{rights}");
+        let output = std::process::Command::new("icacls")
+            .arg(config)
+            .arg("/grant")
+            .arg(grant)
+            .output()
+            .expect("run icacls");
+        assert!(
+            output.status.success(),
+            "icacls failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_read_only_untrusted_ace_is_accepted() {
+        let home = temp_root("windows-read");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        let config = ssh.join("config");
+        fs::write(&config, "Host prod\n").unwrap();
+
+        assert!(read_user_config_file(&config, &home).is_ok());
+        grant_builtin_users(&config, "(R)");
+        assert_eq!(read_user_config_file(&config, &home).unwrap(), "Host prod\n");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_untrusted_write_ace_is_rejected() {
+        let home = temp_root("windows-write");
+        let ssh = home.join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        let config = ssh.join("config");
+        fs::write(&config, "Host prod\n").unwrap();
+
+        assert!(read_user_config_file(&config, &home).is_ok());
+        grant_builtin_users(&config, "(W)");
+        let error = read_user_config_file(&config, &home).unwrap_err().to_string();
+        assert!(error.contains("write-class Windows ACL rights"), "{error}");
         fs::remove_dir_all(home).unwrap();
     }
 }
