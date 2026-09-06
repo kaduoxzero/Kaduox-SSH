@@ -12,6 +12,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  KADUOX_NATIVE_SIGNING_ENABLED: ${{ !contains(github.ref_name, '-') || vars.KADUOX_ENABLE_NATIVE_SIGNING == 'true' }}
+
 jobs:
   preflight:
     runs-on: ubuntu-latest
@@ -22,8 +25,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Test release packaging, qualification, SBOM, workflow pins, and Rust policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy
+      - name: Test release packaging, qualification, SBOM, workflow pins, Rust, and signing policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy scripts.release.test_native_signing_policy
       - name: Verify release metadata and tag
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Require release commit to be reachable from main
@@ -100,6 +103,25 @@ jobs:
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Build all release binaries
         run: cargo build -p kaduox-ssh-cli --release --locked --bins --target ${{ matrix.target }}
+      - name: Authenticode-sign Windows release binaries
+        if: ${{ env.KADUOX_NATIVE_SIGNING_ENABLED == 'true' && runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          KADUOX_WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.KADUOX_WINDOWS_SIGNING_PFX_BASE64 }}
+          KADUOX_WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.KADUOX_WINDOWS_SIGNING_PFX_PASSWORD }}
+          KADUOX_WINDOWS_TIMESTAMP_URL: ${{ vars.KADUOX_WINDOWS_TIMESTAMP_URL }}
+        run: ./scripts/release/sign-windows.ps1 -BinaryDir "target/${{ matrix.target }}/release"
+      - name: Developer ID-sign and notarize macOS release binaries
+        if: ${{ env.KADUOX_NATIVE_SIGNING_ENABLED == 'true' && runner.os == 'macOS' }}
+        shell: bash
+        env:
+          KADUOX_MACOS_SIGNING_CERT_P12_BASE64: ${{ secrets.KADUOX_MACOS_SIGNING_CERT_P12_BASE64 }}
+          KADUOX_MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.KADUOX_MACOS_SIGNING_CERT_PASSWORD }}
+          KADUOX_MACOS_SIGNING_IDENTITY: ${{ vars.KADUOX_MACOS_SIGNING_IDENTITY }}
+          KADUOX_APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.KADUOX_APPLE_NOTARY_KEY_P8_BASE64 }}
+          KADUOX_APPLE_NOTARY_KEY_ID: ${{ vars.KADUOX_APPLE_NOTARY_KEY_ID }}
+          KADUOX_APPLE_NOTARY_ISSUER_ID: ${{ vars.KADUOX_APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release/sign-macos.sh "target/${{ matrix.target }}/release"
       - name: Smoke-test every release binary
         shell: bash
         run: |
