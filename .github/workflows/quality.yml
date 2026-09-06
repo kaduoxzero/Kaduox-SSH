@@ -96,7 +96,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Test release packaging, qualification, SBOM, workflow pins, Rust, and signing policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy scripts.release.test_native_signing_policy
+      - name: Test release packaging, qualification, SBOM, workflow pins, Rust, signing, and attestation policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy scripts.release.test_native_signing_policy scripts.release.test_attestation_policy
       - name: Validate repository release metadata
         run: python scripts/release/release_tool.py check

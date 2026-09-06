@@ -8,6 +8,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from scripts.release import qualification_tool, release_tool
 
@@ -69,12 +70,66 @@ class ReleaseQualificationTests(unittest.TestCase):
         release_tool.create_archive(package, archive, archive_format)
         return archive
 
+    def _write_target_sbom(self, target: str) -> Path:
+        document = {
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": f"Kaduox-SSH-{self.version}-{target}-Cargo-metadata",
+            "documentNamespace": (
+                "https://github.com/kaduoxzero/Kaduox-SSH/sbom/"
+                f"{quote(self.tag, safe='-._~')}/{quote(target, safe='-._~')}/cargo-metadata"
+            ),
+            "creationInfo": {
+                "created": "1970-01-01T00:00:00Z",
+                "creators": ["Tool: test fixture"],
+                "comment": f"Target-specific Cargo graph for {target} generated with --filter-platform.",
+            },
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Kaduox-SSH-Release",
+                    "name": "Kaduox-SSH",
+                    "versionInfo": self.version,
+                    "primaryPackagePurpose": "APPLICATION",
+                    "comment": f"Cargo release target: {target}",
+                },
+                {
+                    "SPDXID": "SPDXRef-Package-kaduox-ssh-cli-test",
+                    "name": "kaduox-ssh-cli",
+                    "versionInfo": self.version,
+                },
+                {
+                    "SPDXID": "SPDXRef-Package-kaduox-ssh-core-test",
+                    "name": "kaduox-ssh-core",
+                    "versionInfo": self.version,
+                },
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Kaduox-SSH-Release",
+                },
+                {
+                    "spdxElementId": "SPDXRef-Kaduox-SSH-Release",
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": "SPDXRef-Package-kaduox-ssh-cli-test",
+                },
+                {
+                    "spdxElementId": "SPDXRef-Package-kaduox-ssh-cli-test",
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": "SPDXRef-Package-kaduox-ssh-core-test",
+                },
+            ],
+        }
+        path = self.assets / qualification_tool.sbom_name(self.version, target)
+        path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return path
+
     def _populate_release(self) -> None:
         for target, (archive_format, exe_suffix) in qualification_tool.EXPECTED_TARGETS.items():
             self._write_package(target, archive_format, exe_suffix)
-        (self.assets / f"kaduox-ssh-{self.version}.spdx.json").write_text(
-            '{"spdxVersion":"SPDX-2.3"}\n', encoding="utf-8"
-        )
+            self._write_target_sbom(target)
         self._write_sums()
 
     def _write_sums(self) -> None:
@@ -88,6 +143,7 @@ class ReleaseQualificationTests(unittest.TestCase):
         self._populate_release()
         sums = qualification_tool.verify_release_asset_set(self.tag, self.assets)
         self.assertEqual(set(sums), qualification_tool.expected_release_assets(self.tag))
+        self.assertEqual(len(sums), 8)
 
         linux_dir = qualification_tool.qualify_target(
             self.tag,
@@ -108,6 +164,23 @@ class ReleaseQualificationTests(unittest.TestCase):
             self.root / "qualified-windows",
         )
         self.assertTrue((windows_dir / "kssh.exe").is_file())
+
+    def test_target_sbom_identity_tamper_is_rejected_even_with_fresh_checksum(self) -> None:
+        self._populate_release()
+        target = "x86_64-unknown-linux-gnu"
+        sbom = self.assets / qualification_tool.sbom_name(self.version, target)
+        document = json.loads(sbom.read_text(encoding="utf-8"))
+        document["packages"][0]["comment"] = "Cargo release target: x86_64-pc-windows-msvc"
+        sbom.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self._write_sums()
+        with self.assertRaisesRegex(ValueError, "root package"):
+            qualification_tool.verify_release_asset_set(self.tag, self.assets)
+
+    def test_legacy_release_wide_sbom_is_rejected_as_unexpected(self) -> None:
+        self._populate_release()
+        (self.assets / f"kaduox-ssh-{self.version}.spdx.json").write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "asset set differs"):
+            qualification_tool.verify_release_asset_set(self.tag, self.assets)
 
     def test_checksum_tamper_is_rejected(self) -> None:
         self._populate_release()

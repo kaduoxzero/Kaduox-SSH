@@ -28,6 +28,8 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 - `kssh-inventory` 离线 Inventory 校验、列表和嵌套 group 展开
 - Linux/macOS/Windows CI、Rust 1.85 MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁
 - 确定性的四套发行包流程，包含每个二进制的 manifest 和最终 SHA-256 校验文件
+- 稳定版 Windows Authenticode，以及 macOS Developer ID 签名/公证
+- 四目标 SPDX 2.3 SBOM，并为稳定版强制执行 provenance 与 archive-to-SBOM attestation 策略
 
 SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 会在现有传输上继续打开额外 channel；交互式权限切换使用 `sudo -iu <user>`，远端命令切换用户使用 `sudo -n -u <user> -- sh -lc ...`。
 
@@ -170,7 +172,7 @@ v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed2551
 
 当前 GitHub-hosted job 仍在任何 workflow step 执行前失败（历史状态为 `steps=null`，没有可用 job log）。因此 candidate **不能宣称 CI 已通过**，也不会在这种状态下晋升到 `develop` 或 `main`。每个新 candidate HEAD 仍需重新检查实际 job 执行情况。
 
-v0.13 起的 release pipeline 会构建 Linux x86_64、macOS Intel、macOS Apple Silicon、Windows x86_64 四套完整包，每套包含四个前端，并生成 manifest 和 `SHA256SUMS`。v0.25 已把 Windows Authenticode 与 macOS Developer ID/notarization 纳入稳定版发布门禁；发布后资格校验仍会针对已发布资产重新验证其完整性与原生签名状态。
+v0.25 已把 Windows Authenticode 与 macOS Developer ID/notarization 纳入稳定版发布门禁。v0.27 为四个 release target 各生成一份 SPDX 2.3 SBOM，并要求稳定版四目标 attestation matrix 成功后才允许发布；预发布版本可显式选择启用相同 attestation。发布后资格校验会检查 8 个 primary asset 的 SHA-256、target SBOM 身份、原生签名、打包二进制版本，以及真实 Linux OpenSSH 路径。
 
 ## 分支模型
 
@@ -186,7 +188,6 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 - hashed `@cert-authority` / `@revoked` marker 匹配，以及 RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
 - 加密持久凭据存储及密钥管理模型；
 - 通过本地 daemon/IPC 实现跨进程 ControlMaster 风格连接复用；
-- 显式符号链接传输/同步策略；
-- 当前发布检查之外的最终 operator provenance/attestation 与 target-specific SBOM 策略。
+- 显式符号链接传输/同步策略。
 
 更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/HOST_CERTIFICATES.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。

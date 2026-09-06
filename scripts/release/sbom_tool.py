@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Generate a deterministic SPDX 2.3 inventory from the resolved Cargo.lock graph."""
+"""Generate deterministic target-specific SPDX 2.3 release SBOMs."""
 
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from datetime import datetime, timezone
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -20,12 +22,25 @@ except ModuleNotFoundError:  # Direct `python scripts/release/sbom_tool.py` exec
 
 ROOT = release_tool.ROOT
 MAX_SBOM_BYTES = 8 * 1024 * 1024
+MAX_METADATA_BYTES = 16 * 1024 * 1024
 SPDX_VERSION = "SPDX-2.3"
 SPDX_DATA_LICENSE = "CC0-1.0"
 DEFAULT_SOURCE_DATE_EPOCH = 0
-DEPENDENCY_SPEC = re.compile(
-    r"^(?P<name>[^\s()]+)(?:\s+(?P<version>[^\s()]+))?(?:\s+\((?P<source>.+)\))?$"
+RELEASE_TARGETS = (
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
 )
+
+
+def validate_target(target: str) -> str:
+    release_tool.safe_component(target, "release target")
+    if target not in RELEASE_TARGETS:
+        raise ValueError(
+            f"unsupported SBOM release target {target!r}; expected one of {RELEASE_TARGETS!r}"
+        )
+    return target
 
 
 def load_lock(path: Path | None = None) -> dict:
@@ -40,7 +55,7 @@ def load_lock(path: Path | None = None) -> dict:
     return data
 
 
-def package_identity(package: dict) -> tuple[str, str, str]:
+def lock_package_identity(package: dict) -> tuple[str, str, str]:
     name = package.get("name")
     version = package.get("version")
     source = package.get("source", "")
@@ -53,50 +68,35 @@ def package_identity(package: dict) -> tuple[str, str, str]:
     return name, version, source
 
 
+def metadata_package_identity(package: dict) -> tuple[str, str, str]:
+    name = package.get("name")
+    version = package.get("version")
+    source = package.get("source")
+    if not isinstance(name, str) or not name:
+        raise ValueError("Cargo metadata package has an invalid name")
+    if not isinstance(version, str) or not version:
+        raise ValueError(f"Cargo metadata package {name!r} has an invalid version")
+    if source is None:
+        source = ""
+    if not isinstance(source, str):
+        raise ValueError(f"Cargo metadata package {name!r} has an invalid source")
+    return name, version, source
+
+
 def spdx_id_for(package: dict) -> str:
-    name, version, source = package_identity(package)
+    name, version, source = lock_package_identity(package)
     digest = hashlib.sha256(f"{name}\0{version}\0{source}".encode()).hexdigest()[:16]
     safe_name = re.sub(r"[^A-Za-z0-9.-]", "-", name)
     return f"SPDXRef-Package-{safe_name}-{digest}"
 
 
-def parse_dependency_spec(value: str) -> tuple[str, str | None, str | None]:
-    if not isinstance(value, str) or not value:
-        raise ValueError("Cargo.lock dependency entry must be a non-empty string")
-    match = DEPENDENCY_SPEC.fullmatch(value)
-    if match is None:
-        raise ValueError(f"unsupported Cargo.lock dependency syntax: {value!r}")
-    return match.group("name"), match.group("version"), match.group("source")
-
-
-def resolve_dependency(
-    packages_by_name: dict[str, list[dict]], dependency: str
-) -> dict:
-    name, version, source = parse_dependency_spec(dependency)
-    candidates = list(packages_by_name.get(name, ()))
-    if version is not None:
-        candidates = [
-            package for package in candidates if package_identity(package)[1] == version
-        ]
-    if source is not None:
-        candidates = [
-            package for package in candidates if package_identity(package)[2] == source
-        ]
-    if len(candidates) != 1:
-        identities = [package_identity(package) for package in candidates]
-        raise ValueError(
-            f"Cargo.lock dependency {dependency!r} resolved to {len(candidates)} package records: {identities!r}"
-        )
-    return candidates[0]
-
-
 def purl_for(package: dict) -> str:
-    name, version, _source = package_identity(package)
+    name, version, _source = lock_package_identity(package)
     return f"pkg:cargo/{quote(name, safe='-._~')}@{quote(version, safe='-._~')}"
 
 
 def spdx_package(package: dict) -> dict:
-    name, version, source = package_identity(package)
+    name, version, source = lock_package_identity(package)
     result = {
         "SPDXID": spdx_id_for(package),
         "name": name,
@@ -140,26 +140,197 @@ def spdx_created_from_epoch(value: str | int) -> str:
     return instant.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def build_spdx_document(lock_data: dict, tag: str, created: str) -> dict:
-    version = release_tool.check_tag(tag)
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", created):
-        raise ValueError("SPDX creation timestamp must use UTC YYYY-MM-DDThh:mm:ssZ format")
+def run_cargo_metadata(target: str) -> dict:
+    target = validate_target(target)
+    command = [
+        "cargo",
+        "metadata",
+        "--format-version",
+        "1",
+        "--locked",
+        "--filter-platform",
+        target,
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr[-8192:].decode("utf-8", errors="replace")
+        raise ValueError(
+            f"cargo metadata failed for target {target!r} with exit code {completed.returncode}: {stderr.strip()}"
+        )
+    if len(completed.stdout) > MAX_METADATA_BYTES:
+        raise ValueError("cargo metadata output exceeds the 16 MiB safety limit")
+    try:
+        data = json.loads(completed.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("cargo metadata did not return valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError("cargo metadata root must be a JSON object")
+    return data
 
+
+def _metadata_indexes(metadata: dict) -> tuple[dict[str, dict], dict[str, dict]]:
+    packages = metadata.get("packages")
+    resolve = metadata.get("resolve")
+    if not isinstance(packages, list) or not packages:
+        raise ValueError("cargo metadata contains no packages")
+    if not isinstance(resolve, dict):
+        raise ValueError("cargo metadata is missing the resolved dependency graph")
+    nodes = resolve.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise ValueError("cargo metadata resolve graph contains no nodes")
+
+    packages_by_id: dict[str, dict] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("cargo metadata package entry must be an object")
+        package_id = package.get("id")
+        if not isinstance(package_id, str) or not package_id:
+            raise ValueError("cargo metadata package has an invalid package id")
+        metadata_package_identity(package)
+        if package_id in packages_by_id:
+            raise ValueError(f"cargo metadata contains duplicate package id {package_id!r}")
+        packages_by_id[package_id] = package
+
+    nodes_by_id: dict[str, dict] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ValueError("cargo metadata resolve node must be an object")
+        package_id = node.get("id")
+        if not isinstance(package_id, str) or package_id not in packages_by_id:
+            raise ValueError("cargo metadata resolve node references an unknown package id")
+        if package_id in nodes_by_id:
+            raise ValueError(f"cargo metadata contains duplicate resolve node {package_id!r}")
+        nodes_by_id[package_id] = node
+    return packages_by_id, nodes_by_id
+
+
+def release_graph(metadata: dict) -> tuple[set[str], set[tuple[str, str, str]]]:
+    packages_by_id, nodes_by_id = _metadata_indexes(metadata)
+    workspace_members = metadata.get("workspace_members")
+    if not isinstance(workspace_members, list):
+        raise ValueError("cargo metadata workspace_members must be a list")
+    if any(not isinstance(item, str) for item in workspace_members):
+        raise ValueError("cargo metadata workspace member id must be a string")
+    if len(workspace_members) != len(set(workspace_members)):
+        raise ValueError("cargo metadata contains duplicate workspace member ids")
+    if len(workspace_members) != len(release_tool.LOCAL_PACKAGES):
+        raise ValueError("cargo metadata workspace member count changed")
+    if any(package_id not in packages_by_id for package_id in workspace_members):
+        raise ValueError("cargo metadata workspace member references an unknown package id")
+
+    workspace_names = {
+        packages_by_id[package_id].get("name") for package_id in workspace_members
+    }
+    if workspace_names != set(release_tool.LOCAL_PACKAGES):
+        raise ValueError(
+            f"cargo metadata workspace package set changed: {workspace_names!r}"
+        )
+    cli_roots = [
+        package_id
+        for package_id in workspace_members
+        if packages_by_id[package_id].get("name") == "kaduox-ssh-cli"
+    ]
+    if len(cli_roots) != 1:
+        raise ValueError("cargo metadata must contain exactly one kaduox-ssh-cli workspace package")
+
+    reachable: set[str] = set()
+    relationships: set[tuple[str, str, str]] = set()
+    pending = deque(cli_roots)
+    while pending:
+        package_id = pending.popleft()
+        if package_id in reachable:
+            continue
+        node = nodes_by_id.get(package_id)
+        if node is None:
+            raise ValueError(f"cargo metadata is missing resolve node for {package_id!r}")
+        reachable.add(package_id)
+        deps = node.get("deps")
+        if not isinstance(deps, list):
+            raise ValueError(f"cargo metadata node {package_id!r} has invalid deps")
+        for dep in deps:
+            if not isinstance(dep, dict):
+                raise ValueError("cargo metadata dependency edge must be an object")
+            dep_id = dep.get("pkg")
+            dep_kinds = dep.get("dep_kinds")
+            if not isinstance(dep_id, str) or dep_id not in packages_by_id:
+                raise ValueError("cargo metadata dependency edge references an unknown package")
+            if not isinstance(dep_kinds, list) or not dep_kinds:
+                raise ValueError("cargo metadata dependency edge has no dependency kinds")
+
+            kinds: set[str | None] = set()
+            for item in dep_kinds:
+                if not isinstance(item, dict):
+                    raise ValueError("cargo metadata dependency kind must be an object")
+                kind = item.get("kind")
+                if kind not in {None, "build", "dev"}:
+                    raise ValueError(f"unsupported Cargo dependency kind {kind!r}")
+                kinds.add(kind)
+            if kinds <= {"dev"}:
+                continue
+            if None in kinds:
+                relationships.add((package_id, "DEPENDS_ON", dep_id))
+            if "build" in kinds:
+                relationships.add((dep_id, "BUILD_DEPENDENCY_OF", package_id))
+            pending.append(dep_id)
+
+    return reachable, relationships
+
+
+def _lock_packages_by_identity(lock_data: dict) -> dict[tuple[str, str, str], dict]:
     packages = lock_data.get("package")
     if not isinstance(packages, list) or not packages:
         raise ValueError("Cargo.lock contains no package records")
+    indexed: dict[tuple[str, str, str], dict] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("Cargo.lock package entry must be an object")
+        identity = lock_package_identity(package)
+        if identity in indexed:
+            raise ValueError(f"Cargo.lock contains duplicate package identity {identity!r}")
+        indexed[identity] = package
+    return indexed
 
-    validated = list(packages)
-    validated.sort(key=package_identity)
-    identities = [package_identity(package) for package in validated]
-    if len(identities) != len(set(identities)):
-        raise ValueError("Cargo.lock contains duplicate package identity records")
 
-    packages_by_name: dict[str, list[dict]] = {}
-    for package in validated:
-        name, _version, _source = package_identity(package)
-        packages_by_name.setdefault(name, []).append(package)
+def build_spdx_document(
+    lock_data: dict,
+    metadata: dict,
+    tag: str,
+    target: str,
+    created: str,
+) -> dict:
+    version = release_tool.check_tag(tag)
+    target = validate_target(target)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", created):
+        raise ValueError("SPDX creation timestamp must use UTC YYYY-MM-DDThh:mm:ssZ format")
 
+    packages_by_id, _nodes_by_id = _metadata_indexes(metadata)
+    reachable, metadata_relationships = release_graph(metadata)
+    lock_by_identity = _lock_packages_by_identity(lock_data)
+
+    reachable_identities = [
+        metadata_package_identity(packages_by_id[package_id])
+        for package_id in sorted(reachable)
+    ]
+    if len(reachable_identities) != len(set(reachable_identities)):
+        raise ValueError("target-resolved Cargo graph contains duplicate package identities")
+
+    lock_for_metadata_id: dict[str, dict] = {}
+    for package_id in sorted(reachable):
+        identity = metadata_package_identity(packages_by_id[package_id])
+        package = lock_by_identity.get(identity)
+        if package is None:
+            raise ValueError(
+                f"target-resolved Cargo package {identity!r} is missing from Cargo.lock"
+            )
+        lock_for_metadata_id[package_id] = package
+
+    ordered_lock_packages = sorted(lock_for_metadata_id.values(), key=lock_package_identity)
     root_spdx_id = "SPDXRef-Kaduox-SSH-Release"
     spdx_packages = [
         {
@@ -172,49 +343,61 @@ def build_spdx_document(lock_data: dict, tag: str, created: str) -> dict:
             "licenseDeclared": "NOASSERTION",
             "copyrightText": "NOASSERTION",
             "primaryPackagePurpose": "APPLICATION",
+            "comment": f"Cargo release target: {target}",
         }
     ]
-    spdx_packages.extend(spdx_package(package) for package in validated)
+    spdx_packages.extend(spdx_package(package) for package in ordered_lock_packages)
 
     relationships: set[tuple[str, str, str]] = {
         ("SPDXRef-DOCUMENT", "DESCRIBES", root_spdx_id)
     }
-    local_ids = []
-    for package in validated:
-        name, _version, source = package_identity(package)
-        package_id = spdx_id_for(package)
-        if not source and name in release_tool.LOCAL_PACKAGES:
-            local_ids.append(package_id)
-        dependencies = package.get("dependencies", [])
-        if not isinstance(dependencies, list):
-            raise ValueError(f"Cargo.lock package {name!r} has non-list dependencies")
-        for dependency in dependencies:
-            resolved = resolve_dependency(packages_by_name, dependency)
-            relationships.add((package_id, "DEPENDS_ON", spdx_id_for(resolved)))
+    for source_id, relationship, destination_id in metadata_relationships:
+        relationships.add(
+            (
+                spdx_id_for(lock_for_metadata_id[source_id]),
+                relationship,
+                spdx_id_for(lock_for_metadata_id[destination_id]),
+            )
+        )
 
-    if len(local_ids) != len(release_tool.LOCAL_PACKAGES):
-        raise ValueError("Cargo.lock SBOM could not identify every local Kaduox package")
-    for package_id in sorted(local_ids):
-        relationships.add((root_spdx_id, "DEPENDS_ON", package_id))
+    cli_ids = [
+        package_id
+        for package_id, package in packages_by_id.items()
+        if package_id in reachable and package.get("name") == "kaduox-ssh-cli"
+    ]
+    if len(cli_ids) != 1:
+        raise ValueError("target SBOM graph must contain exactly one kaduox-ssh-cli root")
+    relationships.add(
+        (root_spdx_id, "DEPENDS_ON", spdx_id_for(lock_for_metadata_id[cli_ids[0]]))
+    )
+
+    local_names = {
+        lock_package_identity(package)[0]
+        for package in ordered_lock_packages
+        if lock_package_identity(package)[2] == ""
+    }
+    if not set(release_tool.LOCAL_PACKAGES).issubset(local_names):
+        raise ValueError("target SBOM graph does not contain every local Kaduox package")
 
     namespace = (
         "https://github.com/kaduoxzero/Kaduox-SSH/sbom/"
-        f"{quote(tag, safe='-._~')}/cargo-lock"
+        f"{quote(tag, safe='-._~')}/{quote(target, safe='-._~')}/cargo-metadata"
     )
     return {
         "spdxVersion": SPDX_VERSION,
         "dataLicense": SPDX_DATA_LICENSE,
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": f"Kaduox-SSH-{version}-Cargo.lock",
+        "name": f"Kaduox-SSH-{version}-{target}-Cargo-metadata",
         "documentNamespace": namespace,
         "creationInfo": {
             "created": created,
             "creators": ["Tool: Kaduox-SSH scripts/release/sbom_tool.py"],
             "comment": (
-                "The timestamp is derived from the tagged source commit for reproducible output. "
-                "This document inventories the resolved Cargo.lock graph; Cargo.lock is not a "
-                "target-pruned record, so target-specific packages may be listed even when they "
-                "are not present in every platform binary."
+                f"Target-specific Cargo dependency/build-material graph for {target}. "
+                "The graph is generated with cargo metadata --locked --filter-platform for this "
+                "release target; dev-only dependency edges are excluded, normal dependencies use "
+                "DEPENDS_ON, and build dependencies use BUILD_DEPENDENCY_OF. The creation timestamp "
+                "is derived from the tagged source commit for reproducible output."
             ),
         },
         "packages": spdx_packages,
@@ -238,14 +421,18 @@ def render_spdx(document: dict) -> str:
 
 def generate_sbom(
     tag: str,
+    target: str,
     output_dir: Path,
     source_date_epoch: str | int = DEFAULT_SOURCE_DATE_EPOCH,
+    metadata: dict | None = None,
 ) -> Path:
     version = release_tool.check_tag(tag)
+    target = validate_target(target)
     created = spdx_created_from_epoch(source_date_epoch)
-    document = build_spdx_document(load_lock(), tag, created)
+    metadata = metadata if metadata is not None else run_cargo_metadata(target)
+    document = build_spdx_document(load_lock(), metadata, tag, target, created)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / f"kaduox-ssh-{version}.spdx.json"
+    output = output_dir / f"kaduox-ssh-{version}-{target}.spdx.json"
     release_tool.write_text_safely(output, render_spdx(document))
     return output
 
@@ -253,6 +440,7 @@ def generate_sbom(
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--tag", required=True)
+    root.add_argument("--target", required=True, choices=RELEASE_TARGETS)
     root.add_argument("--source-date-epoch", default=str(DEFAULT_SOURCE_DATE_EPOCH))
     root.add_argument("--output-dir", default="dist")
     return root
@@ -263,6 +451,7 @@ def main() -> int:
     try:
         output = generate_sbom(
             args.tag,
+            args.target,
             Path(args.output_dir).resolve(),
             args.source_date_epoch,
         )

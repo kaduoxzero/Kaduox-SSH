@@ -41,6 +41,8 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - committed `Cargo.lock` with `--locked` builds
 - on-demand real-OpenSSH performance benchmark harness
 - deterministic four-suite release packaging with per-binary manifests and SHA-256 archive checksums
+- stable Windows Authenticode signing plus macOS Developer ID signing/notarization
+- four target-specific SPDX 2.3 SBOMs with stable-release provenance and archive-to-SBOM attestation policy
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
@@ -207,6 +209,8 @@ CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 
 
 The repository's GitHub-hosted jobs are currently failing before any workflow step executes (`steps=null` and no usable job logs). Therefore candidate branches are **not** claimed to have passed CI, and promotion to `develop`/`main` remains blocked until those jobs actually acquire runners and execute successfully.
 
+Stable releases require native Windows/macOS signing and now produce four target-specific SPDX files. Stable publication also requires the four-target GitHub attestation matrix; pre-releases may opt into the same attestation path. Published-release qualification verifies the eight checksummed primary assets, target-SBOM identity, native signatures, packaged binary versions, and the real Linux OpenSSH path.
+
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
 ## Branch model
@@ -225,7 +229,6 @@ Some features are deliberately not enabled until they can be implemented complet
 - hashed `@cert-authority` / `@revoked` marker matching and RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
 - encrypted persistent credential storage and its key-management model;
 - cross-process ControlMaster-style reuse through a local daemon/IPC protocol;
-- explicit symbolic-link transfer/sync policy;
-- final operator provenance/attestation and target-specific SBOM policy beyond the current release checks.
+- explicit symbolic-link transfer/sync policy.
 
 See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
