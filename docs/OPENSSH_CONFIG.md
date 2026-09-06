@@ -1,9 +1,9 @@
 # OpenSSH client configuration compatibility
 
 Kaduox-SSH resolves `~/.ssh/config` before opening a transport. Configuration
-resolution is a security boundary: when Kaduox-SSH cannot preserve the
-relevant OpenSSH meaning, it returns an error instead of silently falling back
-to a direct/default connection.
+resolution is a security boundary: when Kaduox-SSH cannot preserve the relevant
+OpenSSH meaning, it returns an error instead of silently falling back to a
+direct/default connection.
 
 ## Host-scoped settings
 
@@ -12,19 +12,23 @@ Kaduox-SSH, including `HostName`, `User`, `Port`, `IdentityFile`,
 `UserKnownHostsFile`, `ProxyCommand`, `ProxyJump`, and
 `StrictHostKeyChecking`'s boolean representation.
 
-OpenSSH's first-obtained-value behavior is preserved by keeping configuration
-order intact. Kaduox-SSH also represents the implicit global scope before the
-first `Host` as an internal `Host *` scope so ordinary top-level defaults are
-not discarded by the downstream host-only parser.
+OpenSSH's first-obtained-value behavior is preserved by processing configuration
+in lexical order. The connection resolver is target-specific: it evaluates
+structural `Host` / supported `Match` state for the original lookup alias and
+flattens only effective options into an internal `Host *` stream before handing
+the result to `russh-config`.
 
 ## Include support
 
-v0.14 expands a bounded, explicitly defined subset of OpenSSH `Include`
-before handing configuration to `russh-config`.
+v0.14 introduced a bounded, explicitly defined subset of OpenSSH `Include`.
+v0.28 moves connection resolution to a host-aware scope machine so Include can
+be combined with the supported Match subset without allowing an included file
+to escape the caller's inactive scope.
 
 Supported behavior:
 
-- `Include` may appear in the global scope or inside a `Host` block;
+- `Include` may appear in the global scope or inside a `Host` or supported
+  `Match` block;
 - multiple include path arguments on one line;
 - single-quoted and double-quoted paths plus backslash escaping;
 - absolute paths;
@@ -33,18 +37,66 @@ Supported behavior:
 - `*` and `?` pathname wildcards;
 - wildcard matches processed in deterministic lexical order;
 - unmatched wildcard/literal paths are ignored;
-- a leading `.` in a filename must be matched by an explicit leading `.` in
-  the pattern, so `Include conf.d/*` cannot unexpectedly load
-  `conf.d/.hidden`;
+- a leading `.` in a filename must be matched by an explicit leading `.` in the
+  pattern, so `Include conf.d/*` cannot unexpectedly load `conf.d/.hidden`;
 - nested includes;
-- restoration of the containing global/`Host` scope after every included
-  file, so a `Host` block inside an included file cannot capture declarations
-  that follow the `Include` in its parent file;
+- restoration of the containing file's active Host/Match state after every
+  included file;
+- an Include reached from an inactive Host/Match scope is still opened,
+  trust-checked, cycle/budget checked, and parsed for supported structural and
+  ordinary option syntax, but Host/Match declarations inside it cannot
+  reactivate options for the current target;
 - host-catalog discovery across the same bounded include graph, so aliases in
   included files appear in the TUI/OpenSSH host picker.
 
+This last inactive-scope rule is security-sensitive. OpenSSH parses an included
+file with a never-match flag when the caller is inactive. v0.28 mirrors that
+property instead of simply inlining the child's Host blocks, which could
+otherwise allow a child `Host <target>` to become active even though the
+containing parent block did not match.
+
 The implementation intentionally has no shell invocation and performs no
 command substitution.
+
+## Supported Match subset
+
+v0.19 introduced a deliberately narrow Match evaluator for trusted user config.
+v0.28 integrates that same subset with Include; it does **not** broaden the set
+of accepted Match criteria.
+
+Supported forms are:
+
+```text
+Match all
+Match originalhost <pattern-list>
+```
+
+`originalhost` is evaluated against the lookup alias before `HostName` rewriting.
+Its pattern list is ASCII case-insensitive, comma-separated, supports `*` and
+`?`, and honors leading `!` negated subpatterns. Evaluation is bounded by the
+existing Match argument and pattern-size limits.
+
+A matching block participates in normal first-obtained-value ordering. A
+non-matching block is parse-only for this target. Includes nested under either
+state retain the caller's active/never-match status and the parent state is
+restored after the included file returns.
+
+The following Match semantics remain fail-closed rather than approximated:
+
+- `canonical` / `final` passes;
+- `exec`;
+- `localnetwork`;
+- `host`;
+- `tagged`;
+- `command`;
+- `user` / `localuser`;
+- `version`;
+- combined criteria;
+- criterion negation and `criterion=value` forms;
+- quoted or backslash-escaped Match arguments.
+
+These require additional runtime/configuration context or parsing semantics and
+must not be treated as aliases for the supported `originalhost` subset.
 
 ## User-config trust checks
 
@@ -85,8 +137,8 @@ the same read boundary:
 - ordinary `ACCESS_ALLOWED_ACE` entries for the trusted SIDs above are allowed;
 - an otherwise-untrusted principal may retain read-only access, matching the
   `read_ok=1` policy Win32-OpenSSH applies to user configuration;
-- an otherwise-untrusted principal is rejected if its allow ACE contains any
-  of `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`,
+- an otherwise-untrusted principal is rejected if its allow ACE contains any of
+  `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`,
   `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER`,
   `GENERIC_WRITE`, or `GENERIC_ALL`;
 - the variable-length SID in every standard allow ACE must fit completely
@@ -97,14 +149,13 @@ the same read boundary:
 
 Win32-OpenSSH also contains a reverse-account-name compatibility exception for
 SIDHistory entries that resolve to the same account. Kaduox-SSH intentionally
-does not broaden trust through account-name equivalence in v0.26: distinct SIDs
-remain distinct principals. This is stricter than that compatibility exception
-and avoids turning name resolution into an additional authorization boundary.
+does not broaden trust through account-name equivalence: distinct SIDs remain
+distinct principals.
 
-Configuration reads are also bounded before allocation: one physical config
-file is read through a 4 MiB + 1 byte probe and rejected if it exceeds 4 MiB.
-The Include expansion layer separately enforces its 4 MiB cumulative input and
-expanded-output budgets.
+Configuration reads are bounded before allocation: one physical config file is
+read through a 4 MiB + 1 byte probe and rejected if it exceeds 4 MiB. The Include
+expansion layer separately enforces its 4 MiB cumulative input and expanded
+output budgets.
 
 ## Include limits
 
@@ -137,23 +188,9 @@ treating them as literal paths:
 These can be added only when their OpenSSH behavior is reproduced and covered
 by fixtures on the supported platforms.
 
-## Match remains unsupported for connection resolution
-
-`Match` is not equivalent to a second spelling of `Host`. Modern OpenSSH can
-condition it on criteria such as host/original host, user/local user,
-canonical/final pass, command/session context, `exec`, local network, tags,
-and version. Evaluating only a subset can apply credentials, proxy routes, or
-host-key settings to the wrong destination.
-
-Therefore every `Match` encountered in the root config or any included file
-causes connection resolution to fail before transport creation. The host
-catalog is read-only: it may still list concrete `Host` aliases from the
-expanded include graph while marking the catalog as containing unsupported
-structural configuration.
-
 ## Host-key and host-certificate trust boundary
 
-v0.16 adds a separate fail-closed policy layer for clear-text `known_hosts`
+v0.16 adds a separate fail-closed policy layer for `known_hosts`
 `@cert-authority` and `@revoked` markers while preserving Russh's existing
 ordinary unmarked host-key verification path.
 
@@ -161,13 +198,13 @@ Certificate algorithms are not advertised by default. Kaduox-SSH enables
 certificate variants only when the effective `UserKnownHostsFile` contains a
 matching `@cert-authority` for the specific target and host-key policy is not
 `insecure`. This decision is made separately for the final target and every
-ProxyJump hop. RSA host-key algorithms remain excluded by the existing
-hardening policy, so RSA host-certificate variants are not advertised either.
+ProxyJump hop. RSA host-key algorithms remain excluded by the existing hardening
+policy, so RSA host-certificate variants are not advertised either.
 
-A presented certificate is accepted only if it is a Host certificate, is
-signed by one of the target's matching authorities, has a valid signature and
-current validity interval, has no unsupported critical options, and either has
-no principal restriction or contains a hostname principal matching the target.
+A presented certificate is accepted only if it is a Host certificate, is signed
+by one of the target's matching authorities, has a valid signature and current
+validity interval, has no unsupported critical options, and either has no
+principal restriction or contains a hostname principal matching the target.
 Certificate principals use the hostname itself, not the non-default-port
 `[host]:port` known-hosts representation. `*` and `?` principal wildcards are
 supported.
@@ -178,31 +215,34 @@ certified subject key and the signing CA are checked for revocation. A
 certificate validation failure is never downgraded to ordinary embedded-key
 verification.
 
-The v0.16 marker-policy reader supports comma-separated clear-text patterns,
-`*`, `?`, `!` negation, ASCII case-insensitive matching, and OpenSSH
-`[host]:port` formatting for non-default ports. Reads are bounded to 8 MiB.
-Hashed marker patterns (`|1|...`) are intentionally rejected rather than
-silently dropping CA/revocation policy. Ordinary unmarked hashed known-hosts
-entries continue through Russh's existing ordinary host-key path.
+Marker host patterns support comma-separated clear-text patterns, `*`, `?`, `!`
+negation, ASCII case-insensitive clear-text matching, and OpenSSH `[host]:port`
+formatting for non-default ports. OpenSSH hashed marker host names
+(`|1|base64-salt|base64-hmac-sha1`) are also supported: the exact effective
+known-hosts target bytes are checked with HMAC-SHA1, including the bracketed
+non-default-port representation. Hashed names are therefore exact hashes rather
+than case-folded wildcard patterns. Reads are bounded to 8 MiB.
 
 See `HOST_CERTIFICATES.md` for the detailed certificate contract and current
 limits.
 
 ## Validation boundary
 
-Unit coverage includes include ordering, global/Host scope restoration, nested
-cycles, hidden-file wildcard behavior, unsupported expansion rejection,
-catalog discovery, regular-file enforcement, accepted Unix 0600/0640/0644
-modes, rejected group/other-writable modes, an insecure nested Include fixture,
+Unit coverage includes Include ordering, global/Host scope restoration, inactive
+Host/Match Include non-reactivation, supported Match+Include resolution,
+inactive ordinary-option syntax validation, unsupported Match rejection, nested
+cycles, hidden-file wildcard behavior, unsupported expansion rejection, catalog
+discovery, regular-file enforcement, accepted Unix 0600/0640/0644 modes,
+rejected group/other-writable modes, an insecure nested Include fixture,
 oversized single-file rejection, Windows read-only/untrusted-write ACL cases,
-marker host-pattern matching, CA/revocation classification, and
+clear and hashed marker host-pattern matching, CA/revocation classification, and
 certificate-principal matching.
 
-The real OpenSSH workflow also contains a v0.16 host-certificate fixture that
-creates an Ed25519 CA and `HostCertificate` with `ssh-keygen`/`sshd`, then tests
+The real OpenSSH workflow also contains a host-certificate fixture that creates
+an Ed25519 CA and `HostCertificate` with `ssh-keygen`/`sshd`, then tests
 trusted-CA success, principal mismatch, revoked CA rejection, and ordinary
 host-key revocation overriding explicit insecure policy.
 
 Candidate promotion still requires the repository's real CI, Clippy, audit,
-release-policy, and OpenSSH jobs to acquire runners and execute; a workflow
-that ends with no steps executed is not considered validation.
+release-policy, and OpenSSH jobs to acquire runners and execute; a workflow that
+ends with no steps executed is not considered validation.
