@@ -8,7 +8,7 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 
 - SSH 远程连接、命令执行与交互式 PTY Shell
 - OpenSSH `~/.ssh/config` Host 解析，以及受限、fail-closed 的用户配置 `Include` 展开
-- Unix OpenSSH 用户配置 owner/mode 校验，并把 metadata 校验与读取绑定到同一个已打开文件描述符
+- 跨平台 OpenSSH 用户配置可信校验：Unix 使用 uid/mode，Windows 使用 owner/DACL，并且都绑定到后续实际读取的同一个已打开文件对象
 - 基于当前目标匹配的明文 `known_hosts` `@cert-authority` 进行 OpenSSH Host Certificate 验证
 - 对普通主机密钥、证书 subject key 和证书签发 CA 执行明文 `@revoked` 吊销检查
 - ProxyJump 链与 ProxyCommand 传输
@@ -60,7 +60,7 @@ Kaduox-SSH 会从 `~/.ssh/config` 解析受支持的 `HostName`、`User`、`Port
 
 v0.14 新增受控 `Include` 展开，包括全局/`Host` 作用域、一行多路径、引号/转义、绝对路径、相对 `~/.ssh`、当前用户 `~/...`、`*`/`?`、lexical 顺序、嵌套 Include、隐藏文件规则，以及每个 included 文件结束后恢复父 global/`Host` 作用域。Host catalog 使用同一 Include 图。
 
-v0.15 把根配置和所有嵌套 Include 统一放到同一配置文件信任边界。Unix 上要求实际打开文件为 regular file、owner 为当前进程 real uid 或 root、group/other 不可写；metadata 校验和解析读取使用同一个已打开 fd，避免独立 stat/read 的路径 TOCTOU。Windows 当前仍只要求 regular file，NTFS ACL 与 OpenSSH 等价校验仍是 V1 前工作。
+v0.15 把根配置和所有嵌套 Include 统一放到同一配置文件信任边界。Unix 上要求实际打开文件为 regular file、owner 为当前进程 real uid 或 root、group/other 不可写；metadata 校验和解析读取使用同一个已打开 fd，避免独立 stat/read 的路径 TOCTOU。v0.26 把同一原则扩展到 Windows：owner/DACL 从已经打开的文件 HANDLE 获取，非受信主体的写权限 Allow ACE 会被拒绝，其他主体的只读访问仍允许，复杂 allow ACE 则 fail-closed 而不是做不完整近似。
 
 v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语义：
 
@@ -81,7 +81,7 @@ v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语�
 - Include 最大 16 层、256 个处理文件、4 MiB 配置预算、单行 64 个路径、单路径 16 KiB、单 wildcard component 1024 bytes，并检测循环 include；
 - hashed `@cert-authority` / `@revoked` marker host pattern（`|1|...`）当前明确拒绝，不会静默忽略 CA/吊销策略；普通未带 marker 的 hashed known_hosts 继续走 Russh 原有普通 host-key 路径；
 - RSA Host Certificate 与 RSA CA/证书签名兼容性当前不宣称支持；
-- Windows 用户配置 ACL 与 OpenSSH 等价校验仍未实现；
+- Windows SIDHistory 账户名等价兼容性有意比 Win32-OpenSSH 更严格：不同 SID 始终按不同主体处理，不会因反向解析得到相同账户名而扩展信任；
 - 上游解析器只以布尔值暴露 `StrictHostKeyChecking`，需要精确行为时请使用 `--host-key strict`、`--host-key accept-new` 或 `--host-key insecure`。
 
 完整契约见 `docs/OPENSSH_CONFIG.md` 和 `docs/HOST_CERTIFICATES.md`。
@@ -170,7 +170,7 @@ v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed2551
 
 当前 GitHub-hosted job 仍在任何 workflow step 执行前失败（历史状态为 `steps=null`，没有可用 job log）。因此 candidate **不能宣称 CI 已通过**，也不会在这种状态下晋升到 `develop` 或 `main`。每个新 candidate HEAD 仍需重新检查实际 job 执行情况。
 
-v0.13 起的 release pipeline 会构建 Linux x86_64、macOS Intel、macOS Apple Silicon、Windows x86_64 四套完整包，每套包含四个前端，并生成 manifest 和 `SHA256SUMS`。平台代码签名/公证仍属于 V1 前发行安全工作。
+v0.13 起的 release pipeline 会构建 Linux x86_64、macOS Intel、macOS Apple Silicon、Windows x86_64 四套完整包，每套包含四个前端，并生成 manifest 和 `SHA256SUMS`。v0.25 已把 Windows Authenticode 与 macOS Developer ID/notarization 纳入稳定版发布门禁；发布后资格校验仍会针对已发布资产重新验证其完整性与原生签名状态。
 
 ## 分支模型
 
@@ -183,10 +183,10 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 ## 尚未完成的安全敏感能力
 
 - 完整 `Match` 计算，以及剩余 Include token/环境变量/`~user`/完整 glob；
-- hashed `@cert-authority` / `@revoked` marker 匹配、Windows ACL 等价配置信任，以及 RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
+- hashed `@cert-authority` / `@revoked` marker 匹配，以及 RSA 安全依赖恢复后的 RSA Host Certificate/CA 兼容；
 - 加密持久凭据存储及密钥管理模型；
 - 通过本地 daemon/IPC 实现跨进程 ControlMaster 风格连接复用；
 - 显式符号链接传输/同步策略；
-- Windows Authenticode、macOS Developer ID/notarization 和最终 provenance/SBOM 策略。
+- 当前发布检查之外的最终 operator provenance/attestation 与 target-specific SBOM 策略。
 
 更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/HOST_CERTIFICATES.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。
