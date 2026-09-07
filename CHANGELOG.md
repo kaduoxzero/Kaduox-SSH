@@ -10,6 +10,8 @@ This candidate integrates the v0.16–v0.33 development lines and the daemon/hos
 
 ### Added
 
+- OS credential-store login-password persistence (`kssh credentials set/check/delete`) backed by Windows Credential Manager, macOS Keychain, or Linux Secret Service; when no explicit auth flag is given, a stored password is used before default identity discovery. Kaduox-SSH never writes passwords to its own files;
+- `kssh completions <bash|zsh|fish|powershell|elvish>` shell completion generation;
 - `kaduox-ssh-hosts` crate: atomic private TOML host database with aliases, recent-use ordering, strict codec validation, and transactional OpenSSH `Host` import; `kssh hosts` CRUD subcommands;
 - named jump chains with ordered hop resolution (`kssh chains`) and interactive per-hop authentication;
 - `kaduox-ssh-daemon` crate and `kssh-daemon` binary: per-user local IPC connection-reuse daemon with a bounded framed protocol, endpoint singleton/stale-socket handling, and platform peer identity verification; `kssh` exec/shell attempt daemon reuse before direct connection fallback;

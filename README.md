@@ -39,6 +39,8 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - `kssh-inventory` offline inventory validation, listing, and group expansion
 - persistent private host library with host aliases, recent-use ordering, and named jump chains (`kssh hosts`, `kssh chains`)
 - `kssh-daemon` per-user local IPC connection-reuse daemon; `kssh` reuses authenticated transports through it before falling back to a direct connection, with per-hop interactive jump authentication bridged over the private IPC channel
+- optional login-password persistence in the operating system credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service) via `kssh credentials set/check/delete`; Kaduox-SSH never writes passwords to its own files
+- shell completion scripts for bash/zsh/fish/powershell/elvish via `kssh completions <shell>`
 - real OpenSSH protocol integration fixtures, including fleet and Host Certificate coverage
 - Linux/macOS/Windows CI, Rust 1.85 MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates
 - committed `Cargo.lock` with `--locked` builds
@@ -245,7 +247,7 @@ Some features are deliberately not enabled until they can be implemented complet
 
 - complete OpenSSH `Match` evaluation beyond the bounded `all` / `originalhost` subset, plus the remaining named Include percent tokens/`~user`/full-glob semantics;
 - RSA Host Certificate/CA compatibility if the RSA dependency path becomes safe;
-- encrypted persistent credential storage and its key-management model;
+- Kaduox-SSH-managed encrypted credential files with a custom key-management model (the OS credential store integration covers the common persistence case);
 - symbolic-link follow/preserve transfer/sync semantics with bounded cycle, escape, and cross-platform target handling.
 
 See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.

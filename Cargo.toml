@@ -18,6 +18,10 @@ repository = "https://github.com/kaduoxzero/Kaduox-SSH"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
+# keyring ships no default platform backend; enable each OS credential store
+# explicitly (Windows Credential Manager, macOS Keychain, Linux Secret Service)
+# or every entry silently degrades to the in-memory mock store.
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 crossterm = "0.29"
 hmac = "0.13"
 rpassword = "7.4"

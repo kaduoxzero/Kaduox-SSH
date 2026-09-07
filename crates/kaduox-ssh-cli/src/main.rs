@@ -1,5 +1,6 @@
 mod chains_cli;
 mod completions_cli;
+mod credentials_cli;
 mod daemon_cli;
 mod host_picker;
 mod hosts_cli;
@@ -272,6 +273,12 @@ async fn main() -> Result<()> {
         .is_some_and(|value| value.as_os_str() == OsStr::new("completions"))
     {
         return completions_cli::run(raw_args.drain(2..));
+    }
+    if raw_args
+        .get(1)
+        .is_some_and(|value| value.as_os_str() == OsStr::new("credentials"))
+    {
+        return credentials_cli::run(raw_args.drain(2..));
     }
     if raw_args.len() == 1 {
         raw_args.push(OsString::from(host_picker::pick_default_host()?));
@@ -600,6 +607,14 @@ fn resolve_authentication(cli: &Cli, config: &ConnectionConfig) -> Result<Authen
             path: path.clone(),
             passphrase,
         });
+    }
+    // Fall back to a password the operator explicitly stored in the OS
+    // credential store (`kssh credentials set`) before default-identity
+    // discovery.
+    if let Some(password) =
+        credentials_cli::stored_password(&config.username, &config.host, config.port)
+    {
+        return Ok(Authentication::Password(password));
     }
     Ok(Authentication::Auto {
         identity_files: config.identity_files.clone(),
