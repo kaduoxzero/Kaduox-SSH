@@ -19,11 +19,24 @@ mkdir -p "$WORK"
 chmod 700 "$WORK"
 
 PIDS=()
+
+stop_pid() {
+  local pid="$1"
+  local child
+
+  # Background function jobs can leave the actual kssh child orphaned when
+  # only the shell wrapper is terminated. Drain the process tree first.
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    stop_pid "$child"
+  done
+  sudo kill "$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   set +e
   for pid in "${PIDS[@]:-}"; do
-    sudo kill "$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    stop_pid "$pid"
   done
   if [[ -n "${SSH_AGENT_PID:-}" ]]; then
     ssh-agent -k >/dev/null 2>&1 || true
@@ -55,12 +68,6 @@ wait_for_port() {
     sleep 0.1
   done
   return 1
-}
-
-stop_pid() {
-  local pid="$1"
-  sudo kill "$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
 }
 
 start_sshd() {
