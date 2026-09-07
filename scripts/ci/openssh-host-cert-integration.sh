@@ -47,8 +47,35 @@ wait_for_port() {
 
 hash_known_hosts_file() {
   local path="$1"
-  ssh-keygen -q -H -f "$path"
-  rm -f "$path.old"
+  local temp
+  local hashed
+  local line
+  local marker
+  local host
+  local key_data
+  local hashed_line
+  local hashed_host
+  local hashed_key_data
+
+  # OpenSSH intentionally leaves security-marker lines unchanged when -H is
+  # used. Hash the host-pattern field as an ordinary entry, then restore the
+  # marker so the fixture exercises hashed @cert-authority/@revoked entries.
+  temp="$(mktemp "${path}.plain.XXXXXX")"
+  hashed="$(mktemp "${path}.hashed.XXXXXX")"
+  : >"$hashed"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    read -r marker host key_data <<<"$line"
+    printf '%s %s\n' "$host" "$key_data" >"$temp"
+    ssh-keygen -q -H -f "$temp"
+    hashed_line="$(head -n 1 "$temp")"
+    hashed_host="${hashed_line%% *}"
+    hashed_key_data="${hashed_line#* }"
+    printf '%s %s %s\n' "$marker" "$hashed_host" "$hashed_key_data" >>"$hashed"
+    rm -f "$temp.old"
+  done <"$path"
+  mv "$hashed" "$path"
+  rm -f "$temp"
 }
 
 if [[ ! -x "$KSSH" ]]; then
