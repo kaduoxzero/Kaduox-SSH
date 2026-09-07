@@ -17,6 +17,7 @@ repository = "https://github.com/kaduoxzero/Kaduox-SSH"
 [workspace.dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
 crossterm = "0.29"
 hmac = "0.13"
 rpassword = "7.4"

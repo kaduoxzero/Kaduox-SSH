@@ -1,4 +1,5 @@
 mod chains_cli;
+mod completions_cli;
 mod daemon_cli;
 mod host_picker;
 mod hosts_cli;
@@ -265,6 +266,12 @@ async fn main() -> Result<()> {
         .is_some_and(|value| value.as_os_str() == OsStr::new("chains"))
     {
         return chains_cli::run(raw_args.drain(2..));
+    }
+    if raw_args
+        .get(1)
+        .is_some_and(|value| value.as_os_str() == OsStr::new("completions"))
+    {
+        return completions_cli::run(raw_args.drain(2..));
     }
     if raw_args.len() == 1 {
         raw_args.push(OsString::from(host_picker::pick_default_host()?));

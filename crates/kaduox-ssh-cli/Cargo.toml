@@ -25,6 +25,7 @@ path = "src/inventory_main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 crossterm.workspace = true
 kaduox-ssh-core = { path = "../kaduox-ssh-core" }
 kaduox-ssh-daemon = { path = "../kaduox-ssh-daemon" }
