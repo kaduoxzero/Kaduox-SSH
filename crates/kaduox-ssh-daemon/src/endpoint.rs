@@ -120,10 +120,6 @@ mod platform {
                 return Ok(stream);
             }
         }
-
-        pub fn path(&self) -> &Path {
-            &self.path
-        }
     }
 
     impl Drop for ServerEndpoint {
