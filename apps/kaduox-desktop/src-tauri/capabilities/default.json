@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the Kaduox SSH main desktop window",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

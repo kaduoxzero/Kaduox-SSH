@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use russh_sftp::client::SftpSession;
@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 use crate::remote_path::{
     join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
 };
+use crate::transfer_engine::preserve_local_mtime;
 use crate::transfer_policy::{TransferDirection, TransferEvent, TransferOptions, TransferSummary};
 
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
@@ -609,23 +610,6 @@ fn emit_progress(
         total_bytes,
         completed,
     });
-}
-
-async fn preserve_local_mtime(path: &Path, mtime: Option<u32>) -> Result<()> {
-    let Some(mtime) = mtime else {
-        return Ok(());
-    };
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let file = std::fs::File::open(&path)
-            .with_context(|| format!("failed to open {} to preserve mtime", path.display()))?;
-        let modified = UNIX_EPOCH + Duration::from_secs(u64::from(mtime));
-        file.set_modified(modified)
-            .with_context(|| format!("failed to preserve mtime for {}", path.display()))?;
-        Ok(())
-    })
-    .await??;
-    Ok(())
 }
 
 #[cfg(test)]

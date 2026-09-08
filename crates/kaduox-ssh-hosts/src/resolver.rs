@@ -29,9 +29,7 @@ pub fn resolve_host(
         });
     };
 
-    let mut config = ConnectionConfig::from_openssh(alias, None, None).with_context(|| {
-        format!("OpenSSH fallback resolution for host-library alias {alias} failed")
-    })?;
+    let mut config = record_fallback(record)?;
     overlay_record(&mut config, record, user_override, port_override);
 
     if let Some(chain_name) = &record.jump_chain {
@@ -119,9 +117,19 @@ fn overlay_record(
     config.host_key_policy = map_host_key_policy(record.host_key_policy);
 }
 
+fn record_fallback(record: &HostRecord) -> Result<ConnectionConfig> {
+    if crate::model::validate_name(&record.alias, "OpenSSH alias").is_ok() {
+        // 保留已有 ASCII 别名的 OpenSSH 配置继承，兼容现有主机库。
+        ConnectionConfig::from_openssh(&record.alias, None, None)
+            .with_context(|| format!("OpenSSH fallback for host {} failed", record.alias))
+    } else {
+        // 友好名称只用于本地主机查找/显示，连接使用单独保存的地址和用户。
+        Ok(ConnectionConfig::new(&record.address, &record.user))
+    }
+}
+
 fn jump_from_host_record(record: &HostRecord) -> Result<JumpHost> {
-    let fallback = ConnectionConfig::from_openssh(&record.alias, None, None)
-        .with_context(|| format!("OpenSSH fallback for jump host {} failed", record.alias))?;
+    let fallback = record_fallback(record)?;
     let identity_files = match &record.identity_file {
         Some(path) => vec![path.clone()],
         None => fallback.identity_files,
@@ -184,6 +192,40 @@ pub fn map_host_key_policy(policy: StoredHostKeyPolicy) -> HostKeyPolicy {
 mod tests {
     use super::*;
     use crate::model::{HostDatabase, HostRecord, InlineJump, JumpChain, JumpHop};
+
+    #[test]
+    fn friendly_names_roundtrip_and_resolve_as_ssh_endpoints() {
+        let mut db = HostDatabase::default();
+        let jump = "ubantu linux（local）";
+        let target = "云服务器 (123)";
+        let chain = "本机 经 Ubuntu";
+        let mut hop = HostRecord::new(jump, "192.0.2.10", "jump-user");
+        hop.groups = vec!["本地 机器".into()];
+        hop.tags = vec!["Linux（测试）".into()];
+        db.hosts.insert(jump.into(), hop);
+        db.chains.insert(
+            chain.into(),
+            JumpChain {
+                name: chain.into(),
+                hops: vec![JumpHop::Host(jump.into())],
+            },
+        );
+        let mut destination = HostRecord::new(target, "192.0.2.20", "target-user");
+        destination.jump_chain = Some(chain.into());
+        db.hosts.insert(target.into(), destination);
+        let encoded = crate::codec::encode(&db).unwrap();
+        let decoded = crate::codec::decode(&encoded).unwrap();
+        assert_eq!(decoded, db);
+        let config = resolve_host(&decoded, target, None, None).unwrap().config;
+        assert_eq!(config.alias, target);
+        assert_eq!(config.host, "192.0.2.20");
+        assert_eq!(config.username, "target-user");
+        assert_eq!(config.jump_hosts[0].alias, jump);
+        assert_eq!(config.jump_hosts[0].host, "192.0.2.10");
+        assert_eq!(config.jump_hosts[0].username, "jump-user");
+        assert!(config.proxy_command.is_none());
+        assert_eq!(config.jump_hosts[0].port, 22);
+    }
 
     #[test]
     fn named_chain_preserves_order() {

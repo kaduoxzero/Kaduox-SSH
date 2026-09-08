@@ -4,6 +4,7 @@ members = [
     "crates/kaduox-ssh-hosts",
     "crates/kaduox-ssh-daemon",
     "crates/kaduox-ssh-cli",
+    "crates/kaduox-ssh-mcp",
 ]
 resolver = "2"
 

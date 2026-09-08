@@ -252,9 +252,12 @@ run_kssh upload "$WORK/privileged-tree" /etc/kaduox-ci-tree -r --as-user root --
 sudo cmp "$WORK/privileged-tree/root.txt" /etc/kaduox-ci-tree/root.txt
 sudo cmp "$WORK/privileged-tree/nested/child.txt" /etc/kaduox-ci-tree/nested/child.txt
 [[ ! -e /etc/kaduox-ci-tree/stale.txt ]] || fail 'privileged recursive upload did not replace stale destination content'
-root_mode="$(stat -c '%a' /etc/kaduox-ci-tree)"
-nested_mode="$(stat -c '%a' /etc/kaduox-ci-tree/nested)"
-file_mode="$(stat -c '%a' /etc/kaduox-ci-tree/nested/child.txt)"
+# The privileged upload installs the tree as root with restrictive modes, so
+# the verification stats must also run as root; an unprivileged caller cannot
+# traverse into a 0750 root-owned directory.
+root_mode="$(sudo stat -c '%a' /etc/kaduox-ci-tree)"
+nested_mode="$(sudo stat -c '%a' /etc/kaduox-ci-tree/nested)"
+file_mode="$(sudo stat -c '%a' /etc/kaduox-ci-tree/nested/child.txt)"
 [[ "$root_mode" == '750' ]] || fail "privileged recursive root mode is $root_mode"
 [[ "$nested_mode" == '750' ]] || fail "privileged recursive nested mode is $nested_mode"
 [[ "$file_mode" == '640' ]] || fail "privileged recursive file mode is $file_mode"

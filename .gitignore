@@ -1,4 +1,7 @@
 /target
+/apps/kaduox-desktop/node_modules
+/apps/kaduox-desktop/dist
+/apps/kaduox-desktop/src-tauri/target
 .DS_Store
 .idea/
 .vscode/

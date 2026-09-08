@@ -68,6 +68,51 @@ impl HostStore {
         &self.database
     }
 
+    pub fn folders(&self) -> Vec<String> {
+        self.database
+            .folders
+            .iter()
+            .chain(
+                self.database
+                    .hosts
+                    .values()
+                    .flat_map(|host| host.groups.iter()),
+            )
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn save_folder(&mut self, name: &str, original_name: Option<&str>) -> Result<()> {
+        crate::model::validate_label(name, "folder")?;
+        let folders = self.folders();
+        if original_name.is_some_and(|old| !folders.iter().any(|folder| folder == old)) {
+            bail!("原文件夹不存在");
+        }
+        if original_name == Some(name) {
+            return Ok(());
+        }
+        if folders.iter().any(|folder| folder == name) {
+            bail!("文件夹已存在");
+        }
+        let mut updated = self.database.clone();
+        if let Some(old) = original_name {
+            updated.folders.retain(|folder| folder != old);
+            for host in updated.hosts.values_mut() {
+                for folder in &mut host.groups {
+                    if folder == old {
+                        *folder = name.to_owned();
+                    }
+                }
+            }
+        }
+        updated.folders.push(name.to_owned());
+        updated.validate()?;
+        self.database = updated;
+        Ok(())
+    }
+
     pub fn host(&self, alias: &str) -> Option<&HostRecord> {
         self.database.hosts.get(alias)
     }
@@ -431,6 +476,52 @@ mod tests {
     }
 
     #[test]
+    fn folders_persist_empty_and_rename_existing_host_groups_atomically() {
+        let path = temp_store_path("folders");
+        let mut store = HostStore::open(&path).unwrap();
+        assert!(store.folders().is_empty());
+        store.save_folder("空文件夹", None).unwrap();
+        let mut host = HostRecord::new("目标", "192.0.2.1", "demo");
+        host.groups = vec!["原分组".into()];
+        store.insert_host(host).unwrap();
+        store.save_folder("新分组（开发）", Some("原分组")).unwrap();
+        assert_eq!(store.host("目标").unwrap().groups, ["新分组（开发）"]);
+        assert!(
+            store
+                .save_folder("空文件夹", Some("新分组（开发）"))
+                .is_err()
+        );
+        assert!(store.save_folder("不存在", Some("不存在")).is_err());
+        assert!(store.save_folder("", None).is_err());
+        store.save().unwrap();
+        let loaded = HostStore::open(&path).unwrap();
+        assert_eq!(loaded.folders(), store.folders());
+        assert_eq!(loaded.host("目标").unwrap().groups, ["新分组（开发）"]);
+        assert!(loaded.folders().contains(&"空文件夹".to_owned()));
+        // 仅清理本测试唯一的临时目录。
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn save_and_reload_preserves_friendly_names() {
+        let path = temp_store_path("friendly-name");
+        let mut store = HostStore::open(&path).unwrap();
+        let name = "ubantu linux（local）";
+        store
+            .insert_host(HostRecord::new(name, "192.0.2.10", "tester"))
+            .unwrap();
+        store.save().unwrap();
+        let loaded = HostStore::open(&path).unwrap();
+        let config = crate::resolve_host(loaded.database(), name, None, None)
+            .unwrap()
+            .config;
+        assert_eq!(config.host, "192.0.2.10");
+        assert_eq!(config.alias, name);
+        // 仅清理此测试创建的唯一临时目录。
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn statistics_increment_checked() {
         let path = temp_store_path("stats");
         let mut store = HostStore::open(path).unwrap();
@@ -455,5 +546,23 @@ mod tests {
         };
         assert!(store.upsert_host(invalid).is_err());
         assert!(store.host("prod").is_none());
+    }
+
+    #[test]
+    fn changing_referenced_jump_to_target_rolls_back() {
+        let mut store = HostStore::open(temp_store_path("role-rollback")).unwrap();
+        let mut jump = HostRecord::new("jump", "192.0.2.1", "tester");
+        jump.role = crate::HostRole::Jump;
+        store.insert_host(jump.clone()).unwrap();
+        store
+            .upsert_chain(JumpChain {
+                name: "route".into(),
+                hops: vec![JumpHop::Host("jump".into())],
+            })
+            .unwrap();
+        jump.role = crate::HostRole::Target;
+        assert!(store.upsert_host(jump).is_err());
+        assert_eq!(store.host("jump").unwrap().role, crate::HostRole::Jump);
+        assert_eq!(store.chain("route").unwrap().hops.len(), 1);
     }
 }

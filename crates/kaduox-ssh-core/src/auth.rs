@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use russh::client::{self, KeyboardInteractiveAuthResponse};
+use russh::client::{self, AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::Algorithm;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::load_secret_key;
+use russh::{MethodKind, MethodSet};
 
 use crate::handler::ClientHandler;
 
@@ -122,12 +123,37 @@ pub(crate) async fn authenticate(
     authentication: &Authentication,
 ) -> Result<bool> {
     match authentication {
-        Authentication::Password(password) => Ok(session
-            .authenticate_password(username, password)
-            .await?
-            .success()),
+        Authentication::Password(password) => {
+            match session.authenticate_password(username, password).await? {
+                AuthResult::Success => Ok(true),
+                AuthResult::Failure {
+                    remaining_methods, ..
+                } => {
+                    retry_sibling_password_method(
+                        session,
+                        username,
+                        password,
+                        MethodKind::Password,
+                        remaining_methods,
+                    )
+                    .await
+                }
+            }
+        }
         Authentication::KeyboardInteractive(secret) => {
-            authenticate_keyboard_interactive(session, username, secret).await
+            match authenticate_keyboard_interactive(session, username, secret).await? {
+                KeyboardInteractiveOutcome::Success => Ok(true),
+                KeyboardInteractiveOutcome::Rejected(remaining_methods) => {
+                    retry_sibling_password_method(
+                        session,
+                        username,
+                        secret,
+                        MethodKind::KeyboardInteractive,
+                        remaining_methods,
+                    )
+                    .await
+                }
+            }
         }
         Authentication::PrivateKey { path, passphrase } => {
             authenticate_private_key(session, username, path, passphrase.as_deref()).await
@@ -242,11 +268,62 @@ async fn authenticate_private_key(
         .success())
 }
 
+enum KeyboardInteractiveOutcome {
+    Success,
+    /// The server refused the method or the credential. The methods the
+    /// server still accepts are carried for the sibling-method fallback.
+    Rejected(MethodSet),
+}
+
+/// Retry the same secret over the sibling password-carrying method when the
+/// server's policy disabled the requested one.
+///
+/// `password` and `keyboard-interactive` carry the same kind of secret, and
+/// OpenSSH clients transparently use whichever the server enables (Ubuntu
+/// defaults to `KbdInteractiveAuthentication no`, PAM-only servers often
+/// disable plain passwords). When the failure response still lists the
+/// requested method, the server accepted the method and refused the
+/// credential, so retrying would only double failed-auth counters — no
+/// fallback happens in that case.
+async fn retry_sibling_password_method(
+    session: &mut client::Handle<ClientHandler>,
+    username: &str,
+    secret: &str,
+    rejected: MethodKind,
+    remaining_methods: MethodSet,
+) -> Result<bool> {
+    let sibling = match rejected {
+        MethodKind::Password => MethodKind::KeyboardInteractive,
+        MethodKind::KeyboardInteractive => MethodKind::Password,
+        other => {
+            debug_assert!(
+                false,
+                "password-method fallback only applies to password-bearing methods, got {other:?}"
+            );
+            return Ok(false);
+        }
+    };
+    if remaining_methods.contains(&rejected) || !remaining_methods.contains(&sibling) {
+        return Ok(false);
+    }
+    match sibling {
+        MethodKind::Password => Ok(session
+            .authenticate_password(username, secret)
+            .await?
+            .success()),
+        MethodKind::KeyboardInteractive => Ok(matches!(
+            authenticate_keyboard_interactive(session, username, secret).await?,
+            KeyboardInteractiveOutcome::Success
+        )),
+        _ => Ok(false),
+    }
+}
+
 async fn authenticate_keyboard_interactive(
     session: &mut client::Handle<ClientHandler>,
     username: &str,
     secret: &str,
-) -> Result<bool> {
+) -> Result<KeyboardInteractiveOutcome> {
     let mut response = session
         .authenticate_keyboard_interactive_start(username, None::<String>)
         .await?;
@@ -255,8 +332,12 @@ async fn authenticate_keyboard_interactive(
 
     loop {
         match response {
-            KeyboardInteractiveAuthResponse::Success => return Ok(true),
-            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            KeyboardInteractiveAuthResponse::Success => {
+                return Ok(KeyboardInteractiveOutcome::Success);
+            }
+            KeyboardInteractiveAuthResponse::Failure {
+                remaining_methods, ..
+            } => return Ok(KeyboardInteractiveOutcome::Rejected(remaining_methods)),
             KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                 rounds += 1;
                 total_prompts =

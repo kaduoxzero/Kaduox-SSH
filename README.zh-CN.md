@@ -1,5 +1,11 @@
 # Kaduox-SSH
 
+## Windows 桌面预发布版
+
+[下载安装包与 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases) · [完整桌面使用说明](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md)
+
+v0.33.0-rc.1 支持选择安装位置、深浅主题、独立终端、主机文件夹、最多五层 SSH 中转、信息数据屏、SFTP、端口转发和自定义 AI 厂商。首次启动无预置主机或个人配置。本次为本地手动构建的 **未签名 Windows 预发布版**，不是通过跨平台 CI 与签名门禁的稳定版。
+
 [English](README.md) | **简体中文**
 
 Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长期可维护性、低延迟、受控内存占用、可复现构建，以及 CLI、TUI、Inventory 和 Fleet 前端共享同一套安全/传输核心。
@@ -31,6 +37,8 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 - `kssh-daemon` 单用户本地 IPC 连接复用 daemon；`kssh` 优先通过它复用已认证传输，失败时回退直连；逐跳交互式 jump 认证通过私有 IPC 通道桥接
 - 可选的登录密码持久化，直接写入操作系统凭据存储（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），通过 `kssh credentials set/check/delete` 管理；Kaduox-SSH 不会把密码写入自有文件
 - 通过 `kssh completions <shell>` 生成 bash/zsh/fish/powershell/elvish 补全脚本
+- Windows 桌面客户端：主机库、终端、SFTP、跳板链、转发、运行历史、深浅主题、内置离线/兼容 API AI 助手和一键基础信息检查
+- 本地 stdio MCP Server：默认只读的主机、路由、基础信息和 SFTP 查询，可按环境变量显式开放命令执行与文件传输，详见 [`docs/MCP.md`](docs/MCP.md)
 - Linux/macOS/Windows CI、Rust 1.85 MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁
 - 确定性的四套发行包流程，包含每个二进制的 manifest 和最终 SHA-256 校验文件
 - 稳定版 Windows Authenticode，以及 macOS Developer ID 签名/公证
@@ -111,6 +119,7 @@ crates/
   kaduox-ssh-core/    # transport/auth/session/forward/SFTP/sync/privilege/manager 核心
   kaduox-ssh-hosts/   # 原子私有 TOML 主机库、别名与命名 jump chain
   kaduox-ssh-daemon/  # 单用户 IPC 连接复用 daemon（peer 身份校验、有界协议）
+  kaduox-ssh-mcp/     # 面向 Agent 的本地 stdio MCP Server
   kaduox-ssh-cli/     # kssh + kssh-tui + kssh-fleet + kssh-inventory
 ```
 

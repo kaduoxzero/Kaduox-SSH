@@ -835,15 +835,18 @@ async fn preserve_remote_mtime(
     Ok(())
 }
 
-async fn preserve_local_mtime(path: &Path, mtime: Option<u32>) -> Result<()> {
+/// Stamp a downloaded file with the remote modification time.
+///
+/// Shared by the transfer engine and the atomic download policy. Windows
+/// requires a write-capable handle to set file times (FILE_WRITE_ATTRIBUTES);
+/// a read-only `File::open` handle fails with ERROR_ACCESS_DENIED there,
+/// while Unix accepts either.
+pub(crate) async fn preserve_local_mtime(path: &Path, mtime: Option<u32>) -> Result<()> {
     let Some(mtime) = mtime else {
         return Ok(());
     };
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<()> {
-        // Windows requires a write-capable handle to set file times
-        // (FILE_WRITE_ATTRIBUTES); a read-only File::open handle fails with
-        // ERROR_ACCESS_DENIED there, while Unix accepts either.
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(&path)

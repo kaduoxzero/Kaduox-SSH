@@ -307,6 +307,12 @@ impl ConnectionManager {
         // or explicit lease is created.
         let connections = self.connections.read().await;
         let managed = connections.get(name)?;
+        if !managed.client.is_alive() {
+            let managed = Arc::clone(managed);
+            drop(connections);
+            self.evict_dead(name, &managed).await;
+            return None;
+        }
         managed.touch();
         Some(Arc::clone(managed))
     }
@@ -321,6 +327,13 @@ impl ConnectionManager {
         let Some(managed) = connections.get(name) else {
             return Ok(None);
         };
+        if !managed.client.is_alive() {
+            let managed = Arc::clone(managed);
+            drop(connections);
+            self.evict_dead(name, &managed).await;
+            // A dead transport must not block a fresh connect for this name.
+            return Ok(None);
+        }
         ensure_reusable(
             name,
             managed.client.config(),
@@ -330,6 +343,23 @@ impl ConnectionManager {
         )?;
         managed.touch();
         Ok(Some(Arc::clone(managed)))
+    }
+
+    /// Remove `name` when it still maps to the observed dead connection.
+    ///
+    /// Dead transports are evicted even while leases are outstanding: any
+    /// channels they carried have already terminated, and keeping the map entry
+    /// would make every later `connect` or `get_lease` for this name fail
+    /// until the process restarts. Eviction never sends a disconnect because
+    /// the session loop that would carry it has already ended.
+    async fn evict_dead(&self, name: &str, observed: &Arc<ManagedConnection>) {
+        let mut connections = self.connections.write().await;
+        if connections
+            .get(name)
+            .is_some_and(|current| Arc::ptr_eq(current, observed) && !current.client.is_alive())
+        {
+            connections.remove(name);
+        }
     }
 
     fn claim_connect(&self, name: &str) -> ConnectClaim<'_> {
@@ -440,11 +470,16 @@ impl ConnectionManager {
 
                     let existing = {
                         let mut connections = self.connections.write().await;
-                        if let Some(existing) = connections.get(&name).cloned() {
-                            Some(existing)
-                        } else {
-                            connections.insert(name.clone(), Arc::clone(&managed));
-                            None
+                        match connections.get(&name).cloned() {
+                            Some(existing) if existing.client.is_alive() => Some(existing),
+                            // A dead entry (including one that died immediately
+                            // after another task inserted it) must not shadow a
+                            // freshly authenticated transport; inserting the
+                            // fresh candidate replaces it either way.
+                            _ => {
+                                connections.insert(name.clone(), Arc::clone(&managed));
+                                None
+                            }
                         }
                     };
 

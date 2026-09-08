@@ -2,6 +2,12 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+## Windows desktop preview
+
+[Download the Windows desktop prerelease](https://github.com/kaduoxzero/Kaduox-SSH/releases) · [Desktop user guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [Agent / MCP setup](docs/MCP.md)
+
+The v0.33.0-rc.1 desktop preview has an install-directory picker, light/dark themes, independent terminal tabs, user-managed host folders, up to five SSH jump servers, metrics dashboards, SFTP, forwarding and a configurable AI provider. No personal host configuration is bundled. This manually built Windows preview is **unsigned**; the stable cross-platform release pipeline described below is not a claim that this preview is signed or CI-qualified.
+
 Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core shared by CLI, TUI, inventory, and fleet frontends.
 
 ## Current capabilities
@@ -41,6 +47,8 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - `kssh-daemon` per-user local IPC connection-reuse daemon; `kssh` reuses authenticated transports through it before falling back to a direct connection, with per-hop interactive jump authentication bridged over the private IPC channel
 - optional login-password persistence in the operating system credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service) via `kssh credentials set/check/delete`; Kaduox-SSH never writes passwords to its own files
 - shell completion scripts for bash/zsh/fish/powershell/elvish via `kssh completions <shell>`
+- native Tauri Windows desktop client with light/dark themes, terminal/SFTP/forwarding workspaces, host inspection, built-in AI assistant, and an optional OpenAI-compatible provider
+- `kaduox-ssh-mcp` local stdio MCP server for Agent integration; read-only host/route/basic-info/SFTP tools are enabled by default, while remote exec and transfers require explicit environment switches
 - real OpenSSH protocol integration fixtures, including fleet and Host Certificate coverage
 - Linux/macOS/Windows CI, Rust 1.85 MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates
 - committed `Cargo.lock` with `--locked` builds
@@ -65,6 +73,8 @@ Kaduox-SSH currently ships four binaries over the same core security and transpo
 The TUI and fleet frontends do not implement separate SSH stacks. They reuse `kaduox-ssh-core` for authentication, host-key policy, ProxyJump/ProxyCommand, channels, SFTP, privilege switching, and transport limits.
 
 See `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, `docs/INVENTORY.md`, `docs/OPENSSH_CONFIG.md`, and `docs/HOST_CERTIFICATES.md` for frontend/config/trust-specific contracts and resource limits.
+
+See `docs/MCP.md` for the local MCP server configuration, tool list, and permission switches.
 
 ## RSA security policy
 

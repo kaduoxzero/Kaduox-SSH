@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 use crate::model::{
-    DATABASE_VERSION, HostDatabase, HostRecord, HostStats, InlineJump, JumpChain, JumpHop,
-    StoredAuthMethod, StoredHostKeyPolicy,
+    DATABASE_VERSION, HostDatabase, HostRecord, HostRole, HostStats, InlineJump, JumpChain,
+    JumpHop, StoredAuthMethod, StoredHostKeyPolicy,
 };
 
 #[derive(Debug, Clone)]
@@ -34,10 +34,17 @@ pub fn encode(database: &HostDatabase) -> Result<String> {
     let mut output = String::new();
     output.push_str("# Kaduox-SSH host library. Secrets are intentionally not stored here.\n");
     output.push_str(&format!("version = {}\n", database.version));
+    if !database.folders.is_empty() {
+        write_strings(&mut output, "folders", &database.folders);
+    }
 
     for host in database.hosts.values() {
         output.push_str("\n[[host]]\n");
         write_string(&mut output, "alias", &host.alias);
+        // 兼用为旧格式默认值；未指定用途的旧记录不必增加字段。
+        if host.role != HostRole::Both {
+            write_string(&mut output, "role", host.role.as_str());
+        }
         write_string(&mut output, "address", &host.address);
         output.push_str(&format!("port = {}\n", host.port));
         write_string(&mut output, "user", &host.user);
@@ -159,9 +166,13 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
             DATABASE_VERSION
         );
     }
+    let folders = take_strings(&mut root, "folders")?.unwrap_or_default();
     reject_unknown(&root, "root")?;
 
-    let mut database = HostDatabase::default();
+    let mut database = HostDatabase {
+        folders,
+        ..HostDatabase::default()
+    };
     let mut raw_hops: BTreeMap<String, Vec<(usize, JumpHop)>> = BTreeMap::new();
     let mut seen_chain_names = BTreeSet::new();
 
@@ -169,6 +180,10 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
         match table.kind {
             TableKind::Host => {
                 let alias = required_string(&mut table.values, "alias", table.line)?;
+                let role = take_string(&mut table.values, "role")?
+                    .map(|value| HostRole::parse(&value))
+                    .transpose()?
+                    .unwrap_or_default();
                 let address = required_string(&mut table.values, "address", table.line)?;
                 let user = required_string(&mut table.values, "user", table.line)?;
                 let port = take_integer(&mut table.values, "port")?.unwrap_or(22);
@@ -198,6 +213,7 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
 
                 let record = HostRecord {
                     alias: alias.clone(),
+                    role,
                     address,
                     port,
                     user,
@@ -535,6 +551,22 @@ fn write_strings(output: &mut String, key: &str, values: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_roles_roundtrip_and_legacy_records_remain_compatible() {
+        for role in [HostRole::Target, HostRole::Jump, HostRole::Both] {
+            let mut db = HostDatabase::default();
+            let mut host = HostRecord::new("用途测试", "192.0.2.10", "tester");
+            host.role = role;
+            db.hosts.insert(host.alias.clone(), host);
+            let encoded = encode(&db).unwrap();
+            assert_eq!(decode(&encoded).unwrap(), db);
+            if role == HostRole::Both {
+                assert!(!encoded.contains("role ="));
+            }
+        }
+        assert!(HostRole::parse("unknown").is_err());
+    }
 
     #[test]
     fn round_trips_host_and_inline_chain() {

@@ -34,6 +34,35 @@ use crate::transfer::{
 
 const PROXY_EXPANSION_SAFE_PUNCTUATION: &str = "._:@+-[]";
 
+// russh 的 Channel 本身不会在 Drop 时发送 CLOSE。终端任务被取消时，
+// 显式关闭它的独立通道，避免远端 shell 残留，同时保留共享 SSH 传输。
+struct ShellChannel(Option<russh::Channel<client::Msg>>);
+
+impl std::ops::Deref for ShellChannel {
+    type Target = russh::Channel<client::Msg>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("shell channel exists until drop")
+    }
+}
+
+impl std::ops::DerefMut for ShellChannel {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("shell channel exists until drop")
+    }
+}
+
+impl Drop for ShellChannel {
+    fn drop(&mut self) {
+        if let (Some(channel), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
+        {
+            runtime.spawn(async move {
+                let _ = timeout(Duration::from_secs(2), channel.close()).await;
+            });
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum RemoteUser {
     #[default]
@@ -225,6 +254,17 @@ impl SshClient {
         &self.config
     }
 
+    /// Whether the authenticated transport (and every jump-hop transport) can
+    /// still carry new SSH channels.
+    ///
+    /// A connection is considered dead once its session loop has terminated,
+    /// which covers explicit disconnects, network errors, and exhausted
+    /// keepalive probes. Managers use this to evict dead transports so
+    /// callers reconnect instead of failing on every later operation.
+    pub fn is_alive(&self) -> bool {
+        !self.session.is_closed() && self.jump_sessions.iter().all(|jump| !jump.is_closed())
+    }
+
     pub async fn server_host_key(&self) -> Option<ServerHostKeyInfo> {
         self.state.server_host_key().await
     }
@@ -313,12 +353,13 @@ impl SshClient {
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
-        let mut channel = timeout(
+        let channel = timeout(
             self.config.channel_open_timeout,
             self.session.channel_open_session(),
         )
         .await
         .context("SSH shell session channel-open timed out")??;
+        let mut channel = ShellChannel(Some(channel));
         channel
             .request_pty(
                 false,
@@ -574,8 +615,11 @@ fn ssh_config(config: &ConnectionConfig) -> Result<Arc<client::Config>> {
     }))
 }
 
-fn jump_ssh_config(_config: &ConnectionConfig, jump: &JumpHost) -> Result<Arc<client::Config>> {
+fn jump_ssh_config(config: &ConnectionConfig, jump: &JumpHost) -> Result<Arc<client::Config>> {
     Ok(Arc::new(client::Config {
+        inactivity_timeout: config.inactivity_timeout,
+        keepalive_interval: config.keepalive_interval,
+        keepalive_max: 3,
         nodelay: true,
         preferred: preferred_for_target(
             &jump.host,
