@@ -4,6 +4,17 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.5] - 2026-09-08
+
+### Added (desktop)
+
+- run history entries record the login username (shown as `user@host`); older entries without it display gracefully;
+- run history supports day-based filtering (date picker plus today/yesterday/all shortcuts).
+
+### Changed (desktop)
+
+- run history can no longer be cleared: "archive" now creates a timestamped snapshot copy and keeps every record.
+
 ## [0.33.0-rc.4] - 2026-09-08
 
 Windows desktop prerelease, on top of rc.1.

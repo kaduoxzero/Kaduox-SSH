@@ -164,7 +164,8 @@ pub fn append(path: &Path, entry: &HistoryEntryDto) -> Result<()> {
     file.sync_data().context("运行记录未能落盘")
 }
 
-pub fn page(path: &Path, requested: usize) -> Result<HistoryPage> {
+/// 分页读取运行记录；`day_range` 为 [当天起始, 次日起始) 的 Unix 秒区间（由前端按本地时区计算）。
+pub fn page(path: &Path, requested: usize, day_range: Option<(u64, u64)>) -> Result<HistoryPage> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -177,21 +178,30 @@ pub fn page(path: &Path, requested: usize) -> Result<HistoryPage> {
         }
         Err(error) => return Err(error.into()),
     };
+    let in_range = |line: &str| -> bool {
+        let Some((start, end)) = day_range else { return true };
+        match serde_json::from_str::<HistoryEntryDto>(line) {
+            Ok(entry) => entry.started_at_unix >= start && entry.started_at_unix < end,
+            Err(_) => false,
+        }
+    };
     // Count without loading the whole history into memory. Only deserialize one page.
     let total = BufReader::new(file)
         .lines()
-        .try_fold(0usize, |n, line| line.map(|_| n + 1))?;
+        .try_fold(0usize, |n, line| line.map(|line| n + usize::from(in_range(&line))))?;
     let page = requested.max(1).min(total.div_ceil(PAGE_SIZE).max(1));
     let end = total.saturating_sub((page - 1) * PAGE_SIZE);
     let start = end.saturating_sub(PAGE_SIZE);
     let mut entries = Vec::with_capacity(PAGE_SIZE);
     for line in BufReader::new(File::open(path)?)
         .lines()
+        .map_while(|line| line.ok())
+        .filter(|line| in_range(line))
         .skip(start)
         .take(end - start)
     {
         entries.push(
-            serde_json::from_str(&line?).context("运行记录损坏；原文件已保留，请备份后检查")?,
+            serde_json::from_str(&line).context("运行记录损坏；原文件已保留，请备份后检查")?,
         );
     }
     entries.reverse();
@@ -259,6 +269,7 @@ mod tests {
                 &HistoryEntryDto {
                     id: n.to_string(),
                     alias: "test".into(),
+                    username: Some("demo".into()),
                     command: "printf hello".into(),
                     exit_status: Some(0),
                     succeeded: true,
@@ -269,14 +280,49 @@ mod tests {
             )
             .unwrap();
         }
-        let first = page(&path, 1).unwrap();
+        let first = page(&path, 1, None).unwrap();
         assert_eq!(first.total, 123);
         assert_eq!(first.entries.len(), 50);
         assert_eq!(first.entries[0].id, "122");
-        assert_eq!(page(&path, 2).unwrap().entries[0].id, "72");
-        let last = page(&path, usize::MAX).unwrap();
+        assert_eq!(page(&path, 2, None).unwrap().entries[0].id, "72");
+        let last = page(&path, usize::MAX, None).unwrap();
         assert_eq!(last.entries.len(), 23);
         assert_eq!(last.page, 3);
         assert_eq!(last.entries.last().unwrap().id, "0");
+    }
+
+    #[test]
+    fn day_range_filters_entries_and_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        // 两天各 3 条：第 1 天 [0,10) 秒，第 2 天 [10,20) 秒。
+        for n in 0..6u64 {
+            append(
+                &path,
+                &HistoryEntryDto {
+                    id: n.to_string(),
+                    alias: "test".into(),
+                    username: None,
+                    command: format!("cmd-{n}"),
+                    exit_status: Some(0),
+                    succeeded: true,
+                    output_preview: String::new(),
+                    started_at_unix: if n < 3 { n } else { 10 + n },
+                    duration_ms: 1,
+                },
+            )
+            .unwrap();
+        }
+        let day1 = page(&path, 1, Some((0, 10))).unwrap();
+        assert_eq!(day1.total, 3);
+        assert_eq!(day1.entries[0].id, "2");
+        let day2 = page(&path, 1, Some((10, 20))).unwrap();
+        assert_eq!(day2.total, 3);
+        assert_eq!(day2.entries[0].id, "5");
+        let empty = page(&path, 1, Some((100, 200))).unwrap();
+        assert_eq!(empty.total, 0);
+        assert!(empty.entries.is_empty());
+        // 不带过滤时行为不变。
+        assert_eq!(page(&path, 1, None).unwrap().total, 6);
     }
 }
