@@ -4,9 +4,9 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
-## [0.33.0-rc.2] - 2026-09-08
+## [0.33.0-rc.3] - 2026-09-08
 
-Windows desktop prerelease 2, on top of rc.1.
+Windows desktop prerelease, on top of rc.1.
 
 ### Added (desktop)
 
