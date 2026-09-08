@@ -5,8 +5,10 @@ import * as desktop from './lib/desktop'
 import type { Host, Session } from './lib/types'
 
 vi.mock('./lib/desktop', () => ({
+  isDesktopRuntime: false,
   listHosts: vi.fn(), listSessions: vi.fn(async () => []), listForwards: vi.fn(async () => []), listFolders: vi.fn(async () => []),
   connectHost: vi.fn(), saveFolder: vi.fn(), saveHost: vi.fn(), deleteHost: vi.fn(), disconnectHost: vi.fn(), startForward: vi.fn(), stopForward: vi.fn(),
+  listCommandHistory: vi.fn(async () => []), executeCommand: vi.fn(),
 }))
 vi.mock('./components/FileBrowser', () => ({ FileBrowser: () => null }))
 vi.mock('./components/TerminalPanel', () => ({ TerminalPanel: ({ session, openRequest = 0 }: { session: Session | null; openRequest?: number }) => <div data-testid={session ? 'connected-terminal' : 'empty-terminal'}>{openRequest}</div> }))
@@ -18,13 +20,17 @@ const session: Session = { alias: host.alias, address: host.address, port: 22, u
 
 describe('saved-host entry workflow', () => {
   beforeEach(() => { vi.clearAllMocks(); vi.mocked(desktop.listHosts).mockResolvedValue([host]); vi.mocked(desktop.connectHost).mockResolvedValue(session) })
-  it('uses saved credentials on the first click and requests a new terminal without reauth on the next', async () => {
+  it('uses saved credentials on the first click and only switches sessions afterwards', async () => {
     render(<App />)
     fireEvent.click((await screen.findByText('Demo target')).closest('button')!)
     await waitFor(() => expect(screen.getByTestId('connected-terminal')).toHaveTextContent('0'))
     expect(desktop.connectHost).toHaveBeenCalledWith(host.alias, { kind: 'password', password: null, savePassword: true })
     expect(screen.queryByText('AUTH-REQUIRED')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('Demo target').closest('button')!)
+    // 已连接主机再次点击只切换会话，不新增终端；新增终端走会话栏的 ➕。
+    fireEvent.click(screen.getAllByText('Demo target')[0].closest('button')!)
+    await waitFor(() => expect(screen.getByTestId('connected-terminal')).toHaveTextContent('0'))
+    expect(desktop.connectHost).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '为当前会话新建终端' }))
     await waitFor(() => expect(screen.getByTestId('connected-terminal')).toHaveTextContent('1'))
     expect(desktop.connectHost).toHaveBeenCalledTimes(1)
   })

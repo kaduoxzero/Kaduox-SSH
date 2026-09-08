@@ -1,9 +1,15 @@
-import { useState } from 'react'
-import { openHelpLink } from '../lib/desktop'
+import { getVersion } from '@tauri-apps/api/app'
+import { useEffect, useState } from 'react'
+import { isDesktopRuntime, openHelpLink } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
 
 export function HelpView() {
   const [error, setError] = useState('')
+  const [version, setVersion] = useState('')
+  useEffect(() => {
+    if (!isDesktopRuntime) return
+    void getVersion().then(setVersion).catch(() => {})
+  }, [])
   const open = (page: 'project' | 'manual' | 'releases') => { void openHelpLink(page).catch((cause) => setError(errorMessage(cause))) }
   return <main className="help-view">
     <header><h1>Kaduox SSH 使用说明</h1><p>保存机器，点击打开终端；需要经过中转时，在最终目标上配置路径。</p>
@@ -16,6 +22,6 @@ export function HelpView() {
     <section><h2>主机密钥策略：确认“对面是谁”</h2><dl><dt>严格</dt><dd>只接受已记录的可信服务器指纹。首次使用需通过可信渠道核验并添加指纹。</dd><dt>首次信任</dt><dd>第一次自动记住指纹，以后指纹变化拒绝连接；第一次仍应核对服务器身份。</dd><dt>不安全</dt><dd>不核验服务器身份，仅用于隔离测试。它不是“免密码”，也不会提高权限。</dd></dl><p>指纹变化可能是重装，也可能是冒充。先联系管理员核实，不要直接切换“不安全”。</p></section>
     <section><h2>信息、文件、记录和 Kaduox AI</h2><p>信息页打开后自动采集当前展示机器的 CPU、GPU、内存、磁盘和网络，每 10 秒刷新。SFTP 与终端共享连接。运行记录每页 50 条，记录显式执行的命令；不会记录终端按键或密码提示。</p><p>Kaduox AI 调用你配置的兼容厂商接口，可获取模型列表或手填模型。API 密钥保存在系统凭据库；发送主机上下文需要勾选授权。AI 不会自动执行回答中的命令。不要向 AI 粘贴密码、私钥或令牌。</p></section>
     <section><h2>MCP 接入 Agent</h2><p>下载 kaduox-ssh-mcp.exe，使用 stdio 接入。默认只读；命令执行及文件传输需要另外显式开启。示例路径应改为你的实际安装位置。</p><pre>{'{\n  "mcpServers": {\n    "kaduox": { "command": "C:/Tools/Kaduox/kaduox-ssh-mcp.exe" }\n  }\n}'}</pre><p>读写权限和全部参数请查看完整使用说明；不要把密码写入 Agent 配置。</p></section>
-    <footer>示例使用保留文档地址，不是真实服务器。项目：https://github.com/kaduoxzero/Kaduox-SSH</footer>
+    <footer>示例使用保留文档地址，不是真实服务器。项目：https://github.com/kaduoxzero/Kaduox-SSH{version && <span className="help-version"> · 当前版本 v{version}</span>}</footer>
   </main>
 }

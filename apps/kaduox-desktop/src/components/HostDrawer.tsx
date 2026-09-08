@@ -11,16 +11,16 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { listJumpChains, pickIdentityFile, saveJumpChain } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
-import type { Host, HostSaveRequest, JumpChain } from '../lib/types'
+import type { Host, HostFolder, HostSaveRequest, JumpChain } from '../lib/types'
 import { RouteDiagram } from './RouteDiagram'
 import { canUseAsJump } from '../lib/hostRole'
 
 interface HostDrawerProps {
   hosts: Host[]
-  folders?: string[]
+  folders?: HostFolder[]
   host: Host | null
   onClose: () => void
-  onSave: (request: HostSaveRequest) => Promise<void>
+  onSave: (request: HostSaveRequest, options: { connectAfter: boolean }) => Promise<void>
   onDelete: (alias: string) => Promise<void>
 }
 
@@ -71,6 +71,7 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
   const [newHop, setNewHop] = useState('')
   const [showChainBuilder, setShowChainBuilder] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [connectAfter, setConnectAfter] = useState(true)
   const [chainBusy, setChainBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [chainError, setChainError] = useState<string | null>(null)
@@ -209,7 +210,7 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
         note: form.note.trim() || null,
         hostKeyPolicy: form.hostKeyPolicy,
         jumpChain,
-      })
+      }, { connectAfter: !host && connectAfter })
     } catch (error) {
       setFormError(errorMessage(error))
     } finally {
@@ -271,7 +272,7 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
         </label>
 
         <div className="field-grid">
-          <label className="field"><span>文件夹</span><select aria-label="主机文件夹" value={form.groups} onChange={(event) => update('groups', event.target.value)}><option value="">未分组</option>{[...new Set([...folders, ...hosts.flatMap((item) => item.groups)])].sort().map((folder) => <option key={folder} value={folder}>{folder}</option>)}</select><small>从左侧“新建文件夹”创建，再将主机移入。</small></label>
+          <label className="field"><span>文件夹</span><select aria-label="主机文件夹" value={form.groups} onChange={(event) => update('groups', event.target.value)}><option value="">未分组</option>{[...new Set([...folders.map((folder) => folder.name), ...hosts.flatMap((item) => item.groups)])].sort().map((folder) => <option key={folder} value={folder}>{folder}</option>)}</select><small>从左侧“新建文件夹”创建，再将主机移入。</small></label>
           <label className="field"><span>标签（可选）</span><input value={form.tags} onChange={(event) => update('tags', event.target.value)} placeholder="多个标签用逗号分隔" /></label>
         </div>
 
@@ -304,9 +305,10 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
         <div className="security-note"><ShieldCheck size={17} aria-hidden="true" /><span>密码保存在系统凭据库，直到你主动删除；同一用户和地址的主机可复用。修改地址或用户后需重新保存。</span></div>
         {formError && <div className="inline-error" role="alert">{formError}</div>}
 
+        {!host && <label className="field-checkbox"><input type="checkbox" checked={connectAfter} onChange={(event) => setConnectAfter(event.target.checked)} /><span>保存后立即连接</span></label>}
         <div className="drawer-footer">
           {host ? <button className="danger-button" type="button" onClick={remove} disabled={submitting}><Trash2 size={15} />删除</button> : <span />}
-          <div><button className="secondary-button" type="button" onClick={onClose} disabled={submitting || chainBusy}>取消</button><button className="primary-button" type="submit" disabled={submitting || chainBusy}>{submitting ? '保存中…' : host ? '保存修改' : '保存主机'}</button></div>
+          <div><button className="secondary-button" type="button" onClick={onClose} disabled={submitting || chainBusy}>取消</button><button className="primary-button" type="submit" disabled={submitting || chainBusy}>{submitting ? '保存中…' : host ? '保存修改' : connectAfter ? '保存并连接' : '保存主机'}</button></div>
         </div>
       </form>
     </aside>

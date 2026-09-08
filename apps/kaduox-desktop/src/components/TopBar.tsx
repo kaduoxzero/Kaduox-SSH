@@ -50,7 +50,7 @@ export function TopBar({
   const matches = hosts.filter((h) => [h.alias, h.address, h.user, ...h.tags, ...h.groups].join(' ').toLowerCase().includes(search.trim().toLowerCase()))
   const choose = (host: Host) => { onSelectHost(host); setOpen(false); setIndex(0) }
   return (
-    <header className="top-bar">
+    <header className="top-bar" data-tauri-drag-region>
       <button className="brand" type="button" onClick={() => onViewChange('hosts')} aria-label="Kaduox SSH 主界面">
         <img src="/app-icon.png" alt="" />
         <span>Kaduox SSH</span>

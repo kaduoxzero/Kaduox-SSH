@@ -29,6 +29,11 @@ export interface Host {
   route?: RouteNode[]
 }
 
+export interface HostFolder {
+  name: string
+  role: 'target' | 'jump' | string
+}
+
 export interface HostSaveRequest {
   role?: 'target' | 'jump' | 'both'
   password?: string | null
@@ -89,6 +94,11 @@ export interface RemoteFile {
   modifiedAtUnix: number | null
   permissions: string | null
   owner: string | null
+}
+
+export interface RemoteFileContent {
+  contentBase64: string
+  size: number
 }
 
 export interface TerminalOutputEvent {

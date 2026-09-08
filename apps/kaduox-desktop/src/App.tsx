@@ -8,6 +8,7 @@ import { ForwardsView } from './components/ForwardsView'
 import { HistoryView } from './components/HistoryView'
 import { HostDrawer } from './components/HostDrawer'
 import { HostSidebar } from './components/HostSidebar'
+import { SessionTabBar } from './components/SessionTabBar'
 import { StatusBar } from './components/StatusBar'
 import { TerminalPanel } from './components/TerminalPanel'
 import { ToastRegion } from './components/ToastRegion'
@@ -15,6 +16,7 @@ import { TopBar } from './components/TopBar'
 import { HelpView } from './components/HelpView'
 import {
   connectHost,
+  deleteFolder,
   deleteHost,
   disconnectHost,
   listForwards,
@@ -33,6 +35,7 @@ import type {
   Forward,
   ForwardStartRequest,
   Host,
+  HostFolder,
   HostSaveRequest,
   Session,
   Theme,
@@ -45,7 +48,7 @@ export default function App() {
   const [view, setView] = useState<ViewId>('hosts')
   const [search, setSearch] = useState('')
   const [hosts, setHosts] = useState<Host[]>([])
-  const [folders, setFolders] = useState<string[]>([])
+  const [folders, setFolders] = useState<HostFolder[]>([])
   const [terminalRequests, setTerminalRequests] = useState<Record<string, number>>({})
   const [sessions, setSessions] = useState<Session[]>([])
   const [forwards, setForwards] = useState<Forward[]>([])
@@ -91,6 +94,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     document.documentElement.style.colorScheme = theme
+    document.documentElement.dataset.platform = navigator.userAgent.includes('Windows') ? 'windows' : 'other'
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0d141c' : '#f2f5f8')
     saveTheme(theme)
   }, [theme])
@@ -147,7 +151,7 @@ export default function App() {
     setDrawerOpen(true)
   }
 
-  const saveHostRequest = async (request: HostSaveRequest) => {
+  const saveHostRequest = async (request: HostSaveRequest, options?: { connectAfter?: boolean }) => {
     const saved = await saveHost(request)
     setHosts((current) => {
       const withoutOriginal = current.filter((host) => host.alias !== (request.originalAlias ?? saved.alias))
@@ -156,6 +160,9 @@ export default function App() {
     setSelectedAlias(saved.alias)
     setDrawerOpen(false)
     notify('success', request.originalAlias ? '主机已更新' : '主机已保存', `${saved.user}@${saved.address}:${saved.port}`)
+    if (options?.connectAfter && !request.originalAlias) {
+      void selectAndConnect(saved)
+    }
   }
 
   const deleteHostRequest = async (alias: string) => {
@@ -212,10 +219,8 @@ export default function App() {
   const selectAndConnect = async (host: Host) => {
     setSelectedAlias(host.alias); setView('hosts'); setSearch('')
     if (connecting.current.has(host.alias)) return
-    if (sessions.some((s) => s.alias === host.alias)) {
-      setTerminalRequests((current) => ({ ...current, [host.alias]: (current[host.alias] ?? 0) + 1 }))
-      return
-    }
+    // 已有该主机的连接：只切换会话，不再自动新增终端（新增走 ➕）。
+    if (sessions.some((s) => s.alias === host.alias)) return
     connecting.current.add(host.alias)
     notify('info', '正在连接 ' + host.alias)
     try {
@@ -229,9 +234,21 @@ export default function App() {
   }
   const requestConnect = () => { if (selectedHost) void selectAndConnect(selectedHost); else openNewHost() }
 
-  const saveFolderRequest = async (name: string, originalName: string | null) => {
-    await saveFolder(name, originalName)
+  const saveFolderRequest = async (name: string, originalName: string | null, role: 'target' | 'jump') => {
+    await saveFolder(name, originalName, role)
     await refreshHosts()
+  }
+
+  const deleteFolderRequest = async (name: string) => {
+    const removed = await deleteFolder(name)
+    await refreshHosts()
+    notify('success', '文件夹已删除', removed.length > 0 ? `同时删除了 ${removed.length} 台主机：${removed.join('、')}` : '文件夹为空')
+    return removed
+  }
+
+  const addTerminalToSession = (alias: string) => {
+    setSelectedAlias(alias)
+    setTerminalRequests((current) => ({ ...current, [alias]: (current[alias] ?? 0) + 1 }))
   }
 
   const bodyClass = `app-body${drawerOpen ? ' drawer-open' : ''}`
@@ -255,6 +272,7 @@ export default function App() {
           hosts={hosts}
           folders={folders}
           onSaveFolder={saveFolderRequest}
+          onDeleteFolder={deleteFolderRequest}
           sessions={sessions}
           selectedAlias={selectedAlias}
           search={search}
@@ -266,6 +284,14 @@ export default function App() {
 
         <div className="workspace-content">
           <div className="hosts-workspace" style={view === 'hosts' ? undefined : { display: 'none' }}>
+            <SessionTabBar
+              sessions={sessions}
+              selectedAlias={selectedAlias}
+              onSelect={setSelectedAlias}
+              onDisconnect={(alias) => void disconnect(alias)}
+              onAddTerminal={addTerminalToSession}
+              onNotify={notify}
+            />
             {sessions.map((session) => <div key={session.alias} style={{ display: session.alias === selectedAlias ? 'contents' : 'none' }}>
               <TerminalPanel host={hosts.find((h) => h.alias === session.alias) ?? null} session={session} theme={theme} openRequest={terminalRequests[session.alias] ?? 0} active={session.alias === selectedAlias && view === 'hosts'} onRequestConnect={requestConnect} onDisconnect={() => void disconnect(session.alias)} onError={(title, detail) => notify('error', title, detail)} />
             </div>)}

@@ -111,7 +111,7 @@ describe('desktop workflows', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '添加跳板节点' }), { target: { value: hosts[0].alias } })
     fireEvent.click(screen.getByRole('button', { name: '加入' }))
     fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ jumpChain: 'new-route' })))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ jumpChain: 'new-route' }), expect.anything()))
     expect(desktop.saveJumpChain).toHaveBeenCalledTimes(1)
   })
   it('does not silently save a direct connection when the visible chain is incomplete', async () => {
@@ -165,7 +165,7 @@ describe('desktop workflows', () => {
     await act(async () => {})
     fireEvent.change(screen.getByRole('combobox', { name: '主机用途' }), { target: { value: 'both' } })
     fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ role: 'both' })))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ role: 'both' }), expect.anything()))
     fireEvent.click(screen.getByRole('button', { name: '新建链' }))
     const select = screen.getByRole('combobox', { name: '添加跳板节点' }) as HTMLSelectElement
     expect(Array.from(select.options).map((item) => item.value)).toEqual(['', 'host-0', 'host-2'])

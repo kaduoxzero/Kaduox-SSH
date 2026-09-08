@@ -125,11 +125,21 @@ kbd,
 .terminal-tab-number { white-space: nowrap; font-size: 10px; color: #aabcc9; }
 .host-role-label { display: inline-block; padding: 1px 4px; margin-left: 4px; border: 1px solid var(--divider-strong); border-radius: 3px; color: var(--text-soft); font-size: 9px; font-weight: 400; vertical-align: middle; }
 .sidebar-heading > .icon-button { margin-left: auto; }
-.host-sidebar .split-host-list { display: flex; flex: 1; flex-direction: column; overflow: hidden; }
-.host-role-section { flex: 1; display: flex; flex-direction: column; min-height: 90px; overflow: hidden; }
+.host-sidebar .split-host-list { display: flex; flex: 1; flex-direction: column; overflow: hidden; min-height: 0; }
+.host-role-section { display: flex; flex-direction: column; }
 .host-role-section + .host-role-section { border-top: 1px solid var(--divider-strong); }
-.host-role-heading { display: flex; justify-content: space-between; padding: 12px 15px; font-size: 12px; }
+.host-role-heading { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 15px; font-size: 12px; color: var(--text); background: transparent; text-align: left; }
+.host-role-heading:hover { background: var(--surface-subtle); }
+.host-role-heading > span { margin-left: auto; color: var(--text-soft); }
+.host-role-heading .host-role-add { margin-left: 0; padding: 3px; border-radius: 4px; color: var(--text-soft); cursor: pointer; display: inline-flex; }
+.host-role-heading .host-role-add:hover { color: var(--text); background: var(--divider); }
 .host-role-scroll { overflow: auto; flex: 1; min-height: 0; }
+.folder-role-picker { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--text-soft); }
+.folder-role-option { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--divider); border-radius: 5px; cursor: pointer; color: var(--text-soft); }
+.folder-role-option.active { border-color: var(--cobalt); color: var(--cobalt); }
+.folder-role-option input { accent-color: var(--cobalt); margin: 0; }
+.folder-delete.confirming { color: #fff; background: #7a2e35; width: auto; padding: 0 6px; gap: 3px; }
+.folder-delete.confirming em { font-style: normal; font-size: 11px; }
 .host-role-empty { padding: 0 15px; color: var(--text-soft); font-size: 11px; line-height: 1.7; }
 .host-folder-heading { display: flex; align-items: center; }
 .host-folder-heading > button:first-child { display: flex; align-items: center; gap: 6px; padding: 8px 15px; flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text-soft); text-align: left; }
@@ -172,6 +182,9 @@ kbd,
   border-bottom: 1px solid var(--divider);
   background: var(--surface);
 }
+
+/* Windows 覆盖式标题栏：为右上角窗口控制按钮预留空间 */
+[data-platform='windows'] .top-bar { padding-right: 150px; }
 
 .brand {
   display: inline-flex;
@@ -621,11 +634,173 @@ kbd,
 .hosts-workspace {
   display: grid;
   grid-template-columns: minmax(480px, 1fr) 320px;
+  grid-template-rows: auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
 }
+
+/* 会话标签栏：跨整个工作区顶部 */
+.session-tabbar {
+  position: relative;
+  z-index: 30;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface);
+}
+
+.session-tab-list { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+
+.session-tab {
+  display: inline-flex;
+  align-items: center;
+  margin: 4px 0;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.session-tab.active { border-color: var(--cobalt); background: var(--surface-subtle); }
+
+.session-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 4px 5px 10px;
+  color: var(--text-soft);
+  font-size: 12px;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.session-tab.active .session-tab-main { color: var(--text); font-weight: 600; }
+
+.session-tab-close { padding: 5px; margin-right: 3px; color: var(--text-muted); background: transparent; border-radius: 3px; display: flex; }
+.session-tab-close:hover { color: #fff; background: #413038; }
+
+.session-tab-actions { position: relative; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+/* 命令历史面板 */
+.command-history {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-height: 420px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+}
+
+.command-history-head { display: flex; align-items: baseline; justify-content: space-between; padding: 10px 12px 6px; font-size: 12px; }
+.command-history-head span { color: var(--text-muted); font-size: 11px; }
+.command-history-list { overflow-y: auto; min-height: 0; padding: 0 6px; }
+.command-history-empty { padding: 14px 10px; color: var(--text-soft); font-size: 12px; line-height: 1.6; }
+
+.command-history-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+
+.command-history-row:hover { background: var(--surface-subtle); }
+.command-history-row code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.command-history-row .icon-button { padding: 4px; }
+
+.command-history-editor { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--divider); }
+.command-history-editor input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--divider);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  background: var(--surface-subtle);
+}
+
+.field-checkbox { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-soft); }
+.field-checkbox input { accent-color: var(--cobalt); }
+
+/* 通用模态框（SFTP 新建/重命名/属性/删除/编辑） */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.45);
+}
+
+.modal-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 92vw);
+  padding: 18px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 18px 44px rgb(0 0 0 / 0.4);
+}
+
+.modal-card h3 { margin: 0; font-size: 15px; }
+.modal-hint { margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.modal-card input {
+  padding: 8px 10px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  background: var(--surface-subtle);
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.file-props { display: grid; grid-template-columns: 72px 1fr; gap: 6px 12px; margin: 0; font-size: 12px; }
+.file-props dt { color: var(--text-muted); }
+.file-props dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+.file-editor-card { width: min(720px, 94vw); }
+.file-editor-text {
+  width: 100%;
+  height: 46vh;
+  padding: 10px;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.6;
+  background: var(--canvas);
+  resize: vertical;
+}
+
+.file-row { position: relative; }
+.file-row-actions { display: none; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); gap: 2px; padding: 2px; border-radius: 5px; background: var(--surface); }
+.file-row:hover .file-row-actions, .file-row.selected .file-row-actions { display: inline-flex; }
+.file-row-actions .icon-button { padding: 4px; }
+.file-row-actions .icon-button.danger:hover { color: #ff8a8a; background: #413038; }
+
+.file-search { flex: 1; }
+.file-search .icon-button { padding: 2px; }
+
+.help-version { color: var(--text-muted); }
 
 .terminal-panel {
   display: grid;

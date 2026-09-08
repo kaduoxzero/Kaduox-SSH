@@ -14,10 +14,12 @@ import type {
   HistoryEntry,
   HistoryPage,
   Host,
+  HostFolder,
   HostSaveRequest,
   JumpChain,
   JumpChainSaveRequest,
   RemoteFile,
+  RemoteFileContent,
   Session,
   SystemMetrics,
   TerminalExitEvent,
@@ -32,7 +34,7 @@ export async function openHelpLink(page: 'project' | 'manual' | 'releases') {
   window.open(base + (page === 'manual' ? '/blob/develop/docs/DESKTOP_GUIDE.zh-CN.md' : page === 'releases' ? '/releases' : ''), '_blank', 'noopener,noreferrer')
 }
 
-const mockHosts: Host[] = []
+let mockHosts: Host[] = []
 
 let mockChains: JumpChain[] = []
 
@@ -72,17 +74,25 @@ export async function listHosts(): Promise<Host[]> {
   return isDesktopRuntime ? invoke<Host[]>('list_hosts') : structuredClone(mockHosts)
 }
 
-let mockFolders: string[] = []
-export async function listFolders(): Promise<string[]> {
-  return isDesktopRuntime ? invoke<string[]>('list_folders') : [...new Set([...mockFolders, ...mockHosts.flatMap((host) => host.groups)])].sort()
+let mockFolders: HostFolder[] = []
+export async function listFolders(): Promise<HostFolder[]> {
+  if (isDesktopRuntime) return invoke<HostFolder[]>('list_folders')
+  const names = [...new Set([...mockFolders.map((folder) => folder.name), ...mockHosts.flatMap((host) => host.groups)])].sort()
+  return names.map((name) => mockFolders.find((folder) => folder.name === name) ?? { name, role: 'target' })
 }
-export async function saveFolder(name: string, originalName: string | null): Promise<void> {
-  if (isDesktopRuntime) return invoke('save_folder', { name, originalName })
+export async function saveFolder(name: string, originalName: string | null, role: 'target' | 'jump' = 'target'): Promise<void> {
+  if (isDesktopRuntime) return invoke('save_folder', { name, originalName, role })
   if (!name.trim()) throw new Error('请填写文件夹名称')
-  if (name === originalName) return
-  if ((await listFolders()).includes(name)) throw new Error('文件夹已存在')
-  mockFolders = [...mockFolders.filter((folder) => folder !== originalName), name]
+  if ((await listFolders()).some((folder) => folder.name === name && name !== originalName)) throw new Error('文件夹已存在')
+  mockFolders = [...mockFolders.filter((folder) => folder.name !== originalName && folder.name !== name), { name, role }]
   for (const host of mockHosts) host.groups = host.groups.map((folder) => folder === originalName ? name : folder)
+}
+export async function deleteFolder(name: string): Promise<string[]> {
+  if (isDesktopRuntime) return invoke<string[]>('delete_folder', { name })
+  const removed = mockHosts.filter((host) => host.groups[0] === name).map((host) => host.alias)
+  mockHosts = mockHosts.filter((host) => host.groups[0] !== name)
+  mockFolders = mockFolders.filter((folder) => folder.name !== name)
+  return removed
 }
 
 export async function listJumpChains(): Promise<JumpChain[]> {
@@ -365,6 +375,42 @@ export async function downloadFile(
     ? await invoke<{ bytes: number }>('download_file', { request: { alias, remotePath, localPath } })
     : { bytes: 1024 * 48 }
   return result.bytes
+}
+
+export async function listCommandHistory(alias: string | null): Promise<string[]> {
+  if (isDesktopRuntime) return invoke<string[]>('list_command_history', { alias })
+  const commands = mockHistory.filter((entry) => !alias || entry.alias === alias).map((entry) => entry.command)
+  return [...new Set(commands)].slice(0, 200)
+}
+
+export async function createRemoteDirectory(alias: string, path: string): Promise<void> {
+  if (isDesktopRuntime) return invoke('create_remote_directory', { request: { alias, path } })
+}
+
+export async function createRemoteFile(alias: string, path: string): Promise<void> {
+  if (isDesktopRuntime) return invoke('create_remote_file', { request: { alias, path } })
+}
+
+export async function readRemoteFile(alias: string, path: string): Promise<RemoteFileContent> {
+  if (isDesktopRuntime) return invoke<RemoteFileContent>('read_remote_file', { request: { alias, path } })
+  return { contentBase64: bytesToBase64(new TextEncoder().encode('# 演示内容\n')), size: 8 }
+}
+
+export async function writeRemoteFile(alias: string, path: string, content: string): Promise<number> {
+  if (isDesktopRuntime) {
+    const contentBase64 = bytesToBase64(new TextEncoder().encode(content))
+    const result = await invoke<{ bytes: number }>('write_remote_file', { request: { alias, path, contentBase64 } })
+    return result.bytes
+  }
+  return content.length
+}
+
+export async function renameRemotePath(alias: string, from: string, to: string): Promise<void> {
+  if (isDesktopRuntime) return invoke('rename_remote_path', { request: { alias, from, to } })
+}
+
+export async function deleteRemotePath(alias: string, path: string): Promise<void> {
+  if (isDesktopRuntime) return invoke('delete_remote_path', { request: { alias, path } })
 }
 
 export async function executeCommand(alias: string, command: string): Promise<ExecResponse> {
