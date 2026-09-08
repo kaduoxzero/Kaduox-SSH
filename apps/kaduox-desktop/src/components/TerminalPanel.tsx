@@ -1,5 +1,4 @@
 import Copy from 'lucide-react/dist/esm/icons/copy'
-import Maximize2 from 'lucide-react/dist/esm/icons/maximize-2'
 import Plus from 'lucide-react/dist/esm/icons/plus'
 import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw'
 import ShieldCheck from 'lucide-react/dist/esm/icons/shield-check'
@@ -39,7 +38,6 @@ function tabsReducer(state: TabsState, action: TabsAction): TabsState {
 export function TerminalPanel({ host, session, theme, active = true, openRequest = 0, onRequestConnect, onDisconnect, onError }: TerminalPanelProps) {
   const [tabs, dispatch] = useReducer(tabsReducer, { tabs: [{ id: 1, restart: 0 }], active: 1, next: 2 })
   const [states, setStates] = useState<Record<number, TerminalState>>({})
-  const [focusKey, setFocusKey] = useState(0)
   const aliasRef = useRef(session?.alias)
   const selectedTabRef = useRef<HTMLButtonElement>(null)
   const keyboardNavigation = useRef(false)
@@ -108,14 +106,13 @@ export function TerminalPanel({ host, session, theme, active = true, openRequest
           {tabs.active !== null && <>
             <span className={'terminal-state ' + currentState}>{currentState === 'ready' ? 'PTY 已就绪' : currentState === 'starting' ? '正在打开 PTY…' : currentState === 'closed' ? 'PTY 已关闭' : currentState === 'error' ? 'PTY 错误' : '等待连接'}</span>
             <button className="icon-button subtle" type="button" onClick={() => dispatch({ type: 'restart', id: tabs.active! })} aria-label="重启当前终端" title="只重启当前终端"><RefreshCw size={15} /></button>
-            <button className="icon-button subtle" type="button" onClick={() => setFocusKey((key) => key + 1)} aria-label="聚焦终端" title="聚焦终端"><Maximize2 size={15} /></button>
           </>}
         </>}
       </div>
       {session && tabs.tabs.map((tab) => (
         <TerminalSession key={session.alias + ':' + tab.id} alias={session.alias} label={'终端 ' + tab.id}
           theme={theme} visible={tabs.active === tab.id} active={active && tabs.active === tab.id}
-          restartKey={tab.restart} focusKey={tabs.active === tab.id ? focusKey : 0}
+          restartKey={tab.restart}
           onRestart={() => dispatch({ type: 'restart', id: tab.id })}
           onState={(state) => setStates((current) => current[tab.id] === state ? current : { ...current, [tab.id]: state })}
           onError={onError} />

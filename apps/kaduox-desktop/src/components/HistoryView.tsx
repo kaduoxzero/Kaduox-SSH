@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import Check from 'lucide-react/dist/esm/icons/check'
 import Clock3 from 'lucide-react/dist/esm/icons/clock-3'
+import Copy from 'lucide-react/dist/esm/icons/copy'
+import Pencil from 'lucide-react/dist/esm/icons/pencil'
 import { clearHistory, executeCommand, listHistory } from '../lib/desktop'
 import { errorMessage, formatDateTime } from '../lib/format'
 import type { HistoryPage, Session } from '../lib/types'
@@ -14,7 +17,23 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
   const [output, setOutput] = useState('')
   const [command, setCommand] = useState('')
   const [alias, setAlias] = useState(selectedAlias ?? sessions[0]?.alias ?? '')
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const commandInput = useRef<HTMLInputElement>(null)
   const scroll = useRef<HTMLDivElement>(null)
+
+  const copyCommand = async (id: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedId(id)
+      window.setTimeout(() => setCopiedId((current) => current === id ? null : current), 1500)
+    } catch { setError('复制失败：无法访问剪贴板') }
+  }
+
+  const editAndRerun = (entryAlias: string, text: string) => {
+    if (sessions.some((s) => s.alias === entryAlias)) setAlias(entryAlias)
+    setCommand(text)
+    commandInput.current?.focus()
+  }
   useEffect(() => {
     let cancelled = false
     setLoading(true)
@@ -40,10 +59,10 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
     try { await clearHistory(); setPage(1); setRevision((r) => r + 1) } catch (e) { setError(errorMessage(e)) }
   }
   return <main className="content-view history-view">
-    <div className="view-heading"><div><span className="eyebrow">PERSISTENT RUN HISTORY</span><h1>运行记录</h1><p>显式执行的命令永久保存在本机，每页 50 条。交互终端的键盘输入不记录，以免保存密码。</p></div><button className="secondary-button" onClick={() => void archive()} disabled={!data.total || running}>归档并清空</button></div>
+    <div className="view-heading"><div><span className="eyebrow">PERSISTENT RUN HISTORY</span><h1>运行记录</h1><p>显式执行的命令永久保存在本机，每页 50 条，可复制或编辑后重跑。终端里手敲的命令收录在会话栏的“命令历史”中（密码等敏感输入不记录）。</p></div><button className="secondary-button" onClick={() => void archive()} disabled={!data.total || running}>归档并清空</button></div>
     <form className="history-runner" onSubmit={(event) => void run(event)}>
       <select aria-label="执行主机" value={alias} onChange={(e) => setAlias(e.target.value)}><option value="">选择已连接主机</option>{sessions.map((s) => <option value={s.alias} key={s.alias}>{s.alias} · {s.user}@{s.address}</option>)}</select>
-      <input aria-label="远程命令" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="输入要执行并记录的命令（不要包含密码或令牌）" required />
+      <input ref={commandInput} aria-label="远程命令" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="输入要执行并记录的命令（不要包含密码或令牌）" required />
       <button className="primary-button" disabled={running || !sessions.some((s) => s.alias === alias)}>{running ? '执行中…' : '执行并记录'}</button>
     </form>
     {error && <div role="alert" className="inline-error">{error}</div>}
@@ -51,7 +70,7 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
     <div className="history-pagination"><span>共 {data.total} 条 · 第 {data.page} / {Math.max(1, Math.ceil(data.total / 50))} 页</span><button className="secondary-button" disabled={loading || page <= 1} onClick={() => setPage(page - 1)}>上一页</button><button className="secondary-button" disabled={loading || page * 50 >= data.total} onClick={() => setPage(page + 1)}>下一页</button><button className="secondary-button" disabled={loading} onClick={() => setRevision((r) => r + 1)}>刷新</button></div>
     <div className="history-scroll" ref={scroll} aria-busy={loading}>
       {!data.total ? <div className="large-empty"><Clock3 size={30} /><h2>还没有运行记录</h2><p>使用上方命令栏执行，重启客户端后记录仍在。</p></div> :
-      <section className="history-table"><div className="history-header"><span>退出码</span><span>主机 / 命令</span><span>输出摘要</span><span>时间</span><span>耗时</span></div>{data.entries.map((entry) => <article className="history-row" key={entry.id}><span className={entry.succeeded ? 'run-state success' : 'run-state failed'}>{entry.exitStatus ?? '—'}</span><div className="history-command"><strong>{entry.alias}</strong><code>{entry.command}</code></div><pre>{entry.outputPreview || '（无输出）'}</pre><span>{formatDateTime(entry.startedAtUnix)}</span><span>{entry.durationMs} ms</span></article>)}</section>}
+      <section className="history-table"><div className="history-header"><span>退出码</span><span>主机 / 命令</span><span>输出摘要</span><span>时间</span><span>耗时</span><span>操作</span></div>{data.entries.map((entry) => <article className="history-row" key={entry.id}><span className={entry.succeeded ? 'run-state success' : 'run-state failed'}>{entry.exitStatus ?? '—'}</span><div className="history-command"><strong>{entry.alias}</strong><code>{entry.command}</code></div><pre>{entry.outputPreview || '（无输出）'}</pre><span>{formatDateTime(entry.startedAtUnix)}</span><span>{entry.durationMs} ms</span><span className="history-row-actions"><button type="button" className="icon-button" aria-label="复制命令" title="复制命令" onClick={() => void copyCommand(entry.id, entry.command)}>{copiedId === entry.id ? <Check size={13} /> : <Copy size={13} />}</button><button type="button" className="icon-button" aria-label="编辑并重跑" title="填入上方命令框，可修改后重新执行" onClick={() => editAndRerun(entry.alias, entry.command)}><Pencil size={13} /></button></span></article>)}</section>}
     </div>
   </main>
 }

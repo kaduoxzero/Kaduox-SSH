@@ -4,9 +4,16 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
-## [0.33.0-rc.3] - 2026-09-08
+## [0.33.0-rc.4] - 2026-09-08
 
 Windows desktop prerelease, on top of rc.1.
+
+### Changed since rc.1 (desktop)
+
+- command history records only commands actually run through this app (panel/history-page runs and commands typed into terminals, with password-prompt lines suppressed); the earlier remote shell-history import was removed and existing imported entries are purged;
+- SFTP right-click context menus (open/edit/download/create/rename/properties/delete; blank-area create/upload/refresh);
+- run-history rows support copy and edit-then-rerun;
+- frameless window: window controls merged into the dark top bar; the largely useless "focus terminal" button was removed.
 
 ### Added (desktop)
 

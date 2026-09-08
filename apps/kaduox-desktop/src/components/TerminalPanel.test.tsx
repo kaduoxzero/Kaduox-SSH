@@ -21,7 +21,7 @@ vi.mock('@xterm/xterm', () => ({
 }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
 vi.mock('../lib/desktop', () => ({
-  startTerminal: vi.fn(), closeTerminal: vi.fn(async () => {}), terminalWrite: vi.fn(async () => {}), resizeTerminal: vi.fn(async () => {}),
+  startTerminal: vi.fn(), closeTerminal: vi.fn(async () => {}), terminalWrite: vi.fn(async () => {}), resizeTerminal: vi.fn(async () => {}), recordTerminalCommand: vi.fn(async () => {}),
   decodeBase64: (value: string) => new TextEncoder().encode(value),
   onTerminalOutput: vi.fn(async (fn: (event: TerminalOutputEvent) => void) => { harness.outputs.add(fn); return () => { harness.outputs.delete(fn) } }),
   onTerminalExit: vi.fn(async (fn: (event: TerminalExitEvent) => void) => { harness.exits.add(fn); return () => { harness.exits.delete(fn) } }),

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Terminal as XTermTerminal } from '@xterm/xterm'
-import { closeTerminal, decodeBase64, onTerminalExit, onTerminalOutput, resizeTerminal, startTerminal, terminalWrite } from '../lib/desktop'
+import { closeTerminal, decodeBase64, onTerminalExit, onTerminalOutput, recordTerminalCommand, resizeTerminal, startTerminal, terminalWrite } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
 import type { TerminalExitEvent, Theme } from '../lib/types'
 
 export type TerminalState = 'idle' | 'starting' | 'ready' | 'closed' | 'error'
 interface Props {
   alias: string; label: string; theme: Theme; visible: boolean; active: boolean
-  restartKey: number; focusKey: number
+  restartKey: number
   onState: (state: TerminalState) => void; onRestart: () => void
   onError: (title: string, detail: string) => void
 }
@@ -34,7 +34,7 @@ export function TerminalSession(props: Props) {
   }, [props.theme])
   useEffect(() => {
     if (props.active) { fitRef.current?.(); terminalRef.current?.focus() }
-  }, [props.active, props.focusKey])
+  }, [props.active])
 
   useEffect(() => {
     const container = containerRef.current
@@ -49,6 +49,9 @@ export function TerminalSession(props: Props) {
     const pending: Array<{ terminalId: string; bytes: Uint8Array }> = []
     const pendingExits: TerminalExitEvent[] = []
     let pendingBytes = 0
+    // 命令历史行缓冲：只记录本软件内手敲的命令；密码提示后的输入行不记录。
+    let lineBuffer = ''
+    let skipNextLine = false
     setError(null); setClosed(false)
     latest.current.onState('starting')
     const handleExit = (event: TerminalExitEvent) => {
@@ -73,6 +76,8 @@ export function TerminalSession(props: Props) {
         const outputListener = await onTerminalOutput((event) => {
           if (disposed || (terminalId && event.terminalId !== terminalId)) return
           const bytes = decodeBase64(event.dataBase64)
+          // 密码/口令提示出现后，下一行输入视为敏感信息，不写入命令历史。
+          if (/password|passphrase|密码|口令/i.test(new TextDecoder().decode(bytes))) skipNextLine = true
           if (terminalId) terminal?.write(bytes)
           else if (pendingBytes + bytes.length <= 256 * 1024) {
             pending.push({ terminalId: event.terminalId, bytes }); pendingBytes += bytes.length
@@ -99,6 +104,22 @@ export function TerminalSession(props: Props) {
         pendingExits.length = 0
         terminal.onData((data) => {
           void terminalWrite(openedId, data).catch((cause) => latest.current.onError('终端输入失败', errorMessage(cause)))
+          for (const ch of data) {
+            if (ch === '\r' || ch === '\n') {
+              const line = lineBuffer.trim()
+              lineBuffer = ''
+              if (skipNextLine) { skipNextLine = false; continue }
+              if (line) {
+                void recordTerminalCommand(props.alias, line).catch(() => {})
+              }
+            } else if (ch === '\x7f' || ch === '\b') {
+              lineBuffer = lineBuffer.slice(0, -1)
+            } else if (ch >= ' ' && ch !== '\x7f' && ch !== '\x1b') {
+              lineBuffer += ch
+              if (lineBuffer.length > 4096) lineBuffer = lineBuffer.slice(-4096)
+            }
+            // 其他控制字符（方向键、Tab 等转义序列）忽略，不进入行缓冲。
+          }
         })
         const fitTerminal = () => {
           if (disposed || !terminal || container.clientWidth === 0 || container.clientHeight === 0) return

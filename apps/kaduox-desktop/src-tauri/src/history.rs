@@ -72,11 +72,11 @@ pub fn append_commands(
     Ok(added)
 }
 
-/// 读取某主机的命令历史，最新在前。
+/// 读取某主机的命令历史，最新在前。只保留本软件产生的记录（local/terminal）。
 pub fn list_commands(path: &Path, alias: &str, limit: usize) -> Result<Vec<String>> {
     let mut output = Vec::new();
     for entry in read_commands(path)?.iter().rev() {
-        if entry.alias == alias {
+        if entry.alias == alias && entry.source != "remote" {
             output.push(entry.command.clone());
             if output.len() >= limit {
                 break;
@@ -84,6 +84,19 @@ pub fn list_commands(path: &Path, alias: &str, limit: usize) -> Result<Vec<Strin
         }
     }
     Ok(output)
+}
+
+/// 一次性清理早期版本从远端 shell 历史同步进来的记录。
+pub fn drop_remote_sources(path: &Path) -> Result<()> {
+    let entries = read_commands(path)?;
+    if !entries.iter().any(|entry| entry.source == "remote") {
+        return Ok(());
+    }
+    let kept: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| entry.source != "remote")
+        .collect();
+    write_commands(path, &kept)
 }
 
 fn read_commands(path: &Path) -> Result<Vec<CommandHistoryEntry>> {
@@ -228,8 +241,8 @@ mod tests {
     fn command_history_dedups_and_orders_newest_first() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("commands.jsonl");
-        append_commands(&path, "web", &["ls".into(), "pwd".into()], "remote", 1).unwrap();
-        append_commands(&path, "db", &["top".into()], "remote", 2).unwrap();
+        append_commands(&path, "web", &["ls".into(), "pwd".into()], "terminal", 1).unwrap();
+        append_commands(&path, "db", &["top".into()], "terminal", 2).unwrap();
         let added = append_commands(&path, "web", &["ls".into(), "git status".into()], "local", 3).unwrap();
         assert_eq!(added, 1);
         assert_eq!(list_commands(&path, "web", 10).unwrap(), ["git status", "ls", "pwd"]);

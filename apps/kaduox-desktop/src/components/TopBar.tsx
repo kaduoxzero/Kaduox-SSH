@@ -2,13 +2,19 @@ import Bot from 'lucide-react/dist/esm/icons/bot'
 import Clock3 from 'lucide-react/dist/esm/icons/clock-3'
 import FolderClosed from 'lucide-react/dist/esm/icons/folder-closed'
 import Info from 'lucide-react/dist/esm/icons/info'
+import Minus from 'lucide-react/dist/esm/icons/minus'
 import Moon from 'lucide-react/dist/esm/icons/moon'
 import Network from 'lucide-react/dist/esm/icons/network'
 import Plus from 'lucide-react/dist/esm/icons/plus'
 import Search from 'lucide-react/dist/esm/icons/search'
 import Server from 'lucide-react/dist/esm/icons/server'
+import Square from 'lucide-react/dist/esm/icons/square'
 import Sun from 'lucide-react/dist/esm/icons/sun'
-import { useState } from 'react'
+import CopyIcon from 'lucide-react/dist/esm/icons/copy'
+import X from 'lucide-react/dist/esm/icons/x'
+import { useEffect, useState } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { isDesktopRuntime } from '../lib/desktop'
 import { primaryShortcut } from '../lib/platform'
 
 import type { Host, Theme, ViewId } from '../lib/types'
@@ -47,10 +53,22 @@ export function TopBar({
 }: TopBarProps) {
   const [open, setOpen] = useState(false)
   const [index, setIndex] = useState(0)
+  const [maximized, setMaximized] = useState(false)
+  useEffect(() => {
+    if (!isDesktopRuntime) return
+    const win = getCurrentWindow()
+    void win.isMaximized().then(setMaximized).catch(() => {})
+    let unlisten: (() => void) | undefined
+    void win.onResized(() => { void win.isMaximized().then(setMaximized).catch(() => {}) }).then((off) => { unlisten = off })
+    return () => unlisten?.()
+  }, [])
   const matches = hosts.filter((h) => [h.alias, h.address, h.user, ...h.tags, ...h.groups].join(' ').toLowerCase().includes(search.trim().toLowerCase()))
   const choose = (host: Host) => { onSelectHost(host); setOpen(false); setIndex(0) }
   return (
-    <header className="top-bar" data-tauri-drag-region>
+    <header className="top-bar" data-tauri-drag-region onDoubleClick={(event) => {
+      if (!isDesktopRuntime || (event.target as HTMLElement).closest('button, input, a')) return
+      void getCurrentWindow().toggleMaximize()
+    }}>
       <button className="brand" type="button" onClick={() => onViewChange('hosts')} aria-label="Kaduox SSH 主界面">
         <img src="/app-icon.png" alt="" />
         <span>Kaduox SSH</span>
@@ -119,6 +137,13 @@ export function TopBar({
           <Plus size={16} aria-hidden="true" />
           新建连接
         </button>
+        {isDesktopRuntime && (
+          <div className="window-controls" role="group" aria-label="窗口控制">
+            <button type="button" aria-label="最小化" title="最小化" onClick={() => void getCurrentWindow().minimize()}><Minus size={14} /></button>
+            <button type="button" aria-label={maximized ? '还原' : '最大化'} title={maximized ? '还原' : '最大化'} onClick={() => void getCurrentWindow().toggleMaximize()}>{maximized ? <CopyIcon size={12} /> : <Square size={12} />}</button>
+            <button type="button" className="window-close" aria-label="关闭" title="关闭" onClick={() => void getCurrentWindow().close()}><X size={14} /></button>
+          </div>
+        )}
       </div>
     </header>
   )

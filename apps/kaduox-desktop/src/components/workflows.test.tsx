@@ -13,7 +13,7 @@ import type { Host, SystemMetrics } from '../lib/types'
 vi.mock('../lib/desktop', () => ({
   querySystemMetrics: vi.fn(), getLocalSystemMetrics: vi.fn(),
   listJumpChains: vi.fn(async () => []), saveJumpChain: vi.fn(),
-  listHistory: vi.fn(), clearHistory: vi.fn(), executeCommand: vi.fn(),
+  listHistory: vi.fn(), clearHistory: vi.fn(), executeCommand: vi.fn(), isDesktopRuntime: false,
   getLocalBasicInfo: vi.fn(async () => ({ hostname: '本机', username: 'tester', addresses: ['127.0.0.1'] })),
 }))
 const hosts: Host[] = Array.from({ length: 7 }, (_, n) => ({

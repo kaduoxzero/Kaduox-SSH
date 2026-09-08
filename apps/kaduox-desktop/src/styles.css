@@ -183,8 +183,20 @@ kbd,
   background: var(--surface);
 }
 
-/* Windows 覆盖式标题栏：为右上角窗口控制按钮预留空间 */
-[data-platform='windows'] .top-bar { padding-right: 150px; }
+/* 无边框窗口：自绘窗口控制按钮 */
+.window-controls { display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.window-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 28px;
+  color: var(--text-soft);
+  border-radius: 5px;
+  background: transparent;
+}
+.window-controls button:hover { color: var(--text); background: var(--surface-subtle); }
+.window-controls .window-close:hover { color: #fff; background: #c42b1c; }
 
 .brand {
   display: inline-flex;
@@ -801,6 +813,35 @@ kbd,
 .file-search .icon-button { padding: 2px; }
 
 .help-version { color: var(--text-muted); }
+
+/* 右键上下文菜单 */
+.context-menu {
+  position: fixed;
+  z-index: 120;
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--divider-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.4);
+}
+
+.context-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  padding: 6px 12px;
+  color: var(--text-soft);
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
+}
+
+.context-menu button:hover { color: var(--text); background: var(--surface-subtle); }
+.context-menu button.danger { color: #ff8a8a; }
+.context-menu button.danger:hover { background: #413038; }
+.context-menu hr { margin: 4px 2px; border: 0; border-top: 1px solid var(--divider); }
 
 .terminal-panel {
   display: grid;
@@ -1991,10 +2032,13 @@ kbd,
 .history-header,
 .history-row {
   display: grid;
-  grid-template-columns: 58px minmax(220px, 0.9fr) minmax(280px, 1.35fr) 95px 65px;
+  grid-template-columns: 58px minmax(220px, 0.9fr) minmax(280px, 1.35fr) 95px 65px 64px;
   align-items: center;
   gap: 12px;
 }
+
+.history-row-actions { display: inline-flex; gap: 2px; }
+.history-row-actions .icon-button { padding: 4px; }
 
 .history-header {
   height: 36px;
