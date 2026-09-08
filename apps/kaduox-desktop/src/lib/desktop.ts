@@ -444,16 +444,29 @@ export async function executeCommand(alias: string, command: string): Promise<Ex
   return response
 }
 
-export async function listHistory(page = 1): Promise<HistoryPage> {
-  return isDesktopRuntime ? invoke<HistoryPage>('list_history', { page }) : {
-    entries: structuredClone(mockHistory.slice((page - 1) * 50, page * 50)),
-    total: mockHistory.length, page, pageSize: 50,
+/** day 为本地日期（YYYY-MM-DD）；提供时按本地时区换算成 Unix 秒区间传给后端。 */
+export async function listHistory(page = 1, day?: string | null): Promise<HistoryPage> {
+  let range: { dayStart: number; dayEnd: number } | undefined
+  if (day) {
+    const start = new Date(day + 'T00:00:00')
+    const end = new Date(start)
+    end.setDate(end.getDate() + 1)
+    range = { dayStart: Math.floor(start.getTime() / 1000), dayEnd: Math.floor(end.getTime() / 1000) }
+  }
+  if (isDesktopRuntime) return invoke<HistoryPage>('list_history', { page, dayStart: range?.dayStart ?? null, dayEnd: range?.dayEnd ?? null })
+  const entries = range
+    ? mockHistory.filter((entry) => entry.startedAtUnix >= range.dayStart && entry.startedAtUnix < range.dayEnd)
+    : mockHistory
+  return {
+    entries: structuredClone(entries.slice((page - 1) * 50, page * 50)),
+    total: entries.length, page, pageSize: 50,
   }
 }
 
-export async function clearHistory(): Promise<void> {
-  if (isDesktopRuntime) await invoke('clear_history')
-  else mockHistory = []
+/** 创建归档快照（不会删除任何记录），返回快照文件名。 */
+export async function clearHistory(): Promise<string | null> {
+  if (isDesktopRuntime) return invoke<string | null>('clear_history')
+  return 'desktop-history-mock.jsonl.bak'
 }
 
 export async function startForward(request: ForwardStartRequest): Promise<Forward> {

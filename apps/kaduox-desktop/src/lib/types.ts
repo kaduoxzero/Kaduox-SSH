@@ -126,6 +126,7 @@ export interface HistoryPage { entries: HistoryEntry[]; total: number; page: num
 export interface HistoryEntry {
   id: string
   alias: string
+  username?: string | null
   command: string
   exitStatus: number | null
   succeeded: boolean

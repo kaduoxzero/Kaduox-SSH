@@ -345,6 +345,12 @@ pub async fn execute_command(
     let (stderr, stderr_truncated) = stderr.into_parts();
     let history_id = state.next_id("run");
     record_command(&state, request.alias.trim(), request.command.trim(), "local").await;
+    let username = state
+        .sessions
+        .read()
+        .await
+        .get(request.alias.trim())
+        .map(|entry| entry.details.user.clone());
 
     match execution {
         Ok(exit_status) => {
@@ -353,6 +359,7 @@ pub async fn execute_command(
                 HistoryEntryDto {
                     id: history_id,
                     alias: request.alias.clone(),
+                    username: username.clone(),
                     command: request.command.clone(),
                     exit_status,
                     succeeded: exit_status == Some(0),
@@ -378,6 +385,7 @@ pub async fn execute_command(
                 HistoryEntryDto {
                     id: history_id,
                     alias: request.alias,
+                    username,
                     command: request.command,
                     exit_status: None,
                     succeeded: false,
@@ -403,8 +411,11 @@ pub async fn execute_command(
 }
 
 #[tauri::command]
+/// 运行记录分页查询；day_start/day_end 为本地时区某天的 Unix 秒区间 [start, end)，由前端计算。
 pub async fn list_history(
     page: Option<usize>,
+    day_start: Option<u64>,
+    day_end: Option<u64>,
     state: State<'_, DesktopState>,
 ) -> Result<crate::history::HistoryPage, String> {
     let _guard = state.history.lock().await;
@@ -412,10 +423,17 @@ pub async fn list_history(
         .map_err(|error| error.to_string())?
         .path()
         .with_file_name("desktop-history.jsonl");
-    tauri::async_runtime::spawn_blocking(move || crate::history::page(&path, page.unwrap_or(1)))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| format!("{error:#}"))
+    let day_range = match (day_start, day_end) {
+        (Some(start), Some(end)) if end > start => Some((start, end)),
+        (None, None) => None,
+        _ => return Err("日期范围无效".to_owned()),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::history::page(&path, page.unwrap_or(1), day_range)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{error:#}"))
 }
 
 /// 终端旁命令历史：只包含通过本软件在该主机上执行/输入过的命令，最新在前。
@@ -469,24 +487,24 @@ pub async fn record_terminal_command(
 }
 
 #[tauri::command]
-pub async fn clear_history(state: State<'_, DesktopState>) -> Result<(), String> {
+/// 创建归档快照：复制当前日志为 .bak，绝不删除或清空任何记录。返回快照文件名。
+pub async fn clear_history(state: State<'_, DesktopState>) -> Result<Option<String>, String> {
     let _guard = state.history.lock().await;
     let path = open_store()
         .map_err(|error| error.to_string())?
         .path()
         .with_file_name("desktop-history.jsonl");
-    if path.exists() {
-        // Recoverable clear: archive the exact log instead of deleting user records.
-        std::fs::rename(
-            &path,
-            path.with_file_name(format!(
-                "desktop-history-{}.jsonl.bak",
-                state.next_id("archive")
-            )),
-        )
-        .map_err(|error| error.to_string())?;
+    if !path.exists() {
+        return Ok(None);
     }
-    Ok(())
+    let snapshot = path.with_file_name(format!(
+        "desktop-history-{}.jsonl.bak",
+        state.next_id("archive")
+    ));
+    std::fs::copy(&path, &snapshot).map_err(|error| error.to_string())?;
+    Ok(snapshot
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned()))
 }
 
 #[cfg(test)]

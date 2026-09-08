@@ -162,6 +162,9 @@ pub struct ExecResponse {
 pub struct HistoryEntryDto {
     pub id: String,
     pub alias: String,
+    /// 执行命令时的登录用户；旧记录没有该字段。
+    #[serde(default)]
+    pub username: Option<String>,
     pub command: String,
     pub exit_status: Option<u32>,
     pub succeeded: bool,
