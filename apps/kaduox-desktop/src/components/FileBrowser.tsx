@@ -63,12 +63,35 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
   const [reloadKey, setReloadKey] = useState(0)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
-  const [createDialog, setCreateDialog] = useState<{ kind: 'directory' | 'file'; name: string } | null>(null)
+  const [createDialog, setCreateDialog] = useState<{ kind: 'directory' | 'file'; name: string; basePath?: string } | null>(null)
   const [renameTarget, setRenameTarget] = useState<{ entry: RemoteFile; name: string } | null>(null)
   const [propsTarget, setPropsTarget] = useState<RemoteFile | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RemoteFile | null>(null)
   const [editTarget, setEditTarget] = useState<{ entry: RemoteFile; content: string; dirty: boolean } | null>(null)
   const [dialogBusy, setDialogBusy] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: RemoteFile | null } | null>(null)
+
+  const openMenu = (event: React.MouseEvent, entry: RemoteFile | null) => {
+    event.preventDefault()
+    event.stopPropagation()
+    // 防止菜单超出窗口边缘
+    const x = Math.min(event.clientX, window.innerWidth - 190)
+    const y = Math.min(event.clientY, window.innerHeight - 260)
+    setMenu({ x, y, entry })
+    if (entry) setSelectedPath(entry.path)
+  }
+
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   useEffect(() => {
     const home = session ? remoteHomePath(session.user) : '/'
@@ -152,7 +175,7 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
       onNotify('error', '名称无效', '名称不能为空，也不能包含 /')
       return
     }
-    const target = joinRemotePath(path, name)
+    const target = joinRemotePath(createDialog.basePath ?? path, name)
     try {
       await runMutation(
         () => createDialog.kind === 'directory' ? createRemoteDirectory(session.alias, target) : createRemoteFile(session.alias, target),
@@ -248,19 +271,23 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
     }
   }
 
-  const download = async () => {
-    if (!session || !selected || selected.fileType === 'directory') return
-    const localPath = await pickDownloadPath(selected.name)
+  const downloadEntry = async (entry: RemoteFile) => {
+    if (!session || entry.fileType === 'directory') return
+    const localPath = await pickDownloadPath(entry.name)
     if (!localPath) return
     setTransferBusy(true)
     try {
-      const bytes = await downloadFile(session.alias, selected.path, localPath)
-      onNotify('success', '下载完成', `${selected.name} · ${formatBytes(bytes)}`)
+      const bytes = await downloadFile(session.alias, entry.path, localPath)
+      onNotify('success', '下载完成', `${entry.name} · ${formatBytes(bytes)}`)
     } catch (error) {
       onNotify('error', '下载失败', errorMessage(error))
     } finally {
       setTransferBusy(false)
     }
+  }
+
+  const download = async () => {
+    if (selected) await downloadEntry(selected)
   }
 
   return (
@@ -314,7 +341,8 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
       <div className="file-table-header" aria-hidden="true">
         <span>名称</span><span>大小</span><span>修改时间</span>
       </div>
-      <div className="file-list" role="listbox" aria-label="远程目录内容">
+      <div className="file-list" role="listbox" aria-label="远程目录内容"
+        onContextMenu={(event) => { if (session && event.target === event.currentTarget) openMenu(event, null) }}>
         {!session ? (
           <div className="file-empty">
             <FolderOpen size={24} />
@@ -340,6 +368,7 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
               aria-selected={selectedPath === entry.path}
               tabIndex={0}
               onClick={() => setSelectedPath(entry.path)}
+              onContextMenu={(event) => openMenu(event, entry)}
               onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedPath(entry.path) } }}
               onDoubleClick={() => entry.fileType === 'directory' ? navigate(entry.path) : void openEditor(entry)}
               title={entry.path}
@@ -362,11 +391,44 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
         {selected && <span>{selected.permissions ?? '—'} · {selected.owner ?? '—'}</span>}
       </div>
 
+      {menu && (
+        <div className="context-menu" role="menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(event) => event.stopPropagation()}>
+          {menu.entry ? (
+            <>
+              {menu.entry.fileType === 'directory' ? (
+                <>
+                  <button type="button" role="menuitem" onClick={() => { navigate(menu.entry!.path); setMenu(null) }}>打开</button>
+                  <button type="button" role="menuitem" onClick={() => { setCreateDialog({ kind: 'directory', name: '', basePath: menu.entry!.path }); setMenu(null) }}>在此新建文件夹</button>
+                  <button type="button" role="menuitem" onClick={() => { setCreateDialog({ kind: 'file', name: '', basePath: menu.entry!.path }); setMenu(null) }}>在此新建文件</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" role="menuitem" onClick={() => { void openEditor(menu.entry!); setMenu(null) }}>编辑</button>
+                  <button type="button" role="menuitem" onClick={() => { void downloadEntry(menu.entry!); setMenu(null) }}>下载</button>
+                </>
+              )}
+              <hr />
+              <button type="button" role="menuitem" onClick={() => { setRenameTarget({ entry: menu.entry!, name: menu.entry!.name }); setMenu(null) }}>重命名</button>
+              <button type="button" role="menuitem" onClick={() => { setPropsTarget(menu.entry!); setMenu(null) }}>属性</button>
+              <button type="button" role="menuitem" className="danger" onClick={() => { setDeleteTarget(menu.entry!); setMenu(null) }}>删除</button>
+            </>
+          ) : (
+            <>
+              <button type="button" role="menuitem" onClick={() => { setCreateDialog({ kind: 'directory', name: '' }); setMenu(null) }}>新建文件夹</button>
+              <button type="button" role="menuitem" onClick={() => { setCreateDialog({ kind: 'file', name: '' }); setMenu(null) }}>新建文件</button>
+              <hr />
+              <button type="button" role="menuitem" onClick={() => { void upload(); setMenu(null) }}>上传</button>
+              <button type="button" role="menuitem" onClick={() => { reload(); setMenu(null) }}>刷新</button>
+            </>
+          )}
+        </div>
+      )}
+
       {createDialog && (
         <div className="modal-backdrop" onClick={() => setCreateDialog(null)}>
           <form className="modal-card" onClick={(event) => event.stopPropagation()} onSubmit={submitCreate}>
             <h3>{createDialog.kind === 'directory' ? '新建文件夹' : '新建文件'}</h3>
-            <p className="modal-hint">位置：{path}</p>
+            <p className="modal-hint">位置：{createDialog.basePath ?? path}</p>
             <input autoFocus value={createDialog.name} onChange={(event) => setCreateDialog({ ...createDialog, name: event.target.value })} placeholder={createDialog.kind === 'directory' ? '文件夹名称' : '文件名称'} aria-label="名称" />
             <div className="modal-actions">
               <button type="button" className="secondary-button" onClick={() => setCreateDialog(null)} disabled={dialogBusy}>取消</button>

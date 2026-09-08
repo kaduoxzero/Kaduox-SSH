@@ -8,7 +8,7 @@ mod util;
 use commands::ai::{ai_chat, ai_key_status, ai_models, delete_ai_api_key, save_ai_api_key};
 use commands::connection::{
     clear_history, connect_host, delete_stored_password, disconnect_host, execute_command,
-    list_command_history, list_history, list_sessions, sync_command_history,
+    list_command_history, list_history, list_sessions, record_terminal_command,
 };
 use commands::files::{
     create_remote_directory, create_remote_file, delete_remote_path, download_file,
@@ -57,7 +57,7 @@ pub fn run() {
             execute_command,
             list_history,
             list_command_history,
-            sync_command_history,
+            record_terminal_command,
             clear_history,
             list_remote_files,
             upload_file,
