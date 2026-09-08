@@ -1027,7 +1027,9 @@ kbd,
 
 .file-browser {
   display: grid;
-  grid-template-rows: 59px 43px 39px 28px minmax(0, 1fr) 29px;
+  /* 工具行数量可变（搜索/操作行），只固定“列表拉伸、底部状态栏贴底” */
+  grid-auto-rows: max-content;
+  grid-template-rows: repeat(5, max-content) minmax(0, 1fr) max-content;
   min-width: 0;
   min-height: 0;
   border-left: 1px solid var(--divider);
