@@ -9,7 +9,9 @@ use kaduox_ssh_hosts::{
 use tauri::State;
 
 use crate::credentials;
-use crate::models::{HostDto, HostSaveRequest, JumpChainDto, JumpChainSaveRequest, RouteNodeDto};
+use crate::models::{
+    FolderDto, HostDto, HostSaveRequest, JumpChainDto, JumpChainSaveRequest, RouteNodeDto,
+};
 use crate::state::DesktopState;
 
 pub fn open_store() -> Result<HostStore> {
@@ -17,10 +19,16 @@ pub fn open_store() -> Result<HostStore> {
 }
 
 #[tauri::command]
-pub async fn list_folders(state: State<'_, DesktopState>) -> Result<Vec<String>, String> {
+pub async fn list_folders(state: State<'_, DesktopState>) -> Result<Vec<FolderDto>, String> {
     let _guard = state.host_store_guard.lock().await;
     open_store()
-        .map(|store| store.folders())
+        .map(|store| {
+            store
+                .folder_entries()
+                .into_iter()
+                .map(|(name, role)| FolderDto { name, role })
+                .collect()
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -28,13 +36,50 @@ pub async fn list_folders(state: State<'_, DesktopState>) -> Result<Vec<String>,
 pub async fn save_folder(
     name: String,
     original_name: Option<String>,
+    role: Option<String>,
     state: State<'_, DesktopState>,
 ) -> Result<(), String> {
     let _guard = state.host_store_guard.lock().await;
     let result = (|| -> Result<()> {
         let mut store = open_store()?;
-        store.save_folder(name.trim(), original_name.as_deref())?;
+        store.save_folder(
+            name.trim(),
+            original_name.as_deref(),
+            role.as_deref().unwrap_or("target"),
+        )?;
         store.save()
+    })();
+    result.map_err(|error| error.to_string())
+}
+
+/// 删除文件夹及其中全部主机（groups 第一个分组等于该文件夹的主机）。
+/// 返回被删除主机的别名列表；有活跃会话或跳板链引用时整体失败。
+#[tauri::command]
+pub async fn delete_folder(
+    name: String,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<String>, String> {
+    let name = name.trim().to_owned();
+    {
+        let sessions = state.sessions.read().await;
+        let store = open_store().map_err(|error| error.to_string())?;
+        if let Some(alias) = store
+            .database()
+            .hosts
+            .values()
+            .filter(|host| host.groups.first().map(String::as_str) == Some(name.as_str()))
+            .map(|host| host.alias.as_str())
+            .find(|alias| sessions.contains_key(*alias))
+        {
+            return Err(format!("请先断开主机 {alias} 的连接，再删除该文件夹"));
+        }
+    }
+    let _guard = state.host_store_guard.lock().await;
+    let result = (|| -> Result<Vec<String>> {
+        let mut store = open_store()?;
+        let removed = store.remove_folder(&name)?;
+        store.save()?;
+        Ok(removed)
     })();
     result.map_err(|error| error.to_string())
 }

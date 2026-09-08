@@ -1,11 +1,14 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use kaduox_ssh_core::{RemoteDirEntry, RemoteFileType, TransferOptions};
 use tauri::State;
 
 use crate::models::{
-    DownloadRequest, FileListRequest, RemoteFileDto, TransferResponse, UploadRequest,
+    DownloadRequest, FileListRequest, RemoteFileContent, RemoteFileDto, RemotePathRequest,
+    RemoteRenameRequest, RemoteWriteRequest, TransferResponse, UploadRequest,
 };
 use crate::state::DesktopState;
 use crate::util::validate_remote_path;
@@ -156,6 +159,120 @@ async fn download_file_inner(
         .await
         .with_context(|| format!("下载 {} 失败", request.remote_path))?;
     Ok(TransferResponse { bytes })
+}
+
+#[tauri::command]
+pub async fn create_remote_directory(
+    request: RemotePathRequest,
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    validate_remote_path(&request.path).map_err(|error| error.to_string())?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(|error| error.to_string())?;
+    lease
+        .create_remote_directory(&request.path)
+        .await
+        .map_err(|error| format!("创建远程目录失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn create_remote_file(
+    request: RemotePathRequest,
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    validate_remote_path(&request.path).map_err(|error| error.to_string())?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(|error| error.to_string())?;
+    lease
+        .create_remote_file(&request.path)
+        .await
+        .map_err(|error| format!("创建远程文件失败：{error}"))
+}
+
+#[tauri::command]
+pub async fn read_remote_file(
+    request: RemotePathRequest,
+    state: State<'_, DesktopState>,
+) -> Result<RemoteFileContent, String> {
+    validate_remote_path(&request.path).map_err(|error| error.to_string())?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(|error| error.to_string())?;
+    let content = lease
+        .read_remote_file(&request.path)
+        .await
+        .map_err(|error| format!("读取远程文件失败：{error}"))?;
+    Ok(RemoteFileContent {
+        size: content.len() as u64,
+        content_base64: BASE64.encode(content),
+    })
+}
+
+#[tauri::command]
+pub async fn write_remote_file(
+    request: RemoteWriteRequest,
+    state: State<'_, DesktopState>,
+) -> Result<TransferResponse, String> {
+    validate_remote_path(&request.path).map_err(|error| error.to_string())?;
+    let content = BASE64
+        .decode(request.content_base64.as_bytes())
+        .map_err(|_| "文件内容编码无效".to_owned())?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(|error| error.to_string())?;
+    let bytes = lease
+        .write_remote_file(&request.path, &content)
+        .await
+        .map_err(|error| format!("写入远程文件失败：{error}"))?;
+    Ok(TransferResponse { bytes })
+}
+
+#[tauri::command]
+pub async fn rename_remote_path(
+    request: RemoteRenameRequest,
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    validate_remote_path(&request.from).map_err(|error| error.to_string())?;
+    validate_remote_path(&request.to).map_err(|error| error.to_string())?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(|error| error.to_string())?;
+    lease
+        .rename_remote_path(&request.from, &request.to)
+        .await
+        .map_err(|error| format!("重命名失败：{error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_remote_path(
+    request: RemotePathRequest,
+    state: State<'_, DesktopState>,
+) -> Result<(), String> {
+    validate_remote_path(&request.path).map_err(|error| error.to_string())?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(|error| error.to_string())?;
+    lease
+        .remove_remote_path(&request.path)
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("not empty") {
+                format!("目录非空，请先清空后再删除：{}", request.path)
+            } else {
+                format!("删除失败：{message}")
+            }
+        })?;
+    Ok(())
 }
 
 #[cfg(test)]

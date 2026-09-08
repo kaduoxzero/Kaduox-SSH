@@ -72,6 +72,7 @@ impl HostStore {
         self.database
             .folders
             .iter()
+            .chain(self.database.jump_folders.iter())
             .chain(
                 self.database
                     .hosts
@@ -84,33 +85,146 @@ impl HostStore {
             .collect()
     }
 
-    pub fn save_folder(&mut self, name: &str, original_name: Option<&str>) -> Result<()> {
+    /// 全部文件夹及其所属区域："target"（目标主机）或 "jump"（专用中转）。
+    pub fn folder_entries(&self) -> Vec<(String, String)> {
+        let mut entries: Vec<(String, String)> = self
+            .database
+            .folders
+            .iter()
+            .map(|name| (name.clone(), "target".to_owned()))
+            .chain(
+                self.database
+                    .jump_folders
+                    .iter()
+                    .map(|name| (name.clone(), "jump".to_owned())),
+            )
+            .collect();
+        let mut seen: std::collections::BTreeSet<&str> = self
+            .database
+            .folders
+            .iter()
+            .chain(self.database.jump_folders.iter())
+            .map(String::as_str)
+            .collect();
+        for name in self
+            .database
+            .hosts
+            .values()
+            .flat_map(|host| host.groups.iter())
+        {
+            if seen.insert(name.as_str()) {
+                entries.push((name.clone(), "target".to_owned()));
+            }
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries
+    }
+
+    pub fn folder_role(&self, name: &str) -> &'static str {
+        if self.database.jump_folders.iter().any(|folder| folder == name) {
+            "jump"
+        } else {
+            "target"
+        }
+    }
+
+    pub fn save_folder(
+        &mut self,
+        name: &str,
+        original_name: Option<&str>,
+        role: &str,
+    ) -> Result<()> {
         crate::model::validate_label(name, "folder")?;
+        if !matches!(role, "target" | "jump") {
+            bail!("文件夹区域必须是 target 或 jump");
+        }
         let folders = self.folders();
+        let explicit = |value: &str| {
+            self.database.folders.iter().any(|f| f == value)
+                || self.database.jump_folders.iter().any(|f| f == value)
+        };
         if original_name.is_some_and(|old| !folders.iter().any(|folder| folder == old)) {
             bail!("原文件夹不存在");
         }
-        if original_name == Some(name) {
-            return Ok(());
-        }
-        if folders.iter().any(|folder| folder == name) {
+        // 新建仅与显式文件夹查重：主机分组派生出的同名分组允许被“认领”为显式文件夹。
+        // 重命名到任何已存在的名字仍然拒绝，避免合并歧义。
+        let duplicate = if original_name.is_some() {
+            original_name != Some(name) && folders.iter().any(|folder| folder == name)
+        } else {
+            explicit(name)
+        };
+        if duplicate {
             bail!("文件夹已存在");
         }
         let mut updated = self.database.clone();
         if let Some(old) = original_name {
-            updated.folders.retain(|folder| folder != old);
-            for host in updated.hosts.values_mut() {
-                for folder in &mut host.groups {
-                    if folder == old {
-                        *folder = name.to_owned();
+            if old != name {
+                for host in updated.hosts.values_mut() {
+                    for folder in &mut host.groups {
+                        if folder == old {
+                            *folder = name.to_owned();
+                        }
                     }
                 }
             }
         }
-        updated.folders.push(name.to_owned());
+        // 统一先移除同名项再按目标区域放入，保证“仅改角色”也能移动列表。
+        updated.folders.retain(|folder| folder != name);
+        updated.jump_folders.retain(|folder| folder != name);
+        if original_name.is_some_and(|old| old != name) {
+            updated.folders.retain(|folder| Some(folder.as_str()) != original_name);
+            updated
+                .jump_folders
+                .retain(|folder| Some(folder.as_str()) != original_name);
+        }
+        let list = if role == "jump" {
+            &mut updated.jump_folders
+        } else {
+            &mut updated.folders
+        };
+        list.push(name.to_owned());
         updated.validate()?;
         self.database = updated;
         Ok(())
+    }
+
+    /// 删除文件夹以及“文件夹内”的主机（groups 第一个分组等于该文件夹的主机）。
+    /// 返回被删除主机的别名列表；若任一主机被跳板链引用则整体失败，不做任何修改。
+    pub fn remove_folder(&mut self, name: &str) -> Result<Vec<String>> {
+        // 文件夹可能仅由主机分组派生（不在显式列表中），两者都允许删除。
+        if !self.folders().iter().any(|folder| folder == name) {
+            bail!("文件夹不存在");
+        }
+        let aliases: Vec<String> = self
+            .database
+            .hosts
+            .values()
+            .filter(|host| host.groups.first().map(String::as_str) == Some(name))
+            .map(|host| host.alias.clone())
+            .collect();
+        for alias in &aliases {
+            for chain in self.database.chains.values() {
+                if chain
+                    .hops
+                    .iter()
+                    .any(|hop| matches!(hop, JumpHop::Host(value) if value == alias))
+                {
+                    bail!(
+                        "无法删除文件夹 {name}：主机 {alias} 被跳板链 {} 引用，请先从链中移除",
+                        chain.name
+                    );
+                }
+            }
+        }
+        let mut updated = self.database.clone();
+        updated.folders.retain(|folder| folder != name);
+        updated.jump_folders.retain(|folder| folder != name);
+        for alias in &aliases {
+            updated.hosts.remove(alias);
+        }
+        updated.validate()?;
+        self.database = updated;
+        Ok(aliases)
     }
 
     pub fn host(&self, alias: &str) -> Option<&HostRecord> {
@@ -480,26 +594,72 @@ mod tests {
         let path = temp_store_path("folders");
         let mut store = HostStore::open(&path).unwrap();
         assert!(store.folders().is_empty());
-        store.save_folder("空文件夹", None).unwrap();
+        store.save_folder("空文件夹", None, "target").unwrap();
         let mut host = HostRecord::new("目标", "192.0.2.1", "demo");
         host.groups = vec!["原分组".into()];
         store.insert_host(host).unwrap();
-        store.save_folder("新分组（开发）", Some("原分组")).unwrap();
+        store
+            .save_folder("新分组（开发）", Some("原分组"), "target")
+            .unwrap();
         assert_eq!(store.host("目标").unwrap().groups, ["新分组（开发）"]);
         assert!(
             store
-                .save_folder("空文件夹", Some("新分组（开发）"))
+                .save_folder("空文件夹", Some("新分组（开发）"), "target")
                 .is_err()
         );
-        assert!(store.save_folder("不存在", Some("不存在")).is_err());
-        assert!(store.save_folder("", None).is_err());
+        assert!(store.save_folder("不存在", Some("不存在"), "target").is_err());
+        assert!(store.save_folder("", None, "target").is_err());
+        assert!(store.save_folder("跳板分组", None, "jump").unwrap() == ());
+        assert_eq!(store.folder_role("跳板分组"), "jump");
+        store.save_folder("跳板分组", Some("跳板分组"), "target").unwrap();
+        assert_eq!(store.folder_role("跳板分组"), "target");
+        store.save_folder("中转分组", None, "jump").unwrap();
         store.save().unwrap();
         let loaded = HostStore::open(&path).unwrap();
         assert_eq!(loaded.folders(), store.folders());
         assert_eq!(loaded.host("目标").unwrap().groups, ["新分组（开发）"]);
         assert!(loaded.folders().contains(&"空文件夹".to_owned()));
+        assert_eq!(loaded.folder_role("中转分组"), "jump");
         // 仅清理本测试唯一的临时目录。
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn remove_folder_deletes_member_hosts_and_respects_chain_refs() {
+        let path = temp_store_path("remove-folder");
+        let mut store = HostStore::open(&path).unwrap();
+        store.save_folder("实验室", None, "target").unwrap();
+        let mut host = HostRecord::new("实验机", "192.0.2.2", "demo");
+        host.groups = vec!["实验室".into()];
+        store.insert_host(host).unwrap();
+        store
+            .insert_host(HostRecord::new("其他", "192.0.2.3", "demo"))
+            .unwrap();
+
+        assert!(store.remove_folder("不存在").is_err());
+        let removed = store.remove_folder("实验室").unwrap();
+        assert_eq!(removed, ["实验机"]);
+        assert!(store.host("实验机").is_none());
+        assert!(store.host("其他").is_some());
+        assert!(!store.folders().contains(&"实验室".to_owned()));
+
+        // 被跳板链引用的主机阻止整个删除。
+        let mut jump = HostRecord::new("中转", "192.0.2.4", "demo");
+        jump.role = crate::HostRole::Jump;
+        jump.groups = vec!["链路分组".into()];
+        store.insert_host(jump).unwrap();
+        store.save_folder("链路分组", None, "jump").unwrap();
+        store
+            .upsert_chain(JumpChain {
+                name: "route".into(),
+                hops: vec![JumpHop::Host("中转".into())],
+            })
+            .unwrap();
+        assert!(store.remove_folder("链路分组").is_err());
+        assert!(store.host("中转").is_some());
+        assert!(store.folders().contains(&"链路分组".to_owned()));
+        // 未调用 save，目录可能不存在。
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

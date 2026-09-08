@@ -247,6 +247,8 @@ impl JumpChain {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostDatabase {
     pub folders: Vec<String>,
+    /// 专用中转（跳板）文件夹；与 `folders` 互斥，缺省为空以兼容旧 hosts.toml。
+    pub jump_folders: Vec<String>,
     pub version: u32,
     pub hosts: BTreeMap<String, HostRecord>,
     pub chains: BTreeMap<String, JumpChain>,
@@ -257,6 +259,7 @@ impl Default for HostDatabase {
         Self {
             version: DATABASE_VERSION,
             folders: Vec::new(),
+            jump_folders: Vec::new(),
             hosts: BTreeMap::new(),
             chains: BTreeMap::new(),
         }
@@ -269,10 +272,11 @@ impl HostDatabase {
             bail!("too many host folders");
         }
         let mut seen_folders = std::collections::BTreeSet::new();
-        for name in &self.folders {
+        // 专用中转文件夹与目标文件夹共用同一命名空间，不得重叠。
+        for name in self.folders.iter().chain(self.jump_folders.iter()) {
             validate_label(name, "folder")?;
             if !seen_folders.insert(name) {
-                bail!("duplicate folder");
+                bail!("duplicate folder or folder role conflict");
             }
         }
         if self.version != DATABASE_VERSION {

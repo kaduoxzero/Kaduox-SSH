@@ -184,6 +184,120 @@ impl SshClient {
         close_result.context("failed to close SFTP session after recursive remote deletion")?;
         Ok(summary)
     }
+
+    /// Create one empty remote regular file. Fails if the path already exists.
+    pub async fn create_remote_file(&self, path: &str) -> Result<()> {
+        validate_mutation_path(path)?;
+        let sftp = self
+            .open_sftp_for_transfer(&TransferOptions::default())
+            .await?;
+        let result = create_file(&sftp, path).await;
+        let close_result = sftp.close().await;
+        result?;
+        close_result.context("failed to close SFTP session after remote file creation")?;
+        Ok(())
+    }
+
+    /// Read one small remote regular file (at most `MAX_SMALL_FILE_BYTES`).
+    pub async fn read_remote_file(&self, path: &str) -> Result<Vec<u8>> {
+        validate_mutation_path(path)?;
+        let sftp = self
+            .open_sftp_for_transfer(&TransferOptions::default())
+            .await?;
+        let result = read_file(&sftp, path).await;
+        let close_result = sftp.close().await;
+        let content = result?;
+        close_result.context("failed to close SFTP session after remote read")?;
+        Ok(content)
+    }
+
+    /// Overwrite one remote file with the given content (at most
+    /// `MAX_SMALL_FILE_BYTES`); the file is created when missing.
+    pub async fn write_remote_file(&self, path: &str, content: &[u8]) -> Result<u64> {
+        validate_mutation_path(path)?;
+        if content.len() as u64 > MAX_SMALL_FILE_BYTES {
+            bail!("remote file content exceeds {MAX_SMALL_FILE_BYTES} bytes");
+        }
+        let sftp = self
+            .open_sftp_for_transfer(&TransferOptions::default())
+            .await?;
+        let result = write_file(&sftp, path, content).await;
+        let close_result = sftp.close().await;
+        result?;
+        close_result.context("failed to close SFTP session after remote write")?;
+        Ok(content.len() as u64)
+    }
+}
+
+/// GUI 内联编辑允许的最大远程文件大小。
+pub const MAX_SMALL_FILE_BYTES: u64 = 1024 * 1024;
+
+async fn create_file(sftp: &SftpSession, path: &str) -> Result<()> {
+    if path_exists_no_follow(sftp, path).await? {
+        bail!("远程路径已存在: {path}");
+    }
+    use russh_sftp::protocol::OpenFlags;
+    let file = sftp
+        .open_with_flags(
+            path.to_owned(),
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .with_context(|| format!("无法创建远程文件 {path}"))?;
+    file.close()
+        .await
+        .with_context(|| format!("无法完成远程文件创建 {path}"))
+}
+
+async fn read_file(sftp: &SftpSession, path: &str) -> Result<Vec<u8>> {
+    let stat = stat_path(sftp, path)
+        .await
+        .with_context(|| format!("无法读取远程文件属性 {path}"))?;
+    if stat.metadata.file_type != RemoteFileType::File {
+        bail!("只能读取普通文件: {path}");
+    }
+    if let Some(size) = stat.metadata.size {
+        if size > MAX_SMALL_FILE_BYTES {
+            bail!("文件超过 1 MiB，请下载后编辑: {path}");
+        }
+    }
+    use tokio::io::AsyncReadExt;
+    let mut file = sftp
+        .open(path.to_owned())
+        .await
+        .with_context(|| format!("无法打开远程文件 {path}"))?;
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .await
+        .with_context(|| format!("无法读取远程文件 {path}"))?;
+    if content.len() as u64 > MAX_SMALL_FILE_BYTES {
+        bail!("文件超过 1 MiB，请下载后编辑: {path}");
+    }
+    Ok(content)
+}
+
+async fn write_file(sftp: &SftpSession, path: &str, content: &[u8]) -> Result<()> {
+    use russh_sftp::protocol::OpenFlags;
+    use tokio::io::AsyncWriteExt;
+    let stat = stat_path(sftp, path).await.ok();
+    if let Some(stat) = stat {
+        if stat.metadata.file_type == RemoteFileType::Directory {
+            bail!("目标是目录，无法写入: {path}");
+        }
+    }
+    let mut file = sftp
+        .open_with_flags(
+            path.to_owned(),
+            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+        )
+        .await
+        .with_context(|| format!("无法打开远程文件 {path}"))?;
+    file.write_all(content)
+        .await
+        .with_context(|| format!("无法写入远程文件 {path}"))?;
+    file.close()
+        .await
+        .with_context(|| format!("无法完成远程文件写入 {path}"))
 }
 
 async fn create_directory(sftp: &SftpSession, path: &str) -> Result<()> {

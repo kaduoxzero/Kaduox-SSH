@@ -37,6 +37,9 @@ pub fn encode(database: &HostDatabase) -> Result<String> {
     if !database.folders.is_empty() {
         write_strings(&mut output, "folders", &database.folders);
     }
+    if !database.jump_folders.is_empty() {
+        write_strings(&mut output, "jump_folders", &database.jump_folders);
+    }
 
     for host in database.hosts.values() {
         output.push_str("\n[[host]]\n");
@@ -167,10 +170,13 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
         );
     }
     let folders = take_strings(&mut root, "folders")?.unwrap_or_default();
+    // 旧 hosts.toml 无此键，缺省为空列表。
+    let jump_folders = take_strings(&mut root, "jump_folders")?.unwrap_or_default();
     reject_unknown(&root, "root")?;
 
     let mut database = HostDatabase {
         folders,
+        jump_folders,
         ..HostDatabase::default()
     };
     let mut raw_hops: BTreeMap<String, Vec<(usize, JumpHop)>> = BTreeMap::new();

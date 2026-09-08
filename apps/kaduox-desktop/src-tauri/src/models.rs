@@ -189,6 +189,43 @@ pub struct FileListRequest {
     pub path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderDto {
+    pub name: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotePathRequest {
+    pub alias: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRenameRequest {
+    pub alias: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteWriteRequest {
+    pub alias: String,
+    pub path: String,
+    pub content_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFileContent {
+    pub content_base64: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadRequest {

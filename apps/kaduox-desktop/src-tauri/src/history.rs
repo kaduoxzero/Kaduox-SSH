@@ -74,6 +74,36 @@ pub fn page(path: &Path, requested: usize) -> Result<HistoryPage> {
     })
 }
 
+/// 从持久化运行记录中提取去重后的命令列表（最新在前），供终端旁的命令历史使用。
+pub fn commands(path: &Path, alias: Option<&str>, limit: usize) -> Result<Vec<String>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut output = Vec::new();
+    let lines: Vec<String> = BufReader::new(file).lines().collect::<std::io::Result<_>>()?;
+    for line in lines.iter().rev() {
+        let entry: HistoryEntryDto = match serde_json::from_str(line) {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if let Some(alias) = alias {
+            if entry.alias != alias {
+                continue;
+            }
+        }
+        if seen.insert(entry.command.clone()) {
+            output.push(entry.command);
+            if output.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

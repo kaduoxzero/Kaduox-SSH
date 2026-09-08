@@ -8,13 +8,17 @@ mod util;
 use commands::ai::{ai_chat, ai_key_status, ai_models, delete_ai_api_key, save_ai_api_key};
 use commands::connection::{
     clear_history, connect_host, delete_stored_password, disconnect_host, execute_command,
-    list_history, list_sessions,
+    list_command_history, list_history, list_sessions,
 };
-use commands::files::{download_file, list_remote_files, upload_file};
+use commands::files::{
+    create_remote_directory, create_remote_file, delete_remote_path, download_file,
+    list_remote_files, read_remote_file, rename_remote_path, upload_file, write_remote_file,
+};
 use commands::forward::{list_forwards, start_forward, stop_forward};
 use commands::help::open_help_link;
 use commands::hosts::{
-    delete_host, list_chains, list_folders, list_hosts, save_chain, save_folder, save_host,
+    delete_folder, delete_host, list_chains, list_folders, list_hosts, save_chain, save_folder,
+    save_host,
 };
 use commands::info::{
     get_local_basic_info, get_local_system_metrics, query_basic_info, query_system_metrics,
@@ -37,6 +41,7 @@ pub fn run() {
             list_hosts,
             list_folders,
             save_folder,
+            delete_folder,
             list_chains,
             save_host,
             save_chain,
@@ -51,10 +56,17 @@ pub fn run() {
             close_terminal,
             execute_command,
             list_history,
+            list_command_history,
             clear_history,
             list_remote_files,
             upload_file,
             download_file,
+            create_remote_directory,
+            create_remote_file,
+            read_remote_file,
+            write_remote_file,
+            rename_remote_path,
+            delete_remote_path,
             start_forward,
             list_forwards,
             stop_forward,

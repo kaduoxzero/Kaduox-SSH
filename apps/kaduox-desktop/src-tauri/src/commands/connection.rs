@@ -396,6 +396,25 @@ pub async fn list_history(
         .map_err(|error| format!("{error:#}"))
 }
 
+/// 终端旁命令历史：来自持久化运行记录的去重命令（最新在前）。
+#[tauri::command]
+pub async fn list_command_history(
+    alias: Option<String>,
+    state: State<'_, DesktopState>,
+) -> Result<Vec<String>, String> {
+    let _guard = state.history.lock().await;
+    let path = open_store()
+        .map_err(|error| error.to_string())?
+        .path()
+        .with_file_name("desktop-history.jsonl");
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::history::commands(&path, alias.as_deref(), 200)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{error:#}"))
+}
+
 #[tauri::command]
 pub async fn clear_history(state: State<'_, DesktopState>) -> Result<(), String> {
     let _guard = state.history.lock().await;
