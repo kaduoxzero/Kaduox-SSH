@@ -10,15 +10,15 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ## Download and install
 
-This prerelease provides **Windows x64** binaries. Linux/macOS desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the supplied SHA-256 checksums.
+This prerelease provides **Windows x64** desktop binaries and a standalone MCP executable. Linux/macOS desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download only from this repository's Releases. This Release does not currently attach a CLI/TUI tools archive or SHA256SUMS.txt.
 
 | Download | Choose this when… |
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
-| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-tools.zip) | Use the six command-line, daemon, inventory, fleet, and MCP programs. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox.SSH_0.33.0-rc.1_x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [Portable desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH_0.33.0-rc.1_x64-portable.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
 | [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
+| [Chinese desktop guide (Release asset)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/DESKTOP_GUIDE.zh-CN.md) | Download the desktop guide packaged with this prerelease. |
+| [View all Release assets](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.1) | The CLI/TUI tools archive and SHA256SUMS.txt are not attached to this Release. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. Upgrade older CLI/TUI/MCP programs together if they share the desktop host library.
 

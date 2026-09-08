@@ -10,15 +10,15 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ## 下载与安装
 
-本次预发布仅提供 **Windows x64** 程序，不包含 Linux/macOS 桌面包。产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对 SHA-256 校验值。
+本次预发布仅提供 **Windows x64** 桌面程序与独立 MCP 程序，不包含 Linux/macOS 桌面包。产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请仅从本仓库 Releases 下载。当前 Release 未单独附带 CLI/TUI 工具包和 SHA256SUMS.txt。
 
 | 下载 | 适用场景 |
 | --- | --- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
-| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
-| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-tools.zip) | 包含命令行、TUI、daemon、fleet、inventory 和 MCP 共六个程序。 |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox.SSH_0.33.0-rc.1_x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
+| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH_0.33.0-rc.1_x64-portable.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
 | [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/kaduox-ssh-mcp.exe) | 只需要接入 Agent，不安装桌面客户端。 |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/SHA256SUMS.txt) | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。 |
+| [中文桌面手册（Release 附件）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/DESKTOP_GUIDE.zh-CN.md) | 下载本次发布对应的中文桌面使用手册。 |
+| [查看全部 Release 资产](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.1) | CLI/TUI 工具包和 SHA256SUMS.txt 当前未作为本次 Release 附件发布。 |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若旧 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
 
