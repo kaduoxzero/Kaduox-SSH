@@ -2,13 +2,84 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-## Windows desktop preview
+<img src="apps/kaduox-desktop/public/app-icon.png" width="72" height="72" alt="Kaduox SSH icon">
 
-[Download the Windows desktop prerelease](https://github.com/kaduoxzero/Kaduox-SSH/releases) · [Desktop user guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [Agent / MCP setup](docs/MCP.md)
+Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files, SSH jump chains, system metrics, port forwarding, and Agent integration. The Windows application supports light and dark themes and runs as a desktop client; no separately hosted web application is needed.
 
-The v0.33.0-rc.1 desktop preview has an install-directory picker, light/dark themes, independent terminal tabs, user-managed host folders, up to five SSH jump servers, metrics dashboards, SFTP, forwarding and a configurable AI provider. No personal host configuration is bundled. This manually built Windows preview is **unsigned**; the stable cross-platform release pipeline described below is not a claim that this preview is signed or CI-qualified.
+[Download v0.33.0-rc.1](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.1) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.1.md)
 
-Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low latency, bounded memory usage, reproducible builds, and a reusable core shared by CLI, TUI, inventory, and fleet frontends.
+## Download and install
+
+This prerelease provides **Windows x64** binaries. Linux/macOS desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the supplied SHA-256 checksums.
+
+| Download | Choose this when… |
+| --- | --- |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
+| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-tools.zip) | Use the six command-line, daemon, inventory, fleet, and MCP programs. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
+
+No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. Upgrade older CLI/TUI/MCP programs together if they share the desktop host library.
+
+## Desktop quick start
+
+1. **Save a host.** Enter a display name, address, SSH port, and login user. Display names support Chinese, spaces, and parentheses. Save passwords in Windows Credential Manager, or use a private key / SSH Agent.
+2. **Open a terminal.** Click a saved host to connect using its stored authentication. Clicking an already-connected host or the terminal-bar **＋** opens another independent terminal, not a new host. Missing or invalid credentials still require input.
+3. **Organize targets and jump servers.** Choose target-only, dedicated jump server, or both. Dedicated jump servers have a separate sidebar section. Create, collapse, and rename your own logical folders; move hosts using the folder selector.
+4. **Use the workspaces.** Browse and transfer files with SFTP; open Info for CPU, memory, disk, network, and available GPU metrics. Info samples the selected object immediately and every **10 seconds** while open. Operation history persists locally with **50 entries per page**. Terminal process state is not restored after closing the client.
+
+Use **Ctrl K** on Windows to search host names, addresses, or tags, then Enter to open a terminal. The top-bar Help page links to the full guide and this repository.
+
+### SSH jumps: configure the final target
+
+```text
+Your computer → Jump A (demo@192.0.2.10:22) → Target B (deploy@198.51.100.20:22)
+```
+
+These addresses are documentation examples. Save A and B with their own authentication, mark A as a jump server or dual-purpose host, then edit **B** and add A to its SSH connection path. Clicking B connects through A automatically. The chain supports **up to five jump servers plus one final target**, in connection order. Each hop uses SSH and its own user, port, and credentials; reconnect after changing a route. You do not need a separate port-forward rule for an ordinary SSH jump.
+
+### Forwarding and server identity
+
+| Mode | Listening side → service side |
+| --- | --- |
+| Local `-L` | Your computer → SSH tunnel → service reachable from the remote host |
+| Remote `-R` | Remote host → SSH tunnel → service reachable from your computer |
+| SOCKS5 `-D` | Local SOCKS5 listener → SSH tunnel → remote network |
+
+Forwarding transports TCP traffic; it does **not** start a website or replace Nginx's HTTP routing, TLS termination, or load balancing. Listeners default to loopback. Public access through remote forwarding also needs the intended bind address, server forwarding/GatewayPorts permission, and firewall rules; the exposed service needs its own HTTPS and authentication. See the [forwarding guide](docs/DESKTOP_GUIDE.zh-CN.md#端口转发不是-nginx).
+
+A **host key** identifies the server, not the login user: **Strict** requires existing trust, **Accept new** records the first key and rejects later changes, and **Insecure** skips ordinary identity verification and is only for isolated testing. Matching revocations still reject keys. See [host-key policies](docs/DESKTOP_GUIDE.zh-CN.md#主机密钥策略).
+
+### Kaduox AI and MCP
+
+The **Kaduox AI operations assistant** only calls a provider you configure using an OpenAI-compatible chat API. Set the provider name, endpoint, API key, and model; fetch the model list or enter a model manually. There is **no offline answer mode**. Remote endpoints require HTTPS; loopback endpoints may use HTTP. Keys use the OS credential store. Host context is sent only when enabled by the user, and AI suggestions are not executed automatically.
+
+For external Agents, download `kaduox-ssh-mcp.exe` and configure its absolute path as a **stdio** MCP server:
+
+```json
+{
+  "mcpServers": {
+    "kaduox": {
+      "command": "C:/Tools/Kaduox/kaduox-ssh-mcp.exe",
+      "env": {
+        "KADUOX_MCP_ALLOW_EXEC": "0",
+        "KADUOX_MCP_ALLOW_MUTATIONS": "0"
+      }
+    }
+  }
+}
+```
+
+Replace the example path with your download location. The Agent starts the process; no web service or manual terminal window is required. Default tools expose host metadata, routes, basic information, system metrics, and SFTP listings. Remote execution and transfers require explicit permission switches. MCP uses its own connection leases, not the desktop terminal tabs. See [MCP permissions and tool contracts](docs/MCP.md).
+
+## Documentation
+
+- [Desktop user guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md): installation, credentials, folders, jumps, metrics, AI, and local data.
+- [MCP / Agent integration](docs/MCP.md), [TUI](docs/TUI.md), [session workspace](docs/SESSION_WORKSPACE.md), [fleet](docs/FLEET_EXEC.md), and [inventory](docs/INVENTORY.md).
+- [OpenSSH compatibility](docs/OPENSSH_CONFIG.md), [host certificates](docs/HOST_CERTIFICATES.md), [security policy](SECURITY.md), and [release policy](docs/RELEASE.md).
+
+The shared Rust core prioritizes bounded memory, explicit trust checks, reusable authenticated transports, and maintainability. The sections below describe its CLI and engineering contracts, not additional desktop UI promises.
 
 ## Current capabilities
 
@@ -47,15 +118,15 @@ Kaduox-SSH is a Rust-first SSH client focused on long-term maintainability, low 
 - `kssh-daemon` per-user local IPC connection-reuse daemon; `kssh` reuses authenticated transports through it before falling back to a direct connection, with per-hop interactive jump authentication bridged over the private IPC channel
 - optional login-password persistence in the operating system credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service) via `kssh credentials set/check/delete`; Kaduox-SSH never writes passwords to its own files
 - shell completion scripts for bash/zsh/fish/powershell/elvish via `kssh completions <shell>`
-- native Tauri Windows desktop client with light/dark themes, terminal/SFTP/forwarding workspaces, host inspection, built-in AI assistant, and an optional OpenAI-compatible provider
+- native Tauri Windows desktop client with light/dark themes, independent terminals, host folders, metrics/SFTP/forwarding workspaces, and a configurable external OpenAI-compatible AI provider (no offline mode)
 - `kaduox-ssh-mcp` local stdio MCP server for Agent integration; read-only host/route/basic-info/SFTP tools are enabled by default, while remote exec and transfers require explicit environment switches
 - real OpenSSH protocol integration fixtures, including fleet and Host Certificate coverage
-- Linux/macOS/Windows CI, Rust 1.85 MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates
+- configured Linux/macOS/Windows CI, MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates; see the validation and build limitations below
 - committed `Cargo.lock` with `--locked` builds
 - on-demand real-OpenSSH performance benchmark harness
 - deterministic four-suite release packaging with per-binary manifests and SHA-256 archive checksums
-- stable Windows Authenticode signing plus macOS Developer ID signing/notarization
-- four target-specific SPDX 2.3 SBOMs with stable-release provenance and archive-to-SBOM attestation policy
+- stable-release workflow policies for Windows Authenticode signing and macOS Developer ID signing/notarization (not applied to this manual desktop preview)
+- four target-specific SPDX 2.3 SBOMs with provenance and archive-to-SBOM attestation in the stable-release workflow
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
@@ -63,12 +134,15 @@ Privileged upload does not pretend SFTP can change uid. Kaduox-SSH stages files 
 
 ## Frontends
 
-Kaduox-SSH currently ships four binaries over the same core security and transport implementation:
-
-- `kssh`: single-target CLI for shell, exec, transfer, sync, forwarding, inspection, and diagnostics;
-- `kssh-tui`: multi-host interactive Session Dashboard. Each open host owns an explicit `ConnectionLease`; entering/leaving its remote workspace does not reconnect. The dashboard can also broadcast one operator-authored command over all already-open sessions;
-- `kssh-fleet`: non-interactive bounded-concurrency command execution over explicit targets or inventory groups. It preflights target/config/typed-command input before opening the first SSH connection and isolates runtime failures per host;
-- `kssh-inventory`: offline inventory validation, host/group listing, and deterministic nested-group expansion.
+| Program | Purpose |
+| --- | --- |
+| `kaduox-ssh-desktop` | Windows graphical client; published as the desktop EXE and installer linked above. |
+| `kssh` | Single-target shell, exec, transfer, sync, forwarding, inspection, and diagnostics. |
+| `kssh-tui` | Multi-host terminal dashboard with explicit connection leases and bounded command broadcast. |
+| `kssh-daemon` | Per-user local IPC daemon for authenticated connection reuse. |
+| `kssh-fleet` | Bounded-concurrency execution across explicit targets or inventory groups, with per-host failure isolation. |
+| `kssh-inventory` | Offline validation, host/group listing, and deterministic nested-group expansion. |
+| `kaduox-ssh-mcp` | Local stdio MCP interface for Agents; read-only by default. |
 
 The TUI and fleet frontends do not implement separate SSH stacks. They reuse `kaduox-ssh-core` for authentication, host-key policy, ProxyJump/ProxyCommand, channels, SFTP, privilege switching, and transport limits.
 
@@ -127,10 +201,13 @@ See `docs/OPENSSH_CONFIG.md` and `docs/HOST_CERTIFICATES.md` for the exact suppo
 ## Architecture
 
 ```text
+apps/
+  kaduox-desktop/    # React UI + Tauri Windows app (separate Cargo workspace)
 crates/
   kaduox-ssh-core/    # transport/auth/session/forward/SFTP/sync/privilege/manager core
   kaduox-ssh-hosts/   # atomic private TOML host library, aliases, and named jump chains
   kaduox-ssh-daemon/  # per-user IPC connection-reuse daemon (peer identity, bounded protocol)
+  kaduox-ssh-mcp/     # local stdio MCP server for Agents
   kaduox-ssh-cli/     # kssh + kssh-tui + kssh-fleet + kssh-inventory package
 ```
 
@@ -138,13 +215,24 @@ The core is frontend-independent. TUI sessions use explicit connection leases ov
 
 ## Build
 
-Rust 1.85+ is the declared MSRV.
+The root workspace declares Rust 1.85, but the current Windows Pageant dependency uses let-chains and needs Rust **1.88 or newer**. The desktop manifest also declares 1.88. This Windows prerelease was built with **Rust 1.98.0**; Windows 1.85 compatibility is not claimed. Use a current stable MSVC toolchain, Visual Studio C++ Build Tools / Windows SDK, and NASM on Windows.
+
+Build the six CLI/TUI/daemon/fleet/inventory/MCP tools from the repository root:
 
 ```bash
 cargo build --release --locked
 ```
 
-The resulting binaries are `kssh`, `kssh-tui`, `kssh-fleet`, and `kssh-inventory`.
+They are written to `target/release/` (with `.exe` on Windows). The desktop app is built separately and additionally needs Node.js/npm:
+
+```powershell
+cd apps/kaduox-desktop
+npm ci
+npm test
+npm run tauri -- build --bundles nsis --ci -- --locked
+```
+
+Use the Tauri build command so the release embeds its frontend assets. The desktop EXE is written to `apps/kaduox-desktop/src-tauri/target/release/`; the installer is under its `bundle/nsis/` directory. Installer bundling may download the WebView2 offline component. To work on the native app, use `npm run tauri -- dev` in the same directory.
 
 ## Examples
 
@@ -237,9 +325,11 @@ Targets and supported OpenSSH configuration are resolved before the first connec
 
 CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, Host Certificate trust/revocation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
 
-The repository's GitHub-hosted jobs are currently failing before any workflow step executes (`steps=null` and no usable job logs). Therefore candidate branches are **not** claimed to have passed CI, and promotion to `develop`/`main` remains blocked until those jobs actually acquire runners and execute successfully.
+The **v0.33.0-rc.1 Windows desktop prerelease** uses manual local builds from `develop`, not a successful cross-platform Actions qualification. This release pass verified 35 frontend tests, 17 host-library tests, and 26 desktop-backend tests, plus the related Clippy and frontend production builds. Three credential-dependent desktop integration tests were explicitly ignored in this pass. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
 
-Stable releases require native Windows/macOS signing and now produce four target-specific SPDX files. Stable publication also requires the four-target GitHub attestation matrix; pre-releases may opt into the same attestation path. Published-release qualification verifies the eight checksummed primary assets, target-SBOM identity, native signatures, packaged binary versions, and the real Linux OpenSSH path.
+`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.1.md) for the scope and limitations.
+
+The separate stable-release workflow requires native Windows/macOS signing, four target-specific SPDX files, and the four-target GitHub attestation matrix. Its qualification checks primary-asset checksums, target-SBOM identity, signatures, binary versions, and a real Linux OpenSSH path. This unsigned Windows-only preview does not claim those qualifications and does not promote `main`.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
@@ -261,3 +351,7 @@ Some features are deliberately not enabled until they can be implemented complet
 - symbolic-link follow/preserve transfer/sync semantics with bounded cycle, escape, and cross-platform target handling.
 
 See `docs/ARCHITECTURE.md`, `docs/ENGINEERING.md`, `docs/OPENSSH_CONFIG.md`, `docs/HOST_CERTIFICATES.md`, `docs/RELEASE.md`, `docs/TUI.md`, `docs/SESSION_WORKSPACE.md`, `docs/FLEET_EXEC.md`, and `SECURITY.md` for design constraints, validation gates, release policy, and invariants.
+
+## License
+
+[MIT](LICENSE).

@@ -1,14 +1,87 @@
 # Kaduox-SSH
 
-## Windows 桌面预发布版
-
-[下载安装包与 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases) · [完整桌面使用说明](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md)
-
-v0.33.0-rc.1 支持选择安装位置、深浅主题、独立终端、主机文件夹、最多五层 SSH 中转、信息数据屏、SFTP、端口转发和自定义 AI 厂商。首次启动无预置主机或个人配置。本次为本地手动构建的 **未签名 Windows 预发布版**，不是通过跨平台 CI 与签名门禁的稳定版。
-
 [English](README.md) | **简体中文**
 
-Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长期可维护性、低延迟、受控内存占用、可复现构建，以及 CLI、TUI、Inventory 和 Fleet 前端共享同一套安全/传输核心。
+<img src="apps/kaduox-desktop/public/app-icon.png" width="72" height="72" alt="Kaduox SSH 图标">
+
+Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远程文件、SSH 跳板链、系统数据屏、端口转发和 Agent 接口。Windows 客户端支持深浅主题，不需要另行部署 Web 服务。
+
+[下载 v0.33.0-rc.1](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.1) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.1.md)
+
+## 下载与安装
+
+本次预发布仅提供 **Windows x64** 程序，不包含 Linux/macOS 桌面包。产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对 SHA-256 校验值。
+
+| 下载 | 适用场景 |
+| --- | --- |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
+| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
+| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH-0.33.0-rc.1-windows-x64-tools.zip) | 包含命令行、TUI、daemon、fleet、inventory 和 MCP 共六个程序。 |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/kaduox-ssh-mcp.exe) | 只需要接入 Agent，不安装桌面客户端。 |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/SHA256SUMS.txt) | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。 |
+
+发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若旧 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
+
+## 桌面版快速上手
+
+1. **保存主机**：填写显示名称、地址、SSH 端口和登录用户。名称支持中文、空格和括号。密码保存到 Windows 凭据管理器，也可使用私钥或 SSH Agent。
+2. **打开终端**：点击已保存主机即可使用保存的认证信息连接。已连接时再次点击主机，或点击终端栏 **＋**，会新增一个独立终端，不是新建主机。仅在凭据缺失或认证失败等情况下补充输入。
+3. **区分目标和中转**：选择“目标机器”“专用中转”或“两者兼用”。专用中转在侧栏单独展示。自行创建、折叠、重命名逻辑文件夹，在主机编辑页的下拉框中移动主机。
+4. **使用工作区**：SFTP 浏览、上传和下载；信息页展示 CPU、内存、磁盘、网络及可用 GPU 指标，打开立即采集，之后每 **10 秒**刷新当前对象。运行记录保存在本地，每页 **50 条**，可滚动翻页。关闭客户端不保留终端进程状态。
+
+Windows 使用 **Ctrl K** 搜索主机名、地址或标签，Enter 打开对应终端。顶部“帮助”可查看使用说明和 GitHub 项目入口。
+
+### SSH 跳板：在最终目标上配置
+
+```text
+本机 → 中转 A (demo@192.0.2.10:22) → 目标 B (deploy@198.51.100.20:22)
+```
+
+以上仅为文档示例地址。先保存 A、B 及各自的认证信息，将 A 设为专用中转或兼用；再编辑 **B**，在 SSH 连接路径中把 A 加入中转列表。之后直接点击 B，即自动经 A 连接 B，不需要手工输入第二条 ssh。
+
+最多支持 **5 台中转 + 1 台最终目标**，按连接顺序排列。每一段都是 SSH，分别使用对应机器的用户、端口和凭据；修改路径后需重连。普通 SSH 跳转不需要额外创建端口转发规则。
+
+### 端口转发与主机密钥
+
+| 类型 | 监听端 → 服务端 |
+| --- | --- |
+| 本地 `-L` | 本机监听 → SSH 隧道 → 远端主机可访问的服务 |
+| 远程 `-R` | 远端监听 → SSH 隧道 → 本机可访问的服务 |
+| SOCKS5 `-D` | 本机 SOCKS5 监听 → SSH 隧道 → 远端网络 |
+
+端口转发传递 TCP 流量，**不会启动网站，也不是 Nginx 的替代品**，不提供 HTTP 路由、TLS 终止或负载均衡。默认仅监听回环地址。若需通过远程转发对公网开放，还需设置监听地址、服务器转发/GatewayPorts 权限和防火墙；服务自身需要 HTTPS 与鉴权。详见[端口转发说明](docs/DESKTOP_GUIDE.zh-CN.md#端口转发不是-nginx)。
+
+**主机密钥**用于核验服务器身份，不是登录密码：“严格”要求已有信任记录；“首次信任”首次记录指纹、之后变化则拒绝；“不安全”跳过普通身份验证，仅适合隔离测试。匹配的吊销记录仍会拒绝密钥。详见[主机密钥策略](docs/DESKTOP_GUIDE.zh-CN.md#主机密钥策略)。
+
+### Kaduox AI 与 MCP
+
+**Kaduox AI 运维助手**仅调用用户配置的 OpenAI-compatible 聊天接口，可自定义厂商名称、地址、API 密钥，获取模型列表或手动填写模型名，**不提供离线回答模式**。远程接口使用 HTTPS，本机回环接口可用 HTTP。密钥保存在系统凭据库；只有用户勾选后才发送主机上下文，AI 建议不会自动执行。
+
+外部 Agent 下载 `kaduox-ssh-mcp.exe` 后，以绝对路径配置 **stdio** MCP：
+
+```json
+{
+  "mcpServers": {
+    "kaduox": {
+      "command": "C:/Tools/Kaduox/kaduox-ssh-mcp.exe",
+      "env": {
+        "KADUOX_MCP_ALLOW_EXEC": "0",
+        "KADUOX_MCP_ALLOW_MUTATIONS": "0"
+      }
+    }
+  }
+}
+```
+
+将示例路径替换为实际下载位置。程序由 Agent 启动，无需 Web 服务或手动打开终端窗口。默认只提供主机元数据、路由、基础信息、系统指标和 SFTP 列表查询；命令执行及文件传输需要显式授权。MCP 复用自己的连接，不共享桌面终端标签。完整工具清单和开关见 [MCP 文档](docs/MCP.md)。
+
+## 使用与开发文档
+
+- [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md)：安装、凭据、文件夹、跳板、信息采集、AI 和本地数据位置。
+- [MCP / Agent 接入](docs/MCP.md)、[TUI](docs/TUI.md)、[会话工作区](docs/SESSION_WORKSPACE.md)、[Fleet](docs/FLEET_EXEC.md)、[Inventory](docs/INVENTORY.md)。
+- [OpenSSH 兼容性](docs/OPENSSH_CONFIG.md)、[主机证书](docs/HOST_CERTIFICATES.md)、[安全策略](SECURITY.md)、[发布策略](docs/RELEASE.md)。
+
+共享 Rust 核心关注受控内存、明确的信任校验、已认证连接复用与长期可维护性。下面描述核心和 CLI 的工程契约，不代表每一项都已有桌面操作入口。
 
 ## 当前能力
 
@@ -37,23 +110,28 @@ Kaduox-SSH 是一个以 Rust 为核心实现的 SSH 客户端，重点关注长�
 - `kssh-daemon` 单用户本地 IPC 连接复用 daemon；`kssh` 优先通过它复用已认证传输，失败时回退直连；逐跳交互式 jump 认证通过私有 IPC 通道桥接
 - 可选的登录密码持久化，直接写入操作系统凭据存储（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），通过 `kssh credentials set/check/delete` 管理；Kaduox-SSH 不会把密码写入自有文件
 - 通过 `kssh completions <shell>` 生成 bash/zsh/fish/powershell/elvish 补全脚本
-- Windows 桌面客户端：主机库、终端、SFTP、跳板链、转发、运行历史、深浅主题、内置离线/兼容 API AI 助手和一键基础信息检查
+- Windows 桌面客户端：主机文件夹、独立终端、SFTP、跳板链、转发、运行历史、深浅主题、系统指标数据屏和外部兼容 API AI 助手（无离线模式）
 - 本地 stdio MCP Server：默认只读的主机、路由、基础信息和 SFTP 查询，可按环境变量显式开放命令执行与文件传输，详见 [`docs/MCP.md`](docs/MCP.md)
-- Linux/macOS/Windows CI、Rust 1.85 MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁
+- 已配置 Linux/macOS/Windows CI、MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁；实际验证范围和编译限制见下文
 - 确定性的四套发行包流程，包含每个二进制的 manifest 和最终 SHA-256 校验文件
-- 稳定版 Windows Authenticode，以及 macOS Developer ID 签名/公证
-- 四目标 SPDX 2.3 SBOM，并为稳定版强制执行 provenance 与 archive-to-SBOM attestation 策略
+- 稳定版 workflow 包含 Windows Authenticode、macOS Developer ID 签名/公证策略（本次手动桌面预发布不包含签名）
+- 稳定版 workflow 包含四目标 SPDX 2.3 SBOM、provenance 与 archive-to-SBOM attestation 策略
 
 SSH 登录用户在认证完成后无法被 SSH 协议本身修改。Kaduox-SSH 会在现有传输上继续打开额外 channel；交互式权限切换使用 `sudo -iu <user>`，远端命令切换用户使用 `sudo -n -u <user> -- sh -lc ...`。
 
 特权上传不会假设 SFTP 可以修改 uid。Kaduox-SSH 会先以当前 SSH 登录用户暂存单文件或整棵目录树，再以指定远端操作系统用户执行显式 sudo 安装阶段，最后清理暂存数据。递归特权上传在目标目录已存在时会使用同级工作目录，并通过“删除旧目标后 rename”完成替换，因此不会把已有目录替换宣称为原子操作。
 
-## 四个前端二进制
+## 程序组成
 
-- `kssh`：单目标 CLI，提供 shell、exec、传输、同步、转发、inspection 和 diagnostics；
-- `kssh-tui`：多主机交互式 Session Dashboard，每个已打开会话持有显式 `ConnectionLease`，进入/离开 workspace 不会重新登录；
-- `kssh-fleet`：面向显式目标或 Inventory group 的非交互式有界并发命令执行；
-- `kssh-inventory`：不建立网络连接的 Inventory 校验、host/group 列表和确定性 group 展开。
+| 程序 | 用途 |
+| --- | --- |
+| `kaduox-ssh-desktop` | Windows 图形客户端，以顶部链接中的桌面 EXE 和安装包发行。 |
+| `kssh` | 单目标 shell、exec、传输、同步、转发、检查与诊断。 |
+| `kssh-tui` | 多主机终端 Dashboard，使用显式连接 lease，支持有界命令广播。 |
+| `kssh-daemon` | 单用户本地 IPC 服务，复用已认证的连接。 |
+| `kssh-fleet` | 对显式目标或 Inventory group 执行有界并发命令，逐主机隔离故障。 |
+| `kssh-inventory` | 不建立网络连接的 Inventory 校验、列表及嵌套分组展开。 |
+| `kaduox-ssh-mcp` | 面向 Agent 的本地 stdio MCP 接口，默认只读。 |
 
 这些前端不维护第二套 SSH 栈；认证、主机密钥/证书策略、ProxyJump/ProxyCommand、channel、SFTP、权限切换和资源限制都来自 `kaduox-ssh-core`。
 
@@ -115,6 +193,8 @@ v0.16 新增 fail-closed Host Certificate / `@cert-authority` / `@revoked` 语�
 ## 架构
 
 ```text
+apps/
+  kaduox-desktop/    # React 界面 + Tauri Windows 客户端（独立 Cargo workspace）
 crates/
   kaduox-ssh-core/    # transport/auth/session/forward/SFTP/sync/privilege/manager 核心
   kaduox-ssh-hosts/   # 原子私有 TOML 主机库、别名与命名 jump chain
@@ -127,13 +207,24 @@ crates/
 
 ## 构建
 
-声明的 MSRV 为 Rust 1.85+。
+根工作区声明 Rust 1.85，但当前 Windows Pageant 依赖使用 let-chains，实际需要 **Rust 1.88 或更新版本**；桌面 manifest 同样声明 1.88。本次 Windows 预发布使用 **Rust 1.98.0** 构建，不宣称 Windows 1.85 兼容。Windows 编译需要当前稳定版 MSVC 工具链、Visual Studio C++ Build Tools / Windows SDK 和 NASM。
+
+在仓库根目录构建 CLI/TUI/daemon/fleet/inventory/MCP 六个程序：
 
 ```bash
 cargo build --release --locked
 ```
 
-生成 `kssh`、`kssh-tui`、`kssh-fleet` 和 `kssh-inventory` 四个二进制。
+产物位于 `target/release/`，Windows 文件带 `.exe` 后缀。桌面端单独构建，还需安装 Node.js/npm：
+
+```powershell
+cd apps/kaduox-desktop
+npm ci
+npm test
+npm run tauri -- build --bundles nsis --ci -- --locked
+```
+
+使用 Tauri 构建命令，确保发行版内嵌前端页面。桌面 EXE 位于 `apps/kaduox-desktop/src-tauri/target/release/`，安装包位于其 `bundle/nsis/` 目录；打包过程中可能下载 WebView2 离线组件。在同一目录运行 `npm run tauri -- dev` 可启动原生客户端开发模式。
 
 ## 使用示例
 
@@ -198,9 +289,11 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签发 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-当前 GitHub-hosted job 仍在任何 workflow step 执行前失败（历史状态为 `steps=null`，没有可用 job log）。因此 candidate **不能宣称 CI 已通过**，也不会在这种状态下晋升到 `develop` 或 `main`。每个新 candidate HEAD 仍需重新检查实际 job 执行情况。
+**v0.33.0-rc.1 Windows 桌面预发布**从 `develop` 手动本地构建，不代表跨平台 Actions 发布门禁通过。本次检查通过前端 35 项、主机库 17 项、桌面后端 26 项测试，以及相关 Clippy 和前端生产构建；三项依赖真实远端凭据的桌面集成测试在本次检查中显式忽略。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-v0.25 已把 Windows Authenticode 与 macOS Developer ID/notarization 纳入稳定版发布门禁。v0.27 为四个 release target 各生成一份 SPDX 2.3 SBOM，并要求稳定版四目标 attestation matrix 成功后才允许发布；预发布版本可显式选择启用相同 attestation。发布后资格校验会检查 8 个 primary asset 的 SHA-256、target SBOM 身份、原生签名、打包二进制版本，以及真实 Linux OpenSSH 路径。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.1.md)。
+
+独立的稳定版 workflow 要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。本次未签名、仅 Windows 的预发布不宣称满足这些稳定版门禁，也不晋升 `main`。
 
 ## 分支模型
 
@@ -218,3 +311,7 @@ feat/* / fix/* / perf/* / ci/* -> develop -> release/* -> main
 - 符号链接 follow/preserve 传输/同步语义，以及有界循环、越界和跨平台 target 处理。
 
 更多设计约束、验证门禁和发布策略见 `docs/OPENSSH_CONFIG.md`、`docs/HOST_CERTIFICATES.md`、`docs/RELEASE.md`、`docs/ARCHITECTURE.md`、`docs/TUI.md`、`docs/FLEET_EXEC.md` 和 `SECURITY.md`。
+
+## 许可证
+
+[MIT](LICENSE)。
