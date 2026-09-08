@@ -4,9 +4,125 @@ use std::path::Path;
 
 use crate::models::HistoryEntryDto;
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const PAGE_SIZE: usize = 50;
+/// 每台主机保留的命令历史上限，避免文件无限增长。
+const MAX_COMMANDS_PER_ALIAS: usize = 500;
+const MAX_COMMAND_FILE_ENTRIES: usize = 5000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandHistoryEntry {
+    pub alias: String,
+    pub command: String,
+    pub used_at_unix: u64,
+    pub source: String,
+}
+
+/// 追加命令记录（按 alias+command 去重，重复时只更新时间并移到末尾）。
+pub fn append_commands(
+    path: &Path,
+    alias: &str,
+    commands: &[String],
+    source: &str,
+    used_at_unix: u64,
+) -> Result<usize> {
+    let mut entries = read_commands(path)?;
+    let mut added = 0usize;
+    for command in commands {
+        let command = command.trim();
+        if command.is_empty() {
+            continue;
+        }
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.alias == alias && entry.command == command)
+        {
+            existing.used_at_unix = used_at_unix;
+            // 移到末尾视为最新。
+            let entry = existing.clone();
+            entries.retain(|item| !(item.alias == alias && item.command == command));
+            entries.push(entry);
+            continue;
+        }
+        entries.push(CommandHistoryEntry {
+            alias: alias.to_owned(),
+            command: command.to_owned(),
+            used_at_unix,
+            source: source.to_owned(),
+        });
+        added += 1;
+    }
+    // 超出上限时丢弃最旧的记录。
+    while entries.len() > MAX_COMMAND_FILE_ENTRIES {
+        entries.remove(0);
+    }
+    let mut per_alias: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut trimmed: Vec<CommandHistoryEntry> = Vec::with_capacity(entries.len());
+    for entry in entries.iter().rev() {
+        let count = per_alias.entry(entry.alias.clone()).or_insert(0);
+        if *count < MAX_COMMANDS_PER_ALIAS {
+            *count += 1;
+            trimmed.push(entry.clone());
+        }
+    }
+    trimmed.reverse();
+    write_commands(path, &trimmed)?;
+    Ok(added)
+}
+
+/// 读取某主机的命令历史，最新在前。
+pub fn list_commands(path: &Path, alias: &str, limit: usize) -> Result<Vec<String>> {
+    let mut output = Vec::new();
+    for entry in read_commands(path)?.iter().rev() {
+        if entry.alias == alias {
+            output.push(entry.command.clone());
+            if output.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn read_commands(path: &Path) -> Result<Vec<CommandHistoryEntry>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut entries = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<CommandHistoryEntry>(&line) {
+            entries.push(entry);
+        }
+    }
+    Ok(entries)
+}
+
+fn write_commands(path: &Path, entries: &[CommandHistoryEntry]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).context("无法写入命令历史")?;
+    for entry in entries {
+        file.write_all(serde_json::to_vec(entry)?.as_slice())?;
+        file.write_all(b"\n")?;
+    }
+    file.sync_data().context("命令历史未能落盘")
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +223,19 @@ pub fn commands(path: &Path, alias: Option<&str>, limit: usize) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_history_dedups_and_orders_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("commands.jsonl");
+        append_commands(&path, "web", &["ls".into(), "pwd".into()], "remote", 1).unwrap();
+        append_commands(&path, "db", &["top".into()], "remote", 2).unwrap();
+        let added = append_commands(&path, "web", &["ls".into(), "git status".into()], "local", 3).unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(list_commands(&path, "web", 10).unwrap(), ["git status", "ls", "pwd"]);
+        assert_eq!(list_commands(&path, "db", 10).unwrap(), ["top"]);
+        assert!(list_commands(&path, "none", 10).unwrap().is_empty());
+    }
     #[test]
     fn persists_across_reopen_and_pages_newest_first() {
         let dir = tempfile::tempdir().unwrap();

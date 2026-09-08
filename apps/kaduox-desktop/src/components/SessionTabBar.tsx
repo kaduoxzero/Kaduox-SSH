@@ -4,10 +4,11 @@ import History from 'lucide-react/dist/esm/icons/history'
 import Pencil from 'lucide-react/dist/esm/icons/pencil'
 import Play from 'lucide-react/dist/esm/icons/play'
 import Plus from 'lucide-react/dist/esm/icons/plus'
+import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw'
 import X from 'lucide-react/dist/esm/icons/x'
 import { useEffect, useRef, useState } from 'react'
 
-import { executeCommand, listCommandHistory } from '../lib/desktop'
+import { executeCommand, listCommandHistory, syncCommandHistory } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
 import type { Session } from '../lib/types'
 
@@ -27,16 +28,44 @@ export function SessionTabBar({ sessions, selectedAlias, onSelect, onDisconnect,
   const [draft, setDraft] = useState('')
   const [copied, setCopied] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
+  const reloadCommands = async (alias: string | null) => {
+    try { setCommands(await listCommandHistory(alias)) } catch { setCommands([]) }
+  }
+
+  // 打开面板时先展示本地记录，同时在后台同步远端 shell 历史（bash/zsh）后刷新。
   useEffect(() => {
     if (!historyOpen) return
     let cancelled = false
-    void listCommandHistory(selectedAlias)
-      .then((items) => { if (!cancelled) setCommands(items) })
-      .catch(() => { if (!cancelled) setCommands([]) })
+    void reloadCommands(selectedAlias)
+    if (selectedAlias) {
+      setSyncing(true)
+      void syncCommandHistory(selectedAlias)
+        .catch(() => {})
+        .finally(async () => {
+          if (cancelled) return
+          setSyncing(false)
+          await reloadCommands(selectedAlias)
+        })
+    }
     return () => { cancelled = true }
   }, [historyOpen, selectedAlias])
+
+  const syncNow = async () => {
+    if (!selectedAlias || syncing) return
+    setSyncing(true)
+    try {
+      const added = await syncCommandHistory(selectedAlias)
+      await reloadCommands(selectedAlias)
+      onNotify('info', '已同步远端命令历史', added > 0 ? `新增 ${added} 条` : '没有新命令')
+    } catch (error) {
+      onNotify('error', '同步失败', errorMessage(error))
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   useEffect(() => {
     if (!historyOpen) return
@@ -100,9 +129,11 @@ export function SessionTabBar({ sessions, selectedAlias, onSelect, onDisconnect,
           onClick={() => setHistoryOpen((open) => !open)}><History size={15} /></button>
         {historyOpen && (
           <div className="command-history" role="dialog" aria-label="命令历史记录">
-            <div className="command-history-head"><strong>命令历史</strong><span>{selectedAlias} · 已持久化</span></div>
+            <div className="command-history-head"><strong>命令历史</strong><span>{selectedAlias} · 已持久化</span>
+              <button type="button" className="icon-button" onClick={() => void syncNow()} disabled={syncing} aria-label="同步远端 shell 历史" title="从该主机的 bash/zsh 历史同步真实输入过的命令"><RefreshCw className={syncing ? 'spinning' : ''} size={13} /></button>
+            </div>
             <div className="command-history-list">
-              {commands.length === 0 && <p className="command-history-empty">暂无记录。在“运行记录”页或下方执行命令后自动保存。</p>}
+              {commands.length === 0 && <p className="command-history-empty">暂无记录。自动同步该主机终端里真实输入过的命令（bash/zsh 历史），本软件内执行的命令也会保存。</p>}
               {commands.map((command) => (
                 <div className="command-history-row" key={command}>
                   <code title={command}>{command}</code>

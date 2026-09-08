@@ -383,6 +383,11 @@ export async function listCommandHistory(alias: string | null): Promise<string[]
   return [...new Set(commands)].slice(0, 200)
 }
 
+export async function syncCommandHistory(alias: string): Promise<number> {
+  if (isDesktopRuntime) return invoke<number>('sync_command_history', { alias })
+  return 0
+}
+
 export async function createRemoteDirectory(alias: string, path: string): Promise<void> {
   if (isDesktopRuntime) return invoke('create_remote_directory', { request: { alias, path } })
 }

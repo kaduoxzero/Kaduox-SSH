@@ -6,28 +6,28 @@
 
 Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远程文件、SSH 跳板链、系统数据屏、端口转发和 Agent 接口。Windows 客户端支持深浅主题，不需要另行部署 Web 服务。
 
-[下载 v0.33.0-rc.1](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.1) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.1.md)
+[下载 v0.33.0-rc.2](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.2) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.2.md)
 
 ## 下载与安装
 
-本次预发布仅提供 **Windows x64** 桌面程序与独立 MCP 程序，不包含 Linux/macOS 桌面包。产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请仅从本仓库 Releases 下载。当前 Release 未单独附带 CLI/TUI 工具包和 SHA256SUMS.txt。
+本次预发布仅提供 **Windows x64** 程序，不包含 Linux/macOS 桌面包。产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对 SHA-256 校验值。
 
 | 下载 | 适用场景 |
 | --- | --- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox.SSH_0.33.0-rc.1_x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
-| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/Kaduox-SSH_0.33.0-rc.1_x64-portable.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/kaduox-ssh-mcp.exe) | 只需要接入 Agent，不安装桌面客户端。 |
-| [中文桌面手册（Release 附件）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.1/DESKTOP_GUIDE.zh-CN.md) | 下载本次发布对应的中文桌面使用手册。 |
-| [查看全部 Release 资产](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.1) | CLI/TUI 工具包和 SHA256SUMS.txt 当前未作为本次 Release 附件发布。 |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.2/Kaduox-SSH-0.33.0-rc.2-windows-x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
+| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.2/Kaduox-SSH-0.33.0-rc.2-windows-x64.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
+| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.2/Kaduox-SSH-0.33.0-rc.2-windows-x64-tools.zip) | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。 |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.2/kaduox-ssh-mcp.exe) | 只需要接入 Agent，不安装桌面客户端。 |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.2/SHA256SUMS.txt) | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。 |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若旧 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
 
 ## 桌面版快速上手
 
 1. **保存主机**：填写显示名称、地址、SSH 端口和登录用户。名称支持中文、空格和括号。密码保存到 Windows 凭据管理器，也可使用私钥或 SSH Agent。
-2. **打开终端**：点击已保存主机即可使用保存的认证信息连接。已连接时再次点击主机，或点击终端栏 **＋**，会新增一个独立终端，不是新建主机。仅在凭据缺失或认证失败等情况下补充输入。
-3. **区分目标和中转**：选择“目标机器”“专用中转”或“两者兼用”。专用中转在侧栏单独展示。自行创建、折叠、重命名逻辑文件夹，在主机编辑页的下拉框中移动主机。
-4. **使用工作区**：SFTP 浏览、上传和下载；信息页展示 CPU、内存、磁盘、网络及可用 GPU 指标，打开立即采集，之后每 **10 秒**刷新当前对象。运行记录保存在本地，每页 **50 条**，可滚动翻页。关闭客户端不保留终端进程状态。
+2. **打开终端**：点击已保存主机即可使用保存的认证信息连接（新建主机可勾选保存后立即连接）。已连接时再次点击主机只切换会话；终端上方的会话标签栏列出全部连接，可切换、断开，**＋** 为当前会话新增独立终端。会话栏的命令历史面板按主机持久化保存命令——包括该机器终端里真实输入过的命令（自动同步 bash/zsh 历史），支持复制、编辑后再执行。仅在凭据缺失或认证失败等情况下补充输入。
+3. **区分目标和中转**：选择“目标机器”“专用中转”或“两者兼用”。专用中转在侧栏单独展示，两个区域都可折叠、共用一个滚动区域。新建文件夹时可选择归属区域；文件夹可重命名，也可连同其中主机一起删除（二次确认）；在主机编辑页的下拉框中移动主机。
+4. **使用工作区**：SFTP 支持浏览、上传/下载、新建文件夹/文件、重命名、删除（空目录）、属性查看、名称搜索和在线编辑小文本文件；信息页展示 CPU、内存、磁盘、网络及可用 GPU 指标，打开立即采集，之后每 **10 秒**刷新当前对象。运行记录保存在本地，每页 **50 条**，可滚动翻页。关闭客户端不保留终端进程状态。
 
 Windows 使用 **Ctrl K** 搜索主机名、地址或标签，Enter 打开对应终端。顶部“帮助”可查看使用说明和 GitHub 项目入口。
 
@@ -289,9 +289,9 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签发 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.1 Windows 桌面预发布**从 `develop` 手动本地构建，不代表跨平台 Actions 发布门禁通过。本次检查通过前端 35 项、主机库 17 项、桌面后端 26 项测试，以及相关 Clippy 和前端生产构建；三项依赖真实远端凭据的桌面集成测试在本次检查中显式忽略。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v0.33.0-rc.2 Windows 桌面预发布**从 `develop` 手动本地构建，不代表跨平台 Actions 发布门禁通过。本次检查通过前端 35 项、主机库 18 项、桌面后端 27 项测试，以及 Rust 工作区全量测试和前端生产构建；三项依赖真实远端凭据的桌面集成测试在本次检查中显式忽略。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.1.md)。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.2.md)。
 
 独立的稳定版 workflow 要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。本次未签名、仅 Windows 的预发布不宣称满足这些稳定版门禁，也不晋升 `main`。
 

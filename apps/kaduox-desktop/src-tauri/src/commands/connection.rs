@@ -292,6 +292,27 @@ async fn push_history(state: &DesktopState, entry: HistoryEntryDto) -> Result<()
         .map_err(|error| format!("{error:#}"))
 }
 
+fn command_history_path() -> Result<std::path::PathBuf, String> {
+    Ok(open_store()
+        .map_err(|error| error.to_string())?
+        .path()
+        .with_file_name("command-history.jsonl"))
+}
+
+/// 记录一条人为/AI 显式执行的命令（尽力而为，失败不影响主流程）。
+async fn record_command(state: &DesktopState, alias: &str, command: &str, source: &str) {
+    let _guard = state.history.lock().await;
+    let Ok(path) = command_history_path() else { return };
+    let Ok(now) = now_unix() else { return };
+    let alias = alias.to_owned();
+    let commands = vec![command.to_owned()];
+    let source = source.to_owned();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        crate::history::append_commands(&path, &alias, &commands, &source, now)
+    })
+    .await;
+}
+
 fn preview(stdout: &[u8], stderr: &[u8]) -> String {
     let combined = if stdout.is_empty() { stderr } else { stdout };
     String::from_utf8_lossy(combined)
@@ -323,6 +344,7 @@ pub async fn execute_command(
     let (stdout, stdout_truncated) = stdout.into_parts();
     let (stderr, stderr_truncated) = stderr.into_parts();
     let history_id = state.next_id("run");
+    record_command(&state, request.alias.trim(), request.command.trim(), "local").await;
 
     match execution {
         Ok(exit_status) => {
@@ -396,23 +418,82 @@ pub async fn list_history(
         .map_err(|error| format!("{error:#}"))
 }
 
-/// 终端旁命令历史：来自持久化运行记录的去重命令（最新在前）。
+/// 终端旁命令历史：来自持久化命令库（本软件执行 + 远端 shell 历史同步），最新在前。
 #[tauri::command]
 pub async fn list_command_history(
     alias: Option<String>,
     state: State<'_, DesktopState>,
 ) -> Result<Vec<String>, String> {
     let _guard = state.history.lock().await;
-    let path = open_store()
+    let path = command_history_path()?;
+    let run_history_path = open_store()
         .map_err(|error| error.to_string())?
         .path()
         .with_file_name("desktop-history.jsonl");
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::history::commands(&path, alias.as_deref(), 200)
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
+        let mut output = match &alias {
+            Some(alias) => crate::history::list_commands(&path, alias, 200)?,
+            None => Vec::new(),
+        };
+        // 兼容旧版本只写入运行记录的命令。
+        for command in crate::history::commands(&run_history_path, alias.as_deref(), 200)? {
+            if !output.contains(&command) {
+                output.push(command);
+            }
+        }
+        output.truncate(200);
+        Ok(output)
     })
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| format!("{error:#}"))
+}
+
+/// 从远端 shell 历史文件同步该主机真实手输的命令，返回新增条数。
+#[tauri::command]
+pub async fn sync_command_history(
+    alias: String,
+    state: State<'_, DesktopState>,
+) -> Result<usize, String> {
+    let alias = alias.trim().to_owned();
+    let lease = state.session_lease(&alias).await?;
+    let mut stdout = CappedWriter::default();
+    let mut stderr = CappedWriter::default();
+    lease
+        .exec_stream(
+            "for f in \"$HOME/.bash_history\" \"$HOME/.zsh_history\"; do [ -f \"$f\" ] && tail -n 500 \"$f\"; done",
+            &RemoteUser::Current,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await
+        .map_err(|error| format!("读取远端 shell 历史失败：{error}"))?;
+    let (stdout, _) = stdout.into_parts();
+    let text = String::from_utf8_lossy(&stdout);
+    let commands: Vec<String> = text
+        .lines()
+        .map(|line| line.trim())
+        // zsh 扩展历史格式 “: 1700000000:0;command”。
+        .map(|line| {
+            if line.starts_with(": ") {
+                line.split_once(';').map(|(_, cmd)| cmd).unwrap_or(line)
+            } else {
+                line
+            }
+        })
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let _guard = state.history.lock().await;
+    let path = command_history_path()?;
+    let now = now_unix().map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::history::append_commands(&path, &alias, &commands, "remote", now)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("写入命令历史失败：{error:#}"))
 }
 
 #[tauri::command]

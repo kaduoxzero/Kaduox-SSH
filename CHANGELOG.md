@@ -4,6 +4,29 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.2] - 2026-09-08
+
+Windows desktop prerelease 2, on top of rc.1.
+
+### Added (desktop)
+
+- folders belong to a sidebar region (target hosts vs. dedicated jump servers) and can be deleted together with their member hosts after a two-step confirmation; deletions are refused while a member host is connected or referenced by a jump chain;
+- saving a new host can auto-connect immediately (default on);
+- clicking a connected host only switches to its session; a session tab bar lists all connections with switch/disconnect, and its ＋ adds a terminal to the current session;
+- the two sidebar sections collapse and share a single scroll area;
+- SFTP: create folders/files, rename, delete (empty directories only), properties dialog, current-directory name search, and in-place editing of UTF-8 text files up to 1 MiB;
+- per-host command history persisted in `command-history.jsonl`: commands run in the app plus the remote bash/zsh history are captured, with copy/edit/re-run in the terminal-side panel;
+- status bar and help page show the live app version;
+- Windows overlay titlebar (no white native strip; draggable top bar).
+
+### Fixed (desktop)
+
+- SFTP panel row layout after adding the search toolbar.
+
+### Storage
+
+- Host library gains a backward-compatible `jump_folders` key; command history lives next to it in `command-history.jsonl`.
+
 ## [0.33.0-rc.1] - Unreleased
 
 This candidate integrates the v0.16–v0.33 development lines and the daemon/host-library product line into `develop`.
