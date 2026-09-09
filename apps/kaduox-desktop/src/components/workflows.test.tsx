@@ -47,7 +47,7 @@ describe('desktop workflows', () => {
     expect(screen.getAllByRole('option')).toHaveLength(1)
     fireEvent.keyDown(search, { key: 'Enter' })
     expect(select).toHaveBeenCalledWith(hosts[3])
-    expect(screen.getByText('Ctrl K')).toBeInTheDocument()
+    expect(screen.queryByText('Ctrl K')).not.toBeInTheDocument()
   })
   it('collects on open, every 10s, switches targets safely and stops on unmount', async () => {
     vi.useFakeTimers()

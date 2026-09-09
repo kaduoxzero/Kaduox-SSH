@@ -387,6 +387,32 @@ async fn save_host_inner(request: HostSaveRequest, state: &DesktopState) -> Resu
 }
 
 #[tauri::command]
+pub async fn delete_chain(name: String, state: State<'_, DesktopState>) -> Result<(), String> {
+    let name = name.trim();
+    let _guard = state.host_store_guard.lock().await;
+    let store = open_store().map_err(|error| error.to_string())?;
+    let bound: Vec<String> = store
+        .database()
+        .hosts
+        .values()
+        .filter(|host| host.jump_chain.as_deref() == Some(name))
+        .map(|host| host.alias.clone())
+        .collect();
+    if !bound.is_empty() {
+        return Err(format!(
+            "跳板链仍被 {} 台主机使用（{}），请先在主机编辑中解除绑定",
+            bound.len(),
+            bound.join("、")
+        ));
+    }
+    let mut updated = store.clone();
+    updated
+        .remove_chain(name)
+        .and_then(|_| updated.save())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn delete_host(alias: String, state: State<'_, DesktopState>) -> Result<(), String> {
     let alias = alias.trim();
     if state.sessions.read().await.contains_key(alias) {

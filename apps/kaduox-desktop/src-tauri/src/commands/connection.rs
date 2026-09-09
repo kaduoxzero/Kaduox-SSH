@@ -292,6 +292,43 @@ async fn push_history(state: &DesktopState, entry: HistoryEntryDto) -> Result<()
         .map_err(|error| format!("{error:#}"))
 }
 
+/// 文件操作（SFTP 上传/下载/修改/删除等）的运行记录留痕；尽力而为，失败不影响主流程。
+/// description 形如 `sftp 下载 /remote/a -> C:\local\a`，source 固定为 "file"。
+pub(crate) async fn record_file_activity(
+    state: &DesktopState,
+    alias: &str,
+    description: String,
+    succeeded: bool,
+    started_at_unix: u64,
+    duration_ms: u64,
+    output_preview: String,
+) {
+    let username = state
+        .sessions
+        .read()
+        .await
+        .get(alias)
+        .map(|entry| entry.details.user.clone());
+    let entry = HistoryEntryDto {
+        id: state.next_id("file"),
+        alias: alias.to_owned(),
+        username,
+        source: Some("file".into()),
+        command: description,
+        exit_status: None,
+        succeeded,
+        output_preview: output_preview
+            .chars()
+            .take(HISTORY_PREVIEW_CHARS)
+            .collect(),
+        started_at_unix,
+        duration_ms,
+    };
+    if let Err(error) = push_history(state, entry).await {
+        eprintln!("文件操作留痕写入失败：{error}");
+    }
+}
+
 fn command_history_path() -> Result<std::path::PathBuf, String> {
     Ok(open_store()
         .map_err(|error| error.to_string())?
@@ -458,16 +495,16 @@ pub async fn list_command_history(
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<String>> {
         crate::history::drop_remote_sources(&path)?;
         let mut output = match &alias {
-            Some(alias) => crate::history::list_commands(&path, alias, 200)?,
+            Some(alias) => crate::history::list_commands(&path, alias, 500)?,
             None => Vec::new(),
         };
         // 兼容旧版本只写入运行记录的命令。
-        for command in crate::history::commands(&run_history_path, alias.as_deref(), 200)? {
+        for command in crate::history::commands(&run_history_path, alias.as_deref(), 500)? {
             if !output.contains(&command) {
                 output.push(command);
             }
         }
-        output.truncate(200);
+        output.truncate(500);
         Ok(output)
     })
     .await

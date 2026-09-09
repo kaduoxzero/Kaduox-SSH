@@ -4,6 +4,23 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.9] - 2026-09-09
+
+### Added (desktop)
+
+- remote folders can now be downloaded recursively (toolbar and context menu; symlink/special files are skipped, depth/size capped), and every SFTP upload/download/rename/create/write/delete is written to run history with a new `文件` source badge;
+- jump chains can be deleted from the host editor (refused with an actionable message while hosts still reference the chain);
+- terminal copy/paste: right-click menu (复制/粘贴/全选/取消选择), Ctrl+Shift+C/V, Ctrl+V paste, and Ctrl+C copies when a selection exists;
+- system metrics now list every disk (all local fixed drives on Windows, all real mounts on remote Linux) instead of only the system drive;
+- AI chat: answers render as Markdown (tables, code blocks, lists, headings); the composer has inline 权限模式 and 模型 selectors — the model list is one big list grouped per provider, fetched from every configured provider; settings panel renamed to “AI 厂商设置”.
+
+### Changed (desktop)
+
+- AI tool rounds are batched: each AI round shows at most one approval prompt (“批准全部执行 / 全部拒绝”), intermediate rounds collapse to compact command cards, and only the final consolidated answer is rendered in full;
+- command risk classifier: stderr redirects (`2>/dev/null`, `2>&1`) no longer mark commands as writes; `docker/podman/kubectl` are graded by subcommand (`docker ps` is read-only, `docker rm`/`kubectl delete` are delete-class);
+- command history panel shows up to 500 entries per host, wider, with full commands wrapped to up to three lines;
+- the non-functional “Ctrl K” badge was removed from the global search box (the shortcut itself still works).
+
 ## [0.33.0-rc.8] - 2026-09-09
 
 ### Added (desktop)
