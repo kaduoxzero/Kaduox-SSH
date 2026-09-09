@@ -4,6 +4,16 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.6] - 2026-09-09
+
+### Added (desktop)
+
+- run history now also records commands typed into terminals (source badge 终端/命令栏, exit code and duration shown as —), unifying the audit log;
+
+### Fixed (desktop)
+
+- frameless window: the whole top bar is draggable again (custom startDragging instead of data-tauri-drag-region), double-click to maximize, window shadow restored.
+
 ## [0.33.0-rc.5] - 2026-09-08
 
 ### Added (desktop)

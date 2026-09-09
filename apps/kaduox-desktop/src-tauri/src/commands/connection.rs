@@ -360,6 +360,7 @@ pub async fn execute_command(
                     id: history_id,
                     alias: request.alias.clone(),
                     username: username.clone(),
+                    source: Some("exec".into()),
                     command: request.command.clone(),
                     exit_status,
                     succeeded: exit_status == Some(0),
@@ -386,6 +387,7 @@ pub async fn execute_command(
                     id: history_id,
                     alias: request.alias,
                     username,
+                    source: Some("exec".into()),
                     command: request.command,
                     exit_status: None,
                     succeeded: false,
@@ -469,6 +471,7 @@ pub async fn list_command_history(
 }
 
 /// 记录终端里手敲的一行命令（前端做行缓冲与密码提示过滤后上报）。
+/// 同时写入命令历史库（快速复用面板）和运行记录（审计日志）。
 #[tauri::command]
 pub async fn record_terminal_command(
     alias: String,
@@ -482,7 +485,31 @@ pub async fn record_terminal_command(
     if command.chars().any(|ch| ch.is_control() && ch != '\t') {
         return Ok(());
     }
-    record_command(&state, alias.trim(), &command, "terminal").await;
+    let alias = alias.trim().to_owned();
+    record_command(&state, &alias, &command, "terminal").await;
+    let username = state
+        .sessions
+        .read()
+        .await
+        .get(alias.as_str())
+        .map(|entry| entry.details.user.clone());
+    let started_at_unix = now_unix().map_err(|error| error.to_string())?;
+    push_history(
+        &state,
+        HistoryEntryDto {
+            id: state.next_id("term"),
+            alias,
+            username,
+            source: Some("terminal".into()),
+            command,
+            exit_status: None,
+            succeeded: true,
+            output_preview: String::new(),
+            started_at_unix,
+            duration_ms: 0,
+        },
+    )
+    .await?;
     Ok(())
 }
 

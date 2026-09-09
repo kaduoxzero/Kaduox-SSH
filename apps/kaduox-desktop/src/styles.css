@@ -2040,6 +2040,18 @@ kbd,
 .history-row-actions { display: inline-flex; gap: 2px; }
 .history-row-actions .icon-button { padding: 4px; }
 
+.history-source {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-style: normal;
+  vertical-align: 1px;
+}
+.history-source.exec { color: var(--cobalt); background: color-mix(in srgb, var(--cobalt) 12%, transparent); }
+.history-source.terminal { color: #42c7a0; background: color-mix(in srgb, #42c7a0 12%, transparent); }
+
 .history-day-filter { display: inline-flex; align-items: center; gap: 6px; }
 .history-day-filter input[type='date'] {
   height: 28px;

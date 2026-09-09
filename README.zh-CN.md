@@ -6,7 +6,7 @@
 
 Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远程文件、SSH 跳板链、系统数据屏、端口转发和 Agent 接口。Windows 客户端支持深浅主题，不需要另行部署 Web 服务。
 
-[下载 v0.33.0-rc.5](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.5) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.5.md)
+[下载 v0.33.0-rc.6](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.6) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.6.md)
 
 ## 下载与安装
 
@@ -14,11 +14,11 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 | 下载 | 适用场景 |
 | --- | --- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.5/Kaduox-SSH-0.33.0-rc.5-windows-x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
-| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.5/Kaduox-SSH-0.33.0-rc.5-windows-x64.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
-| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.5/Kaduox-SSH-0.33.0-rc.5-windows-x64-tools.zip) | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。 |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.5/kaduox-ssh-mcp.exe) | 只需要接入 Agent，不安装桌面客户端。 |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.5/SHA256SUMS.txt) | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。 |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.6/Kaduox-SSH-0.33.0-rc.6-windows-x64-setup.exe) | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。 |
+| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.6/Kaduox-SSH-0.33.0-rc.6-windows-x64.exe) | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。 |
+| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.6/Kaduox-SSH-0.33.0-rc.6-windows-x64-tools.zip) | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。 |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.6/kaduox-ssh-mcp.exe) | 只需要接入 Agent，不安装桌面客户端。 |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.6/SHA256SUMS.txt) | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。 |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若旧 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
 
@@ -289,9 +289,9 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签发 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.5 Windows 桌面预发布**从 `develop` 手动本地构建，不代表跨平台 Actions 发布门禁通过。本次检查通过前端 35 项、主机库 18 项、桌面后端 27 项测试，以及 Rust 工作区全量测试和前端生产构建；三项依赖真实远端凭据的桌面集成测试在本次检查中显式忽略。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v0.33.0-rc.6 Windows 桌面预发布**从 `develop` 手动本地构建，不代表跨平台 Actions 发布门禁通过。本次检查通过前端 35 项、主机库 18 项、桌面后端 27 项测试，以及 Rust 工作区全量测试和前端生产构建；三项依赖真实远端凭据的桌面集成测试在本次检查中显式忽略。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.5.md)。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.6.md)。
 
 独立的稳定版 workflow 要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。本次未签名、仅 Windows 的预发布不宣称满足这些稳定版门禁，也不晋升 `main`。
 

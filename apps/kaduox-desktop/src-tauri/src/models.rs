@@ -165,6 +165,9 @@ pub struct HistoryEntryDto {
     /// 执行命令时的登录用户；旧记录没有该字段。
     #[serde(default)]
     pub username: Option<String>,
+    /// 记录来源："exec"（命令栏执行）或 "terminal"（终端手敲）；旧记录视为 exec。
+    #[serde(default)]
+    pub source: Option<String>,
     pub command: String,
     pub exit_status: Option<u32>,
     pub succeeded: bool,

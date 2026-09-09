@@ -127,6 +127,7 @@ export interface HistoryEntry {
   id: string
   alias: string
   username?: string | null
+  source?: 'exec' | 'terminal' | string | null
   command: string
   exitStatus: number | null
   succeeded: boolean

@@ -64,10 +64,18 @@ export function TopBar({
   }, [])
   const matches = hosts.filter((h) => [h.alias, h.address, h.user, ...h.tags, ...h.groups].join(' ').toLowerCase().includes(search.trim().toLowerCase()))
   const choose = (host: Host) => { onSelectHost(host); setOpen(false); setIndex(0) }
+  // 无边框窗口：自实现拖拽（Tauri 的 data-tauri-drag-region 只在目标元素本身带属性时生效，
+  // 顶栏大部分面积被子容器覆盖导致大面积拖不动）。
+  const isInteractive = (target: HTMLElement) =>
+    Boolean(target.closest('button, input, a, select, kbd, [role="listbox"], .search-results'))
+  const startDrag = (event: React.MouseEvent) => {
+    if (!isDesktopRuntime || event.button !== 0 || isInteractive(event.target as HTMLElement)) return
+    void getCurrentWindow().startDragging().catch(() => {})
+  }
   return (
-    <header className="top-bar" data-tauri-drag-region onDoubleClick={(event) => {
-      if (!isDesktopRuntime || (event.target as HTMLElement).closest('button, input, a')) return
-      void getCurrentWindow().toggleMaximize()
+    <header className="top-bar" onMouseDown={startDrag} onDoubleClick={(event) => {
+      if (!isDesktopRuntime || isInteractive(event.target as HTMLElement)) return
+      void getCurrentWindow().toggleMaximize().catch(() => {})
     }}>
       <button className="brand" type="button" onClick={() => onViewChange('hosts')} aria-label="Kaduox SSH 主界面">
         <img src="/app-icon.png" alt="" />
