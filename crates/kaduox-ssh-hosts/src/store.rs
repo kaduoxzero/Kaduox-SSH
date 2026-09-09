@@ -609,7 +609,7 @@ mod tests {
         );
         assert!(store.save_folder("不存在", Some("不存在"), "target").is_err());
         assert!(store.save_folder("", None, "target").is_err());
-        assert!(store.save_folder("跳板分组", None, "jump").unwrap() == ());
+        store.save_folder("跳板分组", None, "jump").unwrap();
         assert_eq!(store.folder_role("跳板分组"), "jump");
         store.save_folder("跳板分组", Some("跳板分组"), "target").unwrap();
         assert_eq!(store.folder_role("跳板分组"), "target");
