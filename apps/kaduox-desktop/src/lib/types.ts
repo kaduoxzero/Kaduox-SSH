@@ -311,6 +311,8 @@ export interface AiExecResult {
 export interface AiConversation {
   id: string
   title: string
+  /** 所属主机别名；空串表示未绑定主机。 */
+  alias: string
   createdAtUnix: number
   updatedAtUnix: number
   messageCount: number

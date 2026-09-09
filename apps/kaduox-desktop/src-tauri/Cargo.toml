@@ -1,6 +1,6 @@
 [package]
 name = "kaduox-ssh-desktop"
-version = "0.33.0-rc.9"
+version = "0.33.0-rc.10"
 description = "Native Windows desktop client for Kaduox-SSH"
 edition = "2024"
 # The root CLI/workspace remains MSRV 1.85. Windows Pageant support used by

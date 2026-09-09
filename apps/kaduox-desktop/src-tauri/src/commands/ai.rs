@@ -512,21 +512,29 @@ fn log_audit_failure(error: &anyhow::Error) {
 // ---- 会话持久化 ----
 
 #[tauri::command]
-pub async fn ai_conv_create(title: String) -> Result<ai_store::AiConversation, String> {
+pub async fn ai_conv_create(
+    title: String,
+    alias: Option<String>,
+) -> Result<ai_store::AiConversation, String> {
     let path = ai_db_path()?;
-    tauri::async_runtime::spawn_blocking(move || ai_store::create_conversation(&path, &title))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| format!("{error:#}"))
+    let alias = alias.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_store::create_conversation(&path, &title, &alias)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
-pub async fn ai_conv_list() -> Result<Vec<ai_store::AiConversation>, String> {
+pub async fn ai_conv_list(alias: Option<String>) -> Result<Vec<ai_store::AiConversation>, String> {
     let path = ai_db_path()?;
-    tauri::async_runtime::spawn_blocking(move || ai_store::list_conversations(&path))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| format!("{error:#}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_store::list_conversations(&path, alias.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]

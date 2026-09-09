@@ -165,7 +165,13 @@ pub fn append(path: &Path, entry: &HistoryEntryDto) -> Result<()> {
 }
 
 /// 分页读取运行记录；`day_range` 为 [当天起始, 次日起始) 的 Unix 秒区间（由前端按本地时区计算）。
-pub fn page(path: &Path, requested: usize, day_range: Option<(u64, u64)>) -> Result<HistoryPage> {
+/// `alias` 提供时只统计该主机的记录（分页前过滤，保证每页仍是满页）。
+pub fn page(
+    path: &Path,
+    requested: usize,
+    day_range: Option<(u64, u64)>,
+    alias: Option<&str>,
+) -> Result<HistoryPage> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -179,11 +185,19 @@ pub fn page(path: &Path, requested: usize, day_range: Option<(u64, u64)>) -> Res
         Err(error) => return Err(error.into()),
     };
     let in_range = |line: &str| -> bool {
-        let Some((start, end)) = day_range else { return true };
-        match serde_json::from_str::<HistoryEntryDto>(line) {
-            Ok(entry) => entry.started_at_unix >= start && entry.started_at_unix < end,
-            Err(_) => false,
+        let entry = match serde_json::from_str::<HistoryEntryDto>(line) {
+            Ok(entry) => entry,
+            Err(_) => return false,
+        };
+        if let Some(alias) = alias
+            && entry.alias != alias
+        {
+            return false;
         }
+        if let Some((start, end)) = day_range {
+            return entry.started_at_unix >= start && entry.started_at_unix < end;
+        }
+        true
     };
     // Count without loading the whole history into memory. Only deserialize one page.
     let total = BufReader::new(file)
@@ -281,12 +295,12 @@ mod tests {
             )
             .unwrap();
         }
-        let first = page(&path, 1, None).unwrap();
+        let first = page(&path, 1, None, None).unwrap();
         assert_eq!(first.total, 123);
         assert_eq!(first.entries.len(), 50);
         assert_eq!(first.entries[0].id, "122");
-        assert_eq!(page(&path, 2, None).unwrap().entries[0].id, "72");
-        let last = page(&path, usize::MAX, None).unwrap();
+        assert_eq!(page(&path, 2, None, None).unwrap().entries[0].id, "72");
+        let last = page(&path, usize::MAX, None, None).unwrap();
         assert_eq!(last.entries.len(), 23);
         assert_eq!(last.page, 3);
         assert_eq!(last.entries.last().unwrap().id, "0");
@@ -315,16 +329,53 @@ mod tests {
             )
             .unwrap();
         }
-        let day1 = page(&path, 1, Some((0, 10))).unwrap();
+        let day1 = page(&path, 1, Some((0, 10)), None).unwrap();
         assert_eq!(day1.total, 3);
         assert_eq!(day1.entries[0].id, "2");
-        let day2 = page(&path, 1, Some((10, 20))).unwrap();
+        let day2 = page(&path, 1, Some((10, 20)), None).unwrap();
         assert_eq!(day2.total, 3);
         assert_eq!(day2.entries[0].id, "5");
-        let empty = page(&path, 1, Some((100, 200))).unwrap();
+        let empty = page(&path, 1, Some((100, 200)), None).unwrap();
         assert_eq!(empty.total, 0);
         assert!(empty.entries.is_empty());
         // 不带过滤时行为不变。
-        assert_eq!(page(&path, 1, None).unwrap().total, 6);
+        assert_eq!(page(&path, 1, None, None).unwrap().total, 6);
+    }
+
+    #[test]
+    fn alias_filter_scopes_entries_and_pagination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.jsonl");
+        // 两台主机交替写入，另一台凑满一页以上。
+        for n in 0..60u64 {
+            append(
+                &path,
+                &HistoryEntryDto {
+                    id: n.to_string(),
+                    alias: if n % 3 == 0 { "web" } else { "db" }.into(),
+                    username: None,
+                    source: None,
+                    command: format!("cmd-{n}"),
+                    exit_status: Some(0),
+                    succeeded: true,
+                    output_preview: String::new(),
+                    started_at_unix: n,
+                    duration_ms: 1,
+                },
+            )
+            .unwrap();
+        }
+        let web = page(&path, 1, None, Some("web")).unwrap();
+        assert_eq!(web.total, 20);
+        assert!(web.entries.iter().all(|entry| entry.alias == "web"));
+        assert_eq!(web.entries[0].id, "57");
+        // 日期与主机过滤可叠加。
+        let early = page(&path, 1, Some((0, 10)), Some("web")).unwrap();
+        assert_eq!(early.total, 4);
+        assert!(early.entries.iter().all(|entry| entry.alias == "web"));
+        // 不存在的别名返回空页而非全部记录。
+        let missing = page(&path, 1, None, Some("missing")).unwrap();
+        assert_eq!(missing.total, 0);
+        assert!(missing.entries.is_empty());
     }
 }

@@ -143,8 +143,10 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
   const targetAlias = selectedSession ? target : null
 
   const refreshConversations = useCallback(() => {
-    aiConvList().then(setConversations).catch(() => {})
-  }, [])
+    // 会话按目标主机隔离：切换主机后只看到该主机（或未绑定主机）的会话。
+    const scope = target === LOCAL_TARGET ? '' : target
+    aiConvList(scope).then(setConversations).catch(() => {})
+  }, [target])
 
   /** 拉取全部服务商的模型列表（尽力而为，失败的服务商静默跳过）。 */
   const refreshProviderModels = useCallback(async (profiles: AiProviderProfile[]) => {
@@ -178,6 +180,14 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // 切换目标主机：刷新该主机的会话列表，并回到未保存的新会话，
+  // 避免把 A 主机的对话内容带到 B 主机上。
+  useEffect(() => {
+    refreshConversations()
+    setConversationId(null)
+    setMessages(initialMessages)
+  }, [target, refreshConversations])
+
   useEffect(() => {
     if (selectedAlias && hosts.some((host) => host.alias === selectedAlias)) setTarget(selectedAlias)
   }, [selectedAlias, hosts])
@@ -207,7 +217,8 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     if (conversationRef.current) return conversationRef.current
     try {
       const title = firstUserText.replace(/\s+/g, ' ').slice(0, 40) || '新会话'
-      const conv = await aiConvCreate(title)
+      const scope = target === LOCAL_TARGET ? '' : target
+      const conv = await aiConvCreate(title, scope)
       setConversationId(conv.id)
       refreshConversations()
       return conv.id
