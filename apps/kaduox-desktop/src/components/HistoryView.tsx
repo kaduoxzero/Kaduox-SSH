@@ -19,9 +19,26 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
   const [output, setOutput] = useState('')
   const [command, setCommand] = useState('')
   const [alias, setAlias] = useState(selectedAlias ?? sessions[0]?.alias ?? '')
+  /** 记录筛选主机：'' 表示全部主机；默认跟随当前选中机器。 */
+  const [filterAlias, setFilterAlias] = useState(selectedAlias ?? '')
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const commandInput = useRef<HTMLInputElement>(null)
   const scroll = useRef<HTMLDivElement>(null)
+
+  // 切换机器时筛选跟随；执行主机选择器也一并跟随。
+  useEffect(() => {
+    if (selectedAlias) {
+      setFilterAlias(selectedAlias)
+      setAlias(selectedAlias)
+      setPage(1)
+    }
+  }, [selectedAlias])
+
+  // 下拉候选：已连接会话 + 当前记录里出现过的主机（已断开主机的历史也能筛）。
+  const filterOptions = Array.from(new Set([
+    ...sessions.map((s) => s.alias),
+    ...data.entries.map((entry) => entry.alias),
+  ])).sort()
 
   const pickDay = (value: string) => { setDay(value); setPage(1) }
   const dayInput = (offset: number) => {
@@ -46,12 +63,12 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    void listHistory(page, day || null).then((result) => {
+    void listHistory(page, day || null, filterAlias || null).then((result) => {
       if (!cancelled) { setData(result); if (result.page !== page) setPage(result.page); scroll.current?.scrollTo?.(0, 0) }
     }).catch((e) => { if (!cancelled) setError(errorMessage(e)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [page, revision, day])
+  }, [page, revision, day, filterAlias])
   const run = async (event: React.FormEvent) => {
     event.preventDefault()
     if (running) return
@@ -71,7 +88,7 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
     } catch (e) { setError(errorMessage(e)) }
   }
   return <main className="content-view history-view">
-    <div className="view-heading"><div><span className="eyebrow">PERSISTENT RUN HISTORY</span><h1>运行记录</h1><p>本软件内执行的命令（命令栏与终端手敲）永久保存在本机，每页 50 条，支持按天查询、复制和编辑后重跑。记录不可清空，只能创建归档快照备份。密码等敏感输入不记录。</p></div><button className="secondary-button" onClick={() => void archive()} disabled={!data.total || running}>创建归档快照</button></div>
+    <div className="view-heading"><div><span className="eyebrow">PERSISTENT RUN HISTORY</span><h1>运行记录</h1><p>本软件内执行的命令（命令栏与终端手敲）永久保存在本机，每页 50 条，支持按机器、按天查询、复制和编辑后重跑。记录不可清空，只能创建归档快照备份。密码等敏感输入不记录。</p></div><button className="secondary-button" onClick={() => void archive()} disabled={!data.total || running}>创建归档快照</button></div>
     <form className="history-runner" onSubmit={(event) => void run(event)}>
       <select aria-label="执行主机" value={alias} onChange={(e) => setAlias(e.target.value)}><option value="">选择已连接主机</option>{sessions.map((s) => <option value={s.alias} key={s.alias}>{s.alias} · {s.user}@{s.address}</option>)}</select>
       <input ref={commandInput} aria-label="远程命令" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="输入要执行并记录的命令（不要包含密码或令牌）" required />
@@ -81,7 +98,13 @@ export function HistoryView({ sessions, selectedAlias }: { sessions: Session[]; 
     {notice && <div role="status" className="inline-notice">{notice}</div>}
     {output && <pre className="history-output">{output}</pre>}
     <div className="history-pagination">
-      <span>共 {data.total} 条{day ? ` · ${day}` : ''} · 第 {data.page} / {Math.max(1, Math.ceil(data.total / 50))} 页</span>
+      <span>共 {data.total} 条{filterAlias ? ` · ${filterAlias}` : ' · 全部主机'}{day ? ` · ${day}` : ''} · 第 {data.page} / {Math.max(1, Math.ceil(data.total / 50))} 页</span>
+      <span className="history-day-filter" role="group" aria-label="按机器筛选">
+        <select aria-label="记录主机" value={filterAlias} onChange={(e) => { setFilterAlias(e.target.value); setPage(1) }}>
+          <option value="">全部主机</option>
+          {filterOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+      </span>
       <span className="history-day-filter" role="group" aria-label="按天查询">
         <input type="date" aria-label="选择日期" value={day} onChange={(e) => pickDay(e.target.value)} />
         <button className="secondary-button" disabled={loading} onClick={() => pickDay(dayInput(0))}>今天</button>

@@ -6,7 +6,7 @@
 
 Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files, SSH jump chains, system metrics, port forwarding, and Agent integration. The Windows application supports light and dark themes and runs as a desktop client; no separately hosted web application is needed.
 
-[Download v0.33.0-rc.9](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.9) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.9.md)
+[Download v0.33.0-rc.10](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.10) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.10.md)
 
 ## Download and install
 
@@ -14,11 +14,11 @@ This prerelease provides **Windows x64** binaries. Linux/macOS desktop packages 
 
 | Download | Choose this when�?|
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.9/Kaduox-SSH-0.33.0-rc.9-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.9/Kaduox-SSH-0.33.0-rc.9-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
-| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.9/Kaduox-SSH-0.33.0-rc.9-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
-| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.9/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.9/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.10/Kaduox-SSH-0.33.0-rc.10-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.10/Kaduox-SSH-0.33.0-rc.10-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
+| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.10/Kaduox-SSH-0.33.0-rc.10-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.10/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.10/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. Upgrade older CLI/TUI/MCP programs together if they share the desktop host library.
 
@@ -325,9 +325,9 @@ Targets and supported OpenSSH configuration are resolved before the first connec
 
 CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, Host Certificate trust/revocation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
 
-The **v0.33.0-rc.9 Windows desktop prerelease** uses manual local builds from `develop`, not a successful cross-platform Actions qualification. This release pass verified 35 frontend tests, 18 host-library tests, and 27 desktop-backend tests, plus the full Rust workspace test suite and frontend production builds. Three credential-dependent desktop integration tests were explicitly ignored in this pass. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
+The **v0.33.0-rc.10 Windows desktop prerelease** uses manual local builds from `develop`, not a successful cross-platform Actions qualification. This release pass verified 35 frontend tests, 18 host-library tests, and 27 desktop-backend tests, plus the full Rust workspace test suite and frontend production builds. Three credential-dependent desktop integration tests were explicitly ignored in this pass. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
 
-`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.9.md) for the scope and limitations.
+`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.10.md) for the scope and limitations.
 
 The separate stable-release workflow requires native Windows/macOS signing, four target-specific SPDX files, and the four-target GitHub attestation matrix. Its qualification checks primary-asset checksums, target-SBOM identity, signatures, binary versions, and a real Linux OpenSSH path. This unsigned Windows-only preview does not claim those qualifications and does not promote `main`.
 

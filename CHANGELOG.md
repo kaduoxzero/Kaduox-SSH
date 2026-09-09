@@ -4,6 +4,13 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.10] - 2026-09-09
+
+### Added (desktop)
+
+- run history can now be filtered per machine: a new “记录主机” dropdown defaults to the currently selected host (following session/host switches) with an “全部主机” option, and combines with day filtering;
+- AI conversations are scoped per target host: switching the AI target shows only that host's conversations (unbound conversations stay under 不绑定远程主机), and new conversations are saved under the active target. Existing conversations migrate to the unbound scope automatically.
+
 ## [0.33.0-rc.9] - 2026-09-09
 
 ### Added (desktop)

@@ -459,8 +459,8 @@ export async function executeCommand(alias: string, command: string): Promise<Ex
   return response
 }
 
-/** day 为本地日期（YYYY-MM-DD）；提供时按本地时区换算成 Unix 秒区间传给后端。 */
-export async function listHistory(page = 1, day?: string | null): Promise<HistoryPage> {
+/** day 为本地日期（YYYY-MM-DD）；提供时按本地时区换算成 Unix 秒区间传给后端。alias 提供时只查该主机。 */
+export async function listHistory(page = 1, day?: string | null, alias?: string | null): Promise<HistoryPage> {
   let range: { dayStart: number; dayEnd: number } | undefined
   if (day) {
     const start = new Date(day + 'T00:00:00')
@@ -468,10 +468,10 @@ export async function listHistory(page = 1, day?: string | null): Promise<Histor
     end.setDate(end.getDate() + 1)
     range = { dayStart: Math.floor(start.getTime() / 1000), dayEnd: Math.floor(end.getTime() / 1000) }
   }
-  if (isDesktopRuntime) return invoke<HistoryPage>('list_history', { page, dayStart: range?.dayStart ?? null, dayEnd: range?.dayEnd ?? null })
-  const entries = range
-    ? mockHistory.filter((entry) => entry.startedAtUnix >= range.dayStart && entry.startedAtUnix < range.dayEnd)
-    : mockHistory
+  if (isDesktopRuntime) return invoke<HistoryPage>('list_history', { page, dayStart: range?.dayStart ?? null, dayEnd: range?.dayEnd ?? null, alias: alias || null })
+  const entries = mockHistory.filter((entry) =>
+    (!range || (entry.startedAtUnix >= range.dayStart && entry.startedAtUnix < range.dayEnd))
+    && (!alias || entry.alias === alias))
   return {
     entries: structuredClone(entries.slice((page - 1) * 50, page * 50)),
     total: entries.length, page, pageSize: 50,
@@ -599,14 +599,14 @@ export async function aiExecuteCommand(
   })
 }
 
-export async function aiConvCreate(title: string): Promise<AiConversation> {
-  if (!isDesktopRuntime) return { id: `conv-${Date.now()}`, title, createdAtUnix: 0, updatedAtUnix: 0, messageCount: 0 }
-  return invoke<AiConversation>('ai_conv_create', { title })
+export async function aiConvCreate(title: string, alias: string | null): Promise<AiConversation> {
+  if (!isDesktopRuntime) return { id: `conv-${Date.now()}`, title, alias: alias ?? '', createdAtUnix: 0, updatedAtUnix: 0, messageCount: 0 }
+  return invoke<AiConversation>('ai_conv_create', { title, alias })
 }
 
-export async function aiConvList(): Promise<AiConversation[]> {
+export async function aiConvList(alias: string | null): Promise<AiConversation[]> {
   if (!isDesktopRuntime) return []
-  return invoke<AiConversation[]>('ai_conv_list')
+  return invoke<AiConversation[]>('ai_conv_list', { alias })
 }
 
 export async function aiConvMessages(conversationId: string): Promise<AiStoredMessage[]> {

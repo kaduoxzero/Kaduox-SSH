@@ -151,7 +151,7 @@ describe('desktop workflows', () => {
     render(<HistoryView sessions={[]} selectedAlias={null} />)
     await waitFor(() => expect(screen.getByText(/共 123 条/)).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '下一页' }))
-    await waitFor(() => expect(desktop.listHistory).toHaveBeenLastCalledWith(2, null))
+    await waitFor(() => expect(desktop.listHistory).toHaveBeenLastCalledWith(2, null, null))
   })
   it('saves the chosen host role and only offers jump-capable machines in the chain', async () => {
     const save = vi.fn(async () => {})

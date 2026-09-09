@@ -19,6 +19,8 @@ const MAX_CONVERSATIONS: usize = 500;
 pub struct AiConversation {
     pub id: String,
     pub title: String,
+    /// 所属主机别名；空字符串表示未绑定主机的通用会话。
+    pub alias: String,
     pub created_at_unix: u64,
     pub updated_at_unix: u64,
     pub message_count: u64,
@@ -61,6 +63,7 @@ fn open(path: &Path) -> Result<Connection> {
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
+            alias TEXT NOT NULL DEFAULT '',
             created_at_unix INTEGER NOT NULL,
             updated_at_unix INTEGER NOT NULL
         );
@@ -87,6 +90,16 @@ fn open(path: &Path) -> Result<Connection> {
         );
         ",
     )?;
+    // 旧库迁移：补充 alias 列（已有会话归为空别名 = 未绑定主机）。
+    let has_alias: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'alias'")?
+        .exists([])?;
+    if !has_alias {
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN alias TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
     Ok(conn)
 }
 
@@ -98,7 +111,7 @@ fn validate_title(title: &str) -> Result<String> {
     Ok(title.to_owned())
 }
 
-pub fn create_conversation(path: &Path, title: &str) -> Result<AiConversation> {
+pub fn create_conversation(path: &Path, title: &str, alias: &str) -> Result<AiConversation> {
     let title = validate_title(title)?;
     let conn = open(path)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))?;
@@ -108,12 +121,13 @@ pub fn create_conversation(path: &Path, title: &str) -> Result<AiConversation> {
     let now = now_unix()?;
     let id = format!("conv-{now}-{}", rand_suffix());
     conn.execute(
-        "INSERT INTO conversations (id, title, created_at_unix, updated_at_unix) VALUES (?1, ?2, ?3, ?3)",
-        params![id, title, now],
+        "INSERT INTO conversations (id, title, alias, created_at_unix, updated_at_unix) VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![id, title, alias, now],
     )?;
     Ok(AiConversation {
         id,
         title,
+        alias: alias.to_owned(),
         created_at_unix: now,
         updated_at_unix: now,
         message_count: 0,
@@ -128,23 +142,26 @@ fn rand_suffix() -> u64 {
         .as_nanos() as u64
 }
 
-pub fn list_conversations(path: &Path) -> Result<Vec<AiConversation>> {
+/// 列出会话；alias 提供时只返回该主机的会话（"" 表示未绑定主机的通用会话）。
+pub fn list_conversations(path: &Path, alias: Option<&str>) -> Result<Vec<AiConversation>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let conn = open(path)?;
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.title, c.created_at_unix, c.updated_at_unix, COUNT(m.id)
+        "SELECT c.id, c.title, c.alias, c.created_at_unix, c.updated_at_unix, COUNT(m.id)
          FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id
+         WHERE (?1 IS NULL OR c.alias = ?1)
          GROUP BY c.id ORDER BY c.updated_at_unix DESC",
     )?;
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![alias], |row| {
         Ok(AiConversation {
             id: row.get(0)?,
             title: row.get(1)?,
-            created_at_unix: row.get(2)?,
-            updated_at_unix: row.get(3)?,
-            message_count: row.get(4)?,
+            alias: row.get(2)?,
+            created_at_unix: row.get(3)?,
+            updated_at_unix: row.get(4)?,
+            message_count: row.get(5)?,
         })
     })?;
     let mut output = Vec::new();
@@ -287,8 +304,9 @@ mod tests {
     #[test]
     fn conversation_lifecycle() {
         let (_dir, path) = temp_db();
-        let conv = create_conversation(&path, " 排查 nginx ").unwrap();
+        let conv = create_conversation(&path, " 排查 nginx ", "web-1").unwrap();
         assert_eq!(conv.title, "排查 nginx");
+        assert_eq!(conv.alias, "web-1");
 
         append_message(&path, &conv.id, "user", "hello", None).unwrap();
         append_message(&path, &conv.id, "assistant", "hi", None).unwrap();
@@ -306,23 +324,39 @@ mod tests {
         assert_eq!(messages[2].role, "tool");
         assert!(messages[2].tool_json.is_some());
 
-        let list = list_conversations(&path).unwrap();
+        let list = list_conversations(&path, None).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].message_count, 3);
 
         rename_conversation(&path, &conv.id, "新标题").unwrap();
-        assert_eq!(list_conversations(&path).unwrap()[0].title, "新标题");
+        assert_eq!(list_conversations(&path, None).unwrap()[0].title, "新标题");
 
         delete_conversation(&path, &conv.id).unwrap();
-        assert!(list_conversations(&path).unwrap().is_empty());
+        assert!(list_conversations(&path, None).unwrap().is_empty());
         assert!(list_messages(&path, &conv.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn conversations_are_scoped_by_alias() {
+        let (_dir, path) = temp_db();
+        create_conversation(&path, "web 会话", "web-1").unwrap();
+        create_conversation(&path, "db 会话", "db-1").unwrap();
+        create_conversation(&path, "通用会话", "").unwrap();
+
+        let web = list_conversations(&path, Some("web-1")).unwrap();
+        assert_eq!(web.len(), 1);
+        assert_eq!(web[0].title, "web 会话");
+        let generic = list_conversations(&path, Some("")).unwrap();
+        assert_eq!(generic.len(), 1);
+        assert_eq!(generic[0].title, "通用会话");
+        assert_eq!(list_conversations(&path, None).unwrap().len(), 3);
     }
 
     #[test]
     fn invalid_roles_and_titles_are_rejected() {
         let (_dir, path) = temp_db();
-        assert!(create_conversation(&path, "  ").is_err());
-        let conv = create_conversation(&path, "ok").unwrap();
+        assert!(create_conversation(&path, "  ", "a").is_err());
+        let conv = create_conversation(&path, "ok", "a").unwrap();
         assert!(append_message(&path, &conv.id, "system", "x", None).is_err());
         assert!(rename_conversation(&path, "missing", "x").is_err());
     }

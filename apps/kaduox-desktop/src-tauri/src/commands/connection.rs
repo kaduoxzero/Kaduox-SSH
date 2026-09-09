@@ -456,10 +456,12 @@ pub(crate) async fn execute_recorded(
 
 #[tauri::command]
 /// 运行记录分页查询；day_start/day_end 为本地时区某天的 Unix 秒区间 [start, end)，由前端计算。
+/// alias 提供时只返回该主机的记录（用于按机器筛选）。
 pub async fn list_history(
     page: Option<usize>,
     day_start: Option<u64>,
     day_end: Option<u64>,
+    alias: Option<String>,
     state: State<'_, DesktopState>,
 ) -> Result<crate::history::HistoryPage, String> {
     let _guard = state.history.lock().await;
@@ -472,8 +474,9 @@ pub async fn list_history(
         (None, None) => None,
         _ => return Err("日期范围无效".to_owned()),
     };
+    let alias = alias.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
     tauri::async_runtime::spawn_blocking(move || {
-        crate::history::page(&path, page.unwrap_or(1), day_range)
+        crate::history::page(&path, page.unwrap_or(1), day_range, alias.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
