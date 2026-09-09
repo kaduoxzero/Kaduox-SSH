@@ -55,8 +55,17 @@ themes. It does not publish a website or modify the main branch.
    clears any unsaved key. Prior globally scoped keys are not automatically
    reused against an unknown vendor; save each provider's key once after upgrade.
    Non-loopback HTTP and redirects are refused. Responses are capped at 2 MiB.
-   Host context is sent only when the corresponding checkbox is selected.
-   No AI response executes commands.
+    Host context is sent only when the corresponding checkbox is selected.
+    When a connected target host is selected, the AI may request command
+    execution through the `execute_command` tool under a Codex-style dual
+    permission mode: "请求批准" (default) auto-runs read-only commands and asks
+    for manual approval on modify/delete; "全部权限" (opt-in with a confirmation
+    dialog) also auto-runs modify commands. Delete-class commands always require
+    manual approval, and dangerous commands (fork bombs, `rm -rf /`, raw disk
+    writes) are refused outright. Every AI-run command lands in run history
+    with the `AI` source badge and in the SQLite command audit. Conversations
+    persist in `ai-chat.db` next to the host store; provider profiles can be
+    deleted, which also removes their saved API key.
 7. **Search**: search has visible results on any page, matches name/address/user/
    tags/groups, supports arrow keys, Enter and Escape, and navigates to the
    selected host. Windows/Linux show Ctrl+K and Ctrl+Enter; macOS shows Command.

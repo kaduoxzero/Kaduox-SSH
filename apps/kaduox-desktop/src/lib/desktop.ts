@@ -5,8 +5,13 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import type {
   AuthenticationRequest,
   AiChatResponse,
+  AiClassifyResult,
+  AiConversation,
+  AiExecResult,
   AiMessage,
+  AiPermissionMode,
   AiSettings,
+  AiStoredMessage,
   BasicInfo,
   ExecResponse,
   Forward,
@@ -521,6 +526,7 @@ export async function chatWithAi(
   context: string | null,
   apiKey: string | null,
   rememberApiKey: boolean,
+  targetAlias: string | null,
 ): Promise<AiChatResponse> {
   if (isDesktopRuntime) {
     return invoke<AiChatResponse>('ai_chat', {
@@ -532,11 +538,69 @@ export async function chatWithAi(
         apiKey: apiKey || null,
         rememberApiKey,
         context,
-        messages,
+        targetAlias,
+        messages: messages.map((message) => ({
+          role: message.role,
+          content: message.content || null,
+          toolCalls: message.toolCalls ?? null,
+          toolCallId: message.toolCallId ?? null,
+        })),
       },
     })
   }
   throw new Error('浏览器仅用于界面预览；请在桌面客户端配置第三方 AI 服务。')
+}
+
+export async function aiClassifyCommand(command: string): Promise<AiClassifyResult> {
+  if (!isDesktopRuntime) return { riskLevel: 'readOnly', needsApprovalApprovalMode: false, needsApprovalFullMode: false, blocked: false }
+  return invoke<AiClassifyResult>('ai_classify_command', { command })
+}
+
+export async function aiExecuteCommand(
+  alias: string,
+  command: string,
+  permissionMode: AiPermissionMode,
+  approved: boolean,
+): Promise<AiExecResult> {
+  if (!isDesktopRuntime) throw new Error('请在桌面客户端执行 AI 命令')
+  return invoke<AiExecResult>('ai_execute_command', {
+    request: { alias, command, permissionMode, approved },
+  })
+}
+
+export async function aiConvCreate(title: string): Promise<AiConversation> {
+  if (!isDesktopRuntime) return { id: `conv-${Date.now()}`, title, createdAtUnix: 0, updatedAtUnix: 0, messageCount: 0 }
+  return invoke<AiConversation>('ai_conv_create', { title })
+}
+
+export async function aiConvList(): Promise<AiConversation[]> {
+  if (!isDesktopRuntime) return []
+  return invoke<AiConversation[]>('ai_conv_list')
+}
+
+export async function aiConvMessages(conversationId: string): Promise<AiStoredMessage[]> {
+  if (!isDesktopRuntime) return []
+  return invoke<AiStoredMessage[]>('ai_conv_messages', { conversationId })
+}
+
+export async function aiConvAppend(
+  conversationId: string,
+  role: string,
+  content: string,
+  toolJson: string | null,
+): Promise<AiStoredMessage | null> {
+  if (!isDesktopRuntime) return null
+  return invoke<AiStoredMessage>('ai_conv_append', { conversationId, role, content, toolJson })
+}
+
+export async function aiConvRename(conversationId: string, title: string): Promise<void> {
+  if (!isDesktopRuntime) return
+  await invoke('ai_conv_rename', { conversationId, title })
+}
+
+export async function aiConvDelete(conversationId: string): Promise<void> {
+  if (!isDesktopRuntime) return
+  await invoke('ai_conv_delete', { conversationId })
 }
 
 export async function getAiModels(settings: AiSettings, apiKey: string): Promise<string[]> {

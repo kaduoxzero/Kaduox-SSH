@@ -387,7 +387,14 @@ pub struct SystemMetricsDto {
 #[serde(rename_all = "camelCase")]
 pub struct AiMessageDto {
     pub role: String,
-    pub content: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    /// OpenAI 兼容 tool_calls 数组（assistant 消息原样透传）。
+    #[serde(default)]
+    pub tool_calls: Option<serde_json::Value>,
+    /// tool 角色消息对应的 tool_call id。
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -402,7 +409,22 @@ pub struct AiChatRequest {
     pub remember_api_key: bool,
     #[serde(default)]
     pub context: Option<String>,
+    /// 绑定主机别名：提供且已连接时，向 AI 暴露 execute_command 工具。
+    #[serde(default)]
+    pub target_alias: Option<String>,
     pub messages: Vec<AiMessageDto>,
+}
+
+/// AI 返回的工具调用（当前只有 execute_command）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiToolCall {
+    pub id: String,
+    pub name: String,
+    pub alias: String,
+    pub command: String,
+    pub reason: String,
+    pub risk_level: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -413,6 +435,41 @@ pub struct AiChatResponse {
     pub mode: String,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub tool_calls: Vec<AiToolCall>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiExecRequest {
+    pub alias: String,
+    pub command: String,
+    /// "approval"（默认）或 "full"。
+    pub permission_mode: Option<String>,
+    /// 前端确认卡片上的用户批准结果。
+    #[serde(default)]
+    pub approved: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiExecResponse {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_status: Option<u32>,
+    pub output_truncated: bool,
+    pub duration_ms: u64,
+    pub risk_level: String,
+    pub history_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiClassifyResponse {
+    pub risk_level: String,
+    pub needs_approval_approval_mode: bool,
+    pub needs_approval_full_mode: bool,
+    pub blocked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

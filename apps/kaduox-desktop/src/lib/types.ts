@@ -230,9 +230,37 @@ export interface SystemMetrics {
   network: NetworkMetrics
 }
 
+export type AiRiskLevel = 'readOnly' | 'modify' | 'delete' | 'dangerous'
+export type AiPermissionMode = 'approval' | 'full'
+
+export interface AiToolCall {
+  id: string
+  name: string
+  alias: string
+  command: string
+  reason: string
+  riskLevel: AiRiskLevel | string
+}
+
+/** 批准卡片的本地状态。 */
+export type AiCommandStatus = 'pending' | 'auto' | 'approved' | 'rejected' | 'blocked' | 'done' | 'error'
+
+export interface AiCommandCard {
+  toolCall: AiToolCall
+  status: AiCommandStatus
+  resultText?: string
+  exitStatus?: number | null
+}
+
 export interface AiMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'tool'
   content: string
+  /** assistant 消息携带的工具调用（原样回传给服务商）。 */
+  toolCalls?: unknown
+  /** tool 消息对应的 tool_call id。 */
+  toolCallId?: string
+  /** 前端本地渲染用：命令批准卡片。 */
+  commandCards?: AiCommandCard[]
 }
 
 export type AiMode = 'compatible'
@@ -250,6 +278,8 @@ export interface AiSettings {
   providerName: string
   endpoint: string
   model: string
+  /** AI 命令执行权限模式，默认 approval（请求批准）。 */
+  permissionMode: AiPermissionMode
 }
 
 export interface AiChatResponse {
@@ -258,6 +288,41 @@ export interface AiChatResponse {
   mode: AiMode
   promptTokens: number | null
   completionTokens: number | null
+  toolCalls: AiToolCall[]
+}
+
+export interface AiClassifyResult {
+  riskLevel: AiRiskLevel
+  needsApprovalApprovalMode: boolean
+  needsApprovalFullMode: boolean
+  blocked: boolean
+}
+
+export interface AiExecResult {
+  stdout: string
+  stderr: string
+  exitStatus: number | null
+  outputTruncated: boolean
+  durationMs: number
+  riskLevel: string
+  historyWarning: string | null
+}
+
+export interface AiConversation {
+  id: string
+  title: string
+  createdAtUnix: number
+  updatedAtUnix: number
+  messageCount: number
+}
+
+export interface AiStoredMessage {
+  id: number
+  conversationId: string
+  role: string
+  content: string
+  toolJson: string | null
+  createdAtUnix: number
 }
 
 export interface ToastMessage {

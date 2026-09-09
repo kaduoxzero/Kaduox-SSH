@@ -326,42 +326,47 @@ pub async fn execute_command(
     request: ExecRequest,
     state: State<'_, DesktopState>,
 ) -> Result<ExecResponse, String> {
-    validate_command(&request.command).map_err(|error| error.to_string())?;
-    let lease = state.session_lease(request.alias.trim()).await?;
+    execute_recorded(&state, request.alias.trim(), request.command.trim(), "local").await
+}
+
+/// 执行一条显式命令并写入运行记录/命令历史；source 区分 "local"（命令栏）与 "ai"。
+pub(crate) async fn execute_recorded(
+    state: &DesktopState,
+    alias: &str,
+    command: &str,
+    source: &str,
+) -> Result<ExecResponse, String> {
+    validate_command(command).map_err(|error| error.to_string())?;
+    let lease = state.session_lease(alias).await?;
     let started_at_unix = now_unix().map_err(|error| error.to_string())?;
     let started = Instant::now();
     let mut stdout = CappedWriter::default();
     let mut stderr = CappedWriter::default();
     let execution = lease
-        .exec_stream(
-            &request.command,
-            &RemoteUser::Current,
-            &mut stdout,
-            &mut stderr,
-        )
+        .exec_stream(command, &RemoteUser::Current, &mut stdout, &mut stderr)
         .await;
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let (stdout, stdout_truncated) = stdout.into_parts();
     let (stderr, stderr_truncated) = stderr.into_parts();
     let history_id = state.next_id("run");
-    record_command(&state, request.alias.trim(), request.command.trim(), "local").await;
+    record_command(state, alias, command, source).await;
     let username = state
         .sessions
         .read()
         .await
-        .get(request.alias.trim())
+        .get(alias)
         .map(|entry| entry.details.user.clone());
 
     match execution {
         Ok(exit_status) => {
             let history_warning = push_history(
-                &state,
+                state,
                 HistoryEntryDto {
                     id: history_id,
-                    alias: request.alias.clone(),
+                    alias: alias.to_owned(),
                     username: username.clone(),
-                    source: Some("exec".into()),
-                    command: request.command.clone(),
+                    source: Some(source.to_owned()),
+                    command: command.to_owned(),
                     exit_status,
                     succeeded: exit_status == Some(0),
                     output_preview: preview(&stdout, &stderr),
@@ -382,13 +387,13 @@ pub async fn execute_command(
         }
         Err(error) => {
             let history_warning = push_history(
-                &state,
+                state,
                 HistoryEntryDto {
                     id: history_id,
-                    alias: request.alias,
+                    alias: alias.to_owned(),
                     username,
-                    source: Some("exec".into()),
-                    command: request.command,
+                    source: Some(source.to_owned()),
+                    command: command.to_owned(),
                     exit_status: None,
                     succeeded: false,
                     output_preview: error

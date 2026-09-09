@@ -6,26 +6,26 @@
 
 Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files, SSH jump chains, system metrics, port forwarding, and Agent integration. The Windows application supports light and dark themes and runs as a desktop client; no separately hosted web application is needed.
 
-[Download v0.33.0-rc.7](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.7) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.7.md)
+[Download v0.33.0-rc.8](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.8) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.8.md)
 
 ## Download and install
 
 This prerelease provides **Windows x64** binaries. Linux/macOS desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the supplied SHA-256 checksums.
 
-| Download | Choose this when… |
+| Download | Choose this when�?|
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.7/Kaduox-SSH-0.33.0-rc.7-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.7/Kaduox-SSH-0.33.0-rc.7-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
-| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.7/Kaduox-SSH-0.33.0-rc.7-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
-| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.7/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.7/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.8/Kaduox-SSH-0.33.0-rc.8-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.8/Kaduox-SSH-0.33.0-rc.8-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
+| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.8/Kaduox-SSH-0.33.0-rc.8-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.8/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.8/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. Upgrade older CLI/TUI/MCP programs together if they share the desktop host library.
 
 ## Desktop quick start
 
 1. **Save a host.** Enter a display name, address, SSH port, and login user. Display names support Chinese, spaces, and parentheses. Save passwords in Windows Credential Manager, or use a private key / SSH Agent.
- 2. **Open a terminal.** Click a saved host to connect using its stored authentication (new hosts can auto-connect right after saving). Clicking an already-connected host only switches to its session; the session tab bar above the terminal lists every connection, and its **＋** adds another independent terminal to the current session. A command-history panel next to it persists commands per host—including the ones actually typed in that machine's shell—and supports copy/edit/re-run. Missing or invalid credentials still require input.
+ 2. **Open a terminal.** Click a saved host to connect using its stored authentication (new hosts can auto-connect right after saving). Clicking an already-connected host only switches to its session; the session tab bar above the terminal lists every connection, and its **�?* adds another independent terminal to the current session. A command-history panel next to it persists commands per host—including the ones actually typed in that machine's shell—and supports copy/edit/re-run. Missing or invalid credentials still require input.
 3. **Organize targets and jump servers.** Choose target-only, dedicated jump server, or both. Dedicated jump servers have a separate sidebar section. Both sections collapse and share one scroll area. Create folders per section, rename them, or delete a folder together with the hosts inside (two-step confirm); move hosts using the folder selector.
 4. **Use the workspaces.** SFTP supports browsing, upload/download, creating folders/files, rename, delete (empty directories), properties, name search, and in-place editing of small text files. Open Info for CPU, memory, disk, network, and available GPU metrics; it samples the selected object immediately and every **10 seconds** while open. Operation history persists locally with **50 entries per page**. Terminal process state is not restored after closing the client.
 
@@ -34,18 +34,18 @@ Use **Ctrl K** on Windows to search host names, addresses, or tags, then Enter t
 ### SSH jumps: configure the final target
 
 ```text
-Your computer → Jump A (demo@192.0.2.10:22) → Target B (deploy@198.51.100.20:22)
+Your computer �?Jump A (demo@192.0.2.10:22) �?Target B (deploy@198.51.100.20:22)
 ```
 
 These addresses are documentation examples. Save A and B with their own authentication, mark A as a jump server or dual-purpose host, then edit **B** and add A to its SSH connection path. Clicking B connects through A automatically. The chain supports **up to five jump servers plus one final target**, in connection order. Each hop uses SSH and its own user, port, and credentials; reconnect after changing a route. You do not need a separate port-forward rule for an ordinary SSH jump.
 
 ### Forwarding and server identity
 
-| Mode | Listening side → service side |
+| Mode | Listening side �?service side |
 | --- | --- |
-| Local `-L` | Your computer → SSH tunnel → service reachable from the remote host |
-| Remote `-R` | Remote host → SSH tunnel → service reachable from your computer |
-| SOCKS5 `-D` | Local SOCKS5 listener → SSH tunnel → remote network |
+| Local `-L` | Your computer �?SSH tunnel �?service reachable from the remote host |
+| Remote `-R` | Remote host �?SSH tunnel �?service reachable from your computer |
+| SOCKS5 `-D` | Local SOCKS5 listener �?SSH tunnel �?remote network |
 
 Forwarding transports TCP traffic; it does **not** start a website or replace Nginx's HTTP routing, TLS termination, or load balancing. Listeners default to loopback. Public access through remote forwarding also needs the intended bind address, server forwarding/GatewayPorts permission, and firewall rules; the exposed service needs its own HTTPS and authentication. See the [forwarding guide](docs/DESKTOP_GUIDE.zh-CN.md#端口转发不是-nginx).
 
@@ -309,7 +309,7 @@ By default host keys use `accept-new`: unknown ordinary keys are written to the 
 
 Transfers use bounded buffers and leave large-file request pipelining to `russh-sftp`, while Kaduox-SSH controls higher-level policy such as stable resume files, atomic finalization, directory concurrency, progress, cancellation, and privileged staging. SFTP session limits are configurable locally and are still constrained by limits negotiated with the remote server.
 
-Transfer tuning is fail-closed rather than unbounded: file concurrency is limited to 128, pipelined SFTP writes to 128, packet size to 4 KiB–4 MiB, and the estimated `file_concurrency × write_concurrency × packet_size` window must stay at or below 512 MiB. Defaults remain 4 files, 16 pipelined writes, and 256 KiB packets, for an estimated 16 MiB in-flight write window.
+Transfer tuning is fail-closed rather than unbounded: file concurrency is limited to 128, pipelined SFTP writes to 128, packet size to 4 KiB�? MiB, and the estimated `file_concurrency × write_concurrency × packet_size` window must stay at or below 512 MiB. Defaults remain 4 files, 16 pipelined writes, and 256 KiB packets, for an estimated 16 MiB in-flight write window.
 
 Synchronization scans both local and remote directory trees and builds a typed action plan before mutation. The CLI prints the plan before applying it. Remote-only entries are preserved by default; deletion and file/directory conflict replacement are only permitted when `--delete` is explicitly supplied. `--dry-run` never mutates the remote tree.
 
@@ -325,9 +325,9 @@ Targets and supported OpenSSH configuration are resolved before the first connec
 
 CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, Host Certificate trust/revocation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
 
-The **v0.33.0-rc.7 Windows desktop prerelease** uses manual local builds from `develop`, not a successful cross-platform Actions qualification. This release pass verified 35 frontend tests, 18 host-library tests, and 27 desktop-backend tests, plus the full Rust workspace test suite and frontend production builds. Three credential-dependent desktop integration tests were explicitly ignored in this pass. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
+The **v0.33.0-rc.8 Windows desktop prerelease** uses manual local builds from `develop`, not a successful cross-platform Actions qualification. This release pass verified 35 frontend tests, 18 host-library tests, and 27 desktop-backend tests, plus the full Rust workspace test suite and frontend production builds. Three credential-dependent desktop integration tests were explicitly ignored in this pass. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
 
-`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.7.md) for the scope and limitations.
+`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.8.md) for the scope and limitations.
 
 The separate stable-release workflow requires native Windows/macOS signing, four target-specific SPDX files, and the four-target GitHub attestation matrix. Its qualification checks primary-asset checksums, target-SBOM identity, signatures, binary versions, and a real Linux OpenSSH path. This unsigned Windows-only preview does not claim those qualifications and does not promote `main`.
 

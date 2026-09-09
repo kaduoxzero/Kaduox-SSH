@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { loadAiProviders, loadAiSettings, loadTheme, saveAiProviders, saveAiSettings, saveTheme } from './storage'
+import { loadAiProviders, loadAiSettings, loadTheme, removeAiProvider, saveAiProviders, saveAiSettings, saveTheme } from './storage'
 
 describe('theme storage', () => {
   beforeEach(() => {
@@ -45,6 +45,7 @@ describe('AI settings storage', () => {
       providerName: 'DeepSeek',
       endpoint: 'http://127.0.0.1:11434/v1/chat/completions',
       model: 'qwen2.5-coder',
+      permissionMode: 'full',
     })
     expect(loadAiSettings()).toEqual({
       mode: 'compatible',
@@ -52,6 +53,7 @@ describe('AI settings storage', () => {
       providerName: 'DeepSeek',
       endpoint: 'http://127.0.0.1:11434/v1/chat/completions',
       model: 'qwen2.5-coder',
+      permissionMode: 'full',
     })
     expect(localStorage.getItem('kaduox-desktop:ai-settings:v1')).not.toContain('apiKey')
     expect(localStorage.getItem('kaduox-desktop:ai-settings:v1')).not.toContain('rememberApiKey')
@@ -67,5 +69,18 @@ describe('AI settings storage', () => {
     saveAiProviders([{ id: 'custom', name: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-chat' }])
     expect(loadAiProviders()).toEqual([{ id: 'custom', name: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1/chat/completions', model: 'deepseek-chat' }])
     expect(localStorage.getItem('kaduox-desktop:ai-providers:v1')).not.toContain('apiKey')
+  })
+
+  it('defaults to approval permission mode and removes provider profiles', () => {
+    expect(loadAiSettings().permissionMode).toBe('approval')
+    localStorage.setItem('kaduox-desktop:ai-settings:v1', '{"permissionMode":"full"}')
+    expect(loadAiSettings().permissionMode).toBe('full')
+    localStorage.setItem('kaduox-desktop:ai-settings:v1', '{"permissionMode":"unsafe"}')
+    expect(loadAiSettings().permissionMode).toBe('approval')
+
+    const providers = loadAiProviders()
+    const next = removeAiProvider(providers, 'ollama')
+    expect(next.map((provider) => provider.id)).toEqual(['openai', 'lm-studio'])
+    expect(loadAiProviders().map((provider) => provider.id)).toEqual(['openai', 'lm-studio'])
   })
 })

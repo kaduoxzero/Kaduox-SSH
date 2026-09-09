@@ -4,6 +4,15 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.8] - 2026-09-09
+
+### Added (desktop)
+
+- Kaduox AI can now execute commands directly on a connected host via an OpenAI-compatible `execute_command` tool call, under a Codex-style dual permission mode: “请求批准” (default) auto-runs read-only commands while modify/delete commands need one-click approval; “全部权限” (opt-in, gated by a confirmation dialog) also auto-runs modify commands. Delete-class commands always require manual approval; dangerous commands (fork bomb, `rm -rf /`, raw disk writes, `mkfs`) are refused outright;
+- every AI-run command is written to run history with a new `AI` source badge and to a SQLite command audit (`ai-chat.db`, risk level + permission mode + approval flag);
+- AI conversations are persisted in `ai-chat.db` next to the host store, with a sidebar to create, switch, rename and delete conversations;
+- AI provider profiles can now be deleted (confirmation dialog; the saved API key in the OS credential store is removed too), plus a “恢复默认服务商” action.
+
 ## [0.33.0-rc.7] - 2026-09-09
 
 ### Fixed (desktop)

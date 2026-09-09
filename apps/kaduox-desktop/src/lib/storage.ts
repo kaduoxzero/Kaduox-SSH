@@ -14,6 +14,7 @@ const defaultAiSettings: AiSettings = {
   providerName: 'OpenAI',
   endpoint: 'https://api.openai.com/v1/chat/completions',
   model: 'gpt-4o-mini',
+  permissionMode: 'approval',
 }
 
 export const defaultAiProviders: AiProviderProfile[] = [
@@ -73,6 +74,7 @@ export function loadAiSettings(): AiSettings {
         providerName: typeof parsed.providerName === 'string' && parsed.providerName.trim() ? parsed.providerName : defaultAiSettings.providerName,
         endpoint: typeof parsed.endpoint === 'string' && parsed.endpoint.trim() ? parsed.endpoint : defaultAiSettings.endpoint,
         model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : defaultAiSettings.model,
+        permissionMode: parsed.permissionMode === 'full' ? 'full' : 'approval',
       }
     }
   } catch {
@@ -89,6 +91,7 @@ export function saveAiSettings(settings: AiSettings): void {
       providerName: settings.providerName,
       endpoint: settings.endpoint,
       model: settings.model,
+      permissionMode: settings.permissionMode === 'full' ? 'full' : 'approval',
     }))
   } catch {
     // Keep the active settings in memory when persistence is unavailable.
@@ -134,4 +137,11 @@ export function saveAiProviders(providers: AiProviderProfile[]): void {
   } catch {
     // Keep the active provider list in memory when persistence is unavailable.
   }
+}
+
+/** 删除指定服务商配置，返回剩余列表（调用方负责联动删除系统凭据中的 API 密钥）。 */
+export function removeAiProvider(providers: AiProviderProfile[], providerId: string): AiProviderProfile[] {
+  const next = providers.filter((provider) => provider.id !== providerId)
+  saveAiProviders(next)
+  return next
 }

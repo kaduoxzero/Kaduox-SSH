@@ -1,3 +1,5 @@
+mod ai_store;
+mod command_classify;
 mod commands;
 mod credentials;
 mod history;
@@ -5,7 +7,11 @@ mod models;
 mod state;
 mod util;
 
-use commands::ai::{ai_chat, ai_key_status, ai_models, delete_ai_api_key, save_ai_api_key};
+use commands::ai::{
+    ai_chat, ai_classify_command, ai_conv_append, ai_conv_create, ai_conv_delete, ai_conv_list,
+    ai_conv_messages, ai_conv_rename, ai_execute_command, ai_key_status, ai_models,
+    delete_ai_api_key, save_ai_api_key,
+};
 use commands::connection::{
     clear_history, connect_host, delete_stored_password, disconnect_host, execute_command,
     list_command_history, list_history, list_sessions, record_terminal_command,
@@ -38,6 +44,14 @@ pub fn run() {
             ai_key_status,
             save_ai_api_key,
             delete_ai_api_key,
+            ai_classify_command,
+            ai_execute_command,
+            ai_conv_create,
+            ai_conv_list,
+            ai_conv_messages,
+            ai_conv_append,
+            ai_conv_rename,
+            ai_conv_delete,
             list_hosts,
             list_folders,
             save_folder,

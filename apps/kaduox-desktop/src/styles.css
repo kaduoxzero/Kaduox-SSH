@@ -2051,6 +2051,7 @@ kbd,
 }
 .history-source.exec { color: var(--cobalt); background: color-mix(in srgb, var(--cobalt) 12%, transparent); }
 .history-source.terminal { color: #42c7a0; background: color-mix(in srgb, #42c7a0 12%, transparent); }
+.history-source.ai { color: #bc8cff; background: color-mix(in srgb, #bc8cff 12%, transparent); }
 
 .history-day-filter { display: inline-flex; align-items: center; gap: 6px; }
 .history-day-filter input[type='date'] {
@@ -3656,13 +3657,161 @@ kbd,
 
 .ai-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 200px minmax(0, 1fr);
   gap: 18px;
   min-height: 590px;
 }
 
 .ai-layout.with-settings {
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: 200px minmax(0, 1fr) 320px;
+}
+
+.ai-conversations-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 590px;
+}
+
+.ai-conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.ai-conversation-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: var(--text-muted, #8b949e);
+  font-size: 13px;
+}
+
+.ai-conversation-list li.active {
+  background: var(--accent-soft, rgba(88, 166, 255, 0.12));
+  color: var(--text, #e6edf3);
+}
+
+.ai-conversation-list .conversation-open {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-conversation-list .conversation-meta {
+  display: block;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.ai-command-card {
+  margin-top: 8px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-command-card.risk-delete,
+.ai-command-card.risk-dangerous {
+  border-color: rgba(248, 81, 73, 0.55);
+}
+
+.ai-command-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ai-command-head code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.risk-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 1px 8px;
+  border: 1px solid var(--border, #30363d);
+}
+
+.risk-badge.risk-readOnly {
+  color: #3fb950;
+  border-color: rgba(63, 185, 80, 0.5);
+}
+
+.risk-badge.risk-modify {
+  color: #d29922;
+  border-color: rgba(210, 153, 34, 0.5);
+}
+
+.risk-badge.risk-delete,
+.risk-badge.risk-dangerous {
+  color: #f85149;
+  border-color: rgba(248, 81, 73, 0.5);
+}
+
+.ai-command-reason {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted, #8b949e);
+}
+
+.ai-command-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-command-status {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted, #8b949e);
+}
+
+.ai-command-status.danger {
+  color: #f85149;
+}
+
+.ai-command-result summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-muted, #8b949e);
+}
+
+.ai-command-result pre {
+  margin: 6px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.modal-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
 }
 
 .ai-chat-panel {
