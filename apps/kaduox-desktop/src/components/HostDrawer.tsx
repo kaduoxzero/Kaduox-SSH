@@ -9,7 +9,7 @@ import Trash2 from 'lucide-react/dist/esm/icons/trash-2'
 import X from 'lucide-react/dist/esm/icons/x'
 import { useEffect, useMemo, useState } from 'react'
 
-import { listJumpChains, pickIdentityFile, saveJumpChain } from '../lib/desktop'
+import { deleteJumpChain, listJumpChains, pickIdentityFile, saveJumpChain } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
 import type { Host, HostFolder, HostSaveRequest, JumpChain } from '../lib/types'
 import { RouteDiagram } from './RouteDiagram'
@@ -285,6 +285,28 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
               {chains.map((chain) => <option key={chain.name} value={chain.name}>{chain.name} · {chain.hops.length} 跳</option>)}
             </select>
             {selectedChain && <button className="chain-edit-link" type="button" onClick={() => { setChainName(selectedChain.name); setChainOriginalName(selectedChain.name); setChainHops(selectedChain.hops.map((hop) => hop.alias)); setShowChainBuilder(true) }}>编辑</button>}
+            {selectedChain && (
+              <button
+                className="chain-edit-link danger"
+                type="button"
+                disabled={chainBusy}
+                onClick={() => {
+                  if (!window.confirm(`删除跳板链「${selectedChain.name}」？仅删除链路定义，不影响其中的主机。`)) return
+                  setChainBusy(true)
+                  setChainError(null)
+                  void deleteJumpChain(selectedChain.name)
+                    .then(() => {
+                      setChains((current) => current.filter((chain) => chain.name !== selectedChain.name))
+                      update('jumpChain', '')
+                      setChainName('')
+                      setChainOriginalName(null)
+                      setChainHops([])
+                    })
+                    .catch((error) => setChainError(errorMessage(error)))
+                    .finally(() => setChainBusy(false))
+                }}
+              >删除</button>
+            )}
           </div>
           {!showChainBuilder && <div><small className="chain-help">从本机发起 SSH，依次到达：</small><RouteDiagram route={[...(selectedChain?.hops ?? []), { alias: form.alias || '当前主机', host: form.address || '待填写地址', port: Number(form.port) || 22, username: form.user, role: 'target' }]} /></div>}
           {showChainBuilder && (

@@ -23,7 +23,9 @@ import {
   decodeBase64,
   deleteRemotePath,
   downloadFile,
+  downloadRemoteDirectory,
   listRemoteFiles,
+  pickDownloadDirectory,
   pickDownloadPath,
   pickUploadFile,
   readRemoteFile,
@@ -272,7 +274,21 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
   }
 
   const downloadEntry = async (entry: RemoteFile) => {
-    if (!session || entry.fileType === 'directory') return
+    if (!session) return
+    if (entry.fileType === 'directory') {
+      const localDir = await pickDownloadDirectory()
+      if (!localDir) return
+      setTransferBusy(true)
+      try {
+        const result = await downloadRemoteDirectory(session.alias, entry.path, localDir)
+        onNotify('success', '文件夹下载完成', `${entry.name} · ${result.files} 个文件 · ${formatBytes(result.bytes)}${result.skipped ? `（跳过 ${result.skipped} 个符号链接/特殊文件）` : ''}`)
+      } catch (error) {
+        onNotify('error', '文件夹下载失败', errorMessage(error))
+      } finally {
+        setTransferBusy(false)
+      }
+      return
+    }
     const localPath = await pickDownloadPath(entry.name)
     if (!localPath) return
     setTransferBusy(true)
@@ -327,7 +343,7 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
         <button type="button" onClick={upload} disabled={!session || transferBusy}>
           <ArrowUpToLine size={14} /> 上传
         </button>
-        <button type="button" onClick={download} disabled={!selected || selected.fileType === 'directory' || transferBusy}>
+        <button type="button" onClick={download} disabled={!selected || transferBusy}>
           <ArrowDownToLine size={14} /> 下载
         </button>
         <button type="button" onClick={() => setCreateDialog({ kind: 'directory', name: '' })} disabled={!session || dialogBusy}>
@@ -398,6 +414,7 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
               {menu.entry.fileType === 'directory' ? (
                 <>
                   <button type="button" role="menuitem" onClick={() => { navigate(menu.entry!.path); setMenu(null) }}>打开</button>
+                  <button type="button" role="menuitem" onClick={() => { void downloadEntry(menu.entry!); setMenu(null) }}>下载文件夹</button>
                   <button type="button" role="menuitem" onClick={() => { setCreateDialog({ kind: 'directory', name: '', basePath: menu.entry!.path }); setMenu(null) }}>在此新建文件夹</button>
                   <button type="button" role="menuitem" onClick={() => { setCreateDialog({ kind: 'file', name: '', basePath: menu.entry!.path }); setMenu(null) }}>在此新建文件</button>
                 </>

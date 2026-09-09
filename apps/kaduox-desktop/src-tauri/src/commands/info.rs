@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::RemoteUser;
@@ -139,7 +139,8 @@ struct ParsedSystemMetrics {
     load_5: Option<f32>,
     load_15: Option<f32>,
     memory: Option<(u64, u64, u64)>,
-    disk: Option<(u64, u64, u64, f32)>,
+    /// 所有真实挂载点：`(mount, total, used, available, usage_pct)`。
+    disks: Vec<(String, u64, u64, u64, f32)>,
     gpu_name: String,
     gpu_usage: Option<f32>,
     gpu_memory: Option<(u64, u64)>,
@@ -234,15 +235,17 @@ fn parse_system_metrics(output: &str) -> Result<ParsedSystemMetrics> {
             "memory" => metrics.memory = parse_u64_triplet(value),
             "disk" => {
                 let values = value.split_whitespace().collect::<Vec<_>>();
-                if values.len() >= 4
+                if values.len() >= 5
                     && let (Some(total), Some(used), Some(available), Some(usage)) = (
-                        parse_u64(values[0]),
                         parse_u64(values[1]),
                         parse_u64(values[2]),
-                        parse_f32(values[3]),
+                        parse_u64(values[3]),
+                        parse_f32(values[4]),
                     )
                 {
-                    metrics.disk = Some((total, used, available, usage));
+                    metrics
+                        .disks
+                        .push((values[0].to_owned(), total, used, available, usage));
                 }
             }
             "gpu_name" => metrics.gpu_name = value.to_owned(),
@@ -282,17 +285,16 @@ fn metrics_to_dto(
             usage_percent: None,
         });
     let disks = metrics
-        .disk
-        .map(|(total, used, available, usage)| {
-            vec![DiskMetricsDto {
-                mount: "/".to_owned(),
-                total_bytes: Some(total),
-                used_bytes: Some(used),
-                available_bytes: Some(available),
-                usage_percent: Some(usage.clamp(0.0, 100.0)),
-            }]
+        .disks
+        .into_iter()
+        .map(|(mount, total, used, available, usage)| DiskMetricsDto {
+            mount,
+            total_bytes: Some(total),
+            used_bytes: Some(used),
+            available_bytes: Some(available),
+            usage_percent: Some(usage.clamp(0.0, 100.0)),
         })
-        .unwrap_or_default();
+        .collect();
     let gpus = if !metrics.gpus.is_empty() {
         metrics.gpus
     } else if metrics.gpu_name.is_empty() {
@@ -487,20 +489,7 @@ async fn local_system_metrics() -> Result<SystemMetricsDto> {
         })
     };
 
-    let disks = local_system_disk(&Disks::new_with_refreshed_list())
-        .map(|(mount, total, available)| {
-            let used = total.saturating_sub(available);
-            DiskMetricsDto {
-                mount,
-                total_bytes: Some(total),
-                used_bytes: Some(used),
-                available_bytes: Some(available),
-                usage_percent: (total > 0)
-                    .then_some((used as f32 / total as f32 * 100.0).clamp(0.0, 100.0)),
-            }
-        })
-        .into_iter()
-        .collect::<Vec<_>>();
+    let disks = local_all_disks(&Disks::new_with_refreshed_list());
 
     let (rx_bytes, tx_bytes) = local_network_totals(&Networks::new_with_refreshed_list());
 
@@ -540,28 +529,26 @@ async fn local_system_metrics() -> Result<SystemMetricsDto> {
     })
 }
 
-/// Locate the Windows system drive and return `(mount, total, available)`.
-fn local_system_disk(disks: &Disks) -> Option<(String, u64, u64)> {
-    let system_drive = std::env::var_os("SystemDrive").map(PathBuf::from);
-    let disk = disks
+/// List every fixed local disk (SSD/HDD 全部盘符)，可移动/光驱除外，按挂载点排序。
+fn local_all_disks(disks: &Disks) -> Vec<DiskMetricsDto> {
+    let mut output = disks
         .iter()
-        .find(|disk| {
-            system_drive
-                .as_deref()
-                .is_some_and(|drive| disk.mount_point().starts_with(drive))
+        .filter(|disk| !disk.is_removable() && disk.total_space() > 0)
+        .map(|disk| {
+            let total = disk.total_space();
+            let available = disk.available_space().min(total);
+            let used = total.saturating_sub(available);
+            DiskMetricsDto {
+                mount: disk.mount_point().to_string_lossy().into_owned(),
+                total_bytes: Some(total),
+                used_bytes: Some(used),
+                available_bytes: Some(available),
+                usage_percent: Some((used as f32 / total as f32 * 100.0).clamp(0.0, 100.0)),
+            }
         })
-        .or_else(|| {
-            disks
-                .iter()
-                .find(|disk| disk.mount_point() == Path::new("/"))
-        })?;
-    let total = disk.total_space();
-    let available = disk.available_space().min(total);
-    Some((
-        disk.mount_point().to_string_lossy().into_owned(),
-        total,
-        available,
-    ))
+        .collect::<Vec<_>>();
+    output.sort_by(|left, right| left.mount.cmp(&right.mount));
+    output
 }
 
 /// Sum received/transmitted bytes across non-loopback interfaces since boot.

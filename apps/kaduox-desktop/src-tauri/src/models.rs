@@ -248,6 +248,24 @@ pub struct DownloadRequest {
     pub local_path: String,
 }
 
+/// 文件夹递归下载：local_path 为本地目标目录，远程文件夹在其中按原名创建。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryDownloadRequest {
+    pub alias: String,
+    pub remote_path: String,
+    pub local_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryDownloadResponse {
+    pub files: u64,
+    pub bytes: u64,
+    /// 跳过的符号链接/特殊文件数量。
+    pub skipped: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferResponse {

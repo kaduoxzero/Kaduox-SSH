@@ -31,6 +31,7 @@ import {
 } from '../lib/desktop'
 import { primaryShortcut } from '../lib/platform'
 import { errorMessage } from '../lib/format'
+import { Markdown } from '../lib/markdown'
 import {
   loadAiProviders,
   loadAiSettings,
@@ -124,6 +125,9 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
   const [confirmDeleteProvider, setConfirmDeleteProvider] = useState(false)
   const [conversations, setConversations] = useState<AiConversation[]>([])
   const [conversationId, setConversationId] = useState<string | null>(null)
+  /** 每个服务商的可用模型（按服务商分组展示为一个大列表）。 */
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({})
+  const [providerModelsBusy, setProviderModelsBusy] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   // 工具循环中读取最新 messages，避免闭包拿到旧值。
   const messagesRef = useRef<AiMessage[]>(messages)
@@ -142,9 +146,37 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     aiConvList().then(setConversations).catch(() => {})
   }, [])
 
+  /** 拉取全部服务商的模型列表（尽力而为，失败的服务商静默跳过）。 */
+  const refreshProviderModels = useCallback(async (profiles: AiProviderProfile[]) => {
+    setProviderModelsBusy(true)
+    try {
+      const entries = await Promise.all(profiles.map(async (provider) => {
+        try {
+          const list = await getAiModels({
+            mode: 'compatible',
+            providerId: provider.id,
+            providerName: provider.name,
+            endpoint: provider.endpoint,
+            model: provider.model,
+            permissionMode: 'approval',
+          }, '')
+          return [provider.id, list] as const
+        } catch {
+          return [provider.id, []] as const
+        }
+      }))
+      setProviderModels(Object.fromEntries(entries))
+    } finally {
+      setProviderModelsBusy(false)
+    }
+  }, [])
+
   useEffect(() => {
     refreshConversations()
-  }, [refreshConversations])
+    void refreshProviderModels(providers)
+    // 仅在挂载时全量拉取一次，避免每次配置变动都打全部服务商。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (selectedAlias && hosts.some((host) => host.alias === selectedAlias)) setTarget(selectedAlias)
@@ -408,18 +440,20 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     }))
   }
 
+  /** 一轮中已自动执行、等待与批准后结果一起回传给 AI 的 tool 消息。 */
+  const pendingAutoResultsRef = useRef<Map<number, AiMessage[]>>(new Map())
+
   /**
-   * 处理一轮 AI 响应中的工具调用：按权限模式自动执行或等待批准，
-   * 全部完成后把结果作为 tool 消息回传给 AI。
-   * 返回是否产生了需要用户操作的待批准卡片（此时暂停循环等待用户）。
+   * 处理一轮 AI 响应中的工具调用：只读/放行命令立即自动执行；
+   * 需要批准的命令合并为一张批量批准卡片，用户一次批准（或拒绝）全部。
    */
   const runToolCalls = useCallback(async (
     assistantMessage: AiMessage,
     convId: string | null,
     assistantIndex: number,
-  ): Promise<boolean> => {
+  ): Promise<void> => {
     const cards = assistantMessage.commandCards ?? []
-    const toolResults: AiMessage[] = []
+    const autoResults: AiMessage[] = []
     let hasPending = false
     for (const card of cards) {
       const call = card.toolCall
@@ -429,7 +463,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       const needsApproval = blocked || level === 'delete' || (level === 'modify' && mode !== 'full')
       if (blocked) {
         patchCard(assistantIndex, call.id, { status: 'blocked', resultText: '危险命令，客户端已拒绝执行。' })
-        toolResults.push({
+        autoResults.push({
           role: 'tool',
           toolCallId: call.id,
           content: '该命令被客户端判定为危险操作并拒绝执行，请改为给出安全的手工操作建议。',
@@ -441,13 +475,12 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
         patchCard(assistantIndex, call.id, { status: 'pending' })
         continue
       }
-      // 自动执行（只读；或全部权限模式下的修改）。
       patchCard(assistantIndex, call.id, { status: 'auto' })
       try {
         const result = await aiExecuteCommand(call.alias, call.command, mode, false)
         const text = [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000) || `（命令已执行，退出码 ${result.exitStatus ?? '未知'}，无输出）`
         patchCard(assistantIndex, call.id, { status: 'done', resultText: text, exitStatus: result.exitStatus })
-        toolResults.push({
+        autoResults.push({
           role: 'tool',
           toolCallId: call.id,
           content: `命令已在 ${call.alias} 自动执行（${riskLabel(level)}）。退出码：${result.exitStatus ?? '未知'}\n${text}`,
@@ -455,53 +488,62 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       } catch (cause) {
         const message = errorMessage(cause)
         patchCard(assistantIndex, call.id, { status: 'error', resultText: message })
-        toolResults.push({ role: 'tool', toolCallId: call.id, content: `命令执行失败：${message}` })
+        autoResults.push({ role: 'tool', toolCallId: call.id, content: `命令执行失败：${message}` })
       }
     }
-    for (const result of toolResults) persistMessage(result, convId)
     if (hasPending) {
-      // 待批准的卡片等待用户点击；已自动执行的结果先不回传，待批准后一起回传。
-      return true
-    }
-    if (toolResults.length > 0) {
-      await continueConversation([...messagesRef.current, ...toolResults], convId, 0)
-    }
-    return false
-  }, [persistMessage])
-
-  /** 用户批准/拒绝某张命令卡片。 */
-  const resolveCard = async (messageIndex: number, card: AiCommandCard, approved: boolean) => {
-    const convId = conversationRef.current
-    if (!approved) {
-      patchCard(messageIndex, card.toolCall.id, { status: 'rejected' })
-      const result: AiMessage = {
-        role: 'tool',
-        toolCallId: card.toolCall.id,
-        content: '用户拒绝了该命令，未执行。请不要重复提议相同命令，改为解释风险或给出手动操作步骤。',
-      }
-      persistMessage(result, convId)
-      await continueConversation([...messagesRef.current, result], convId, 0)
+      // 自动执行的结果先暂存，等用户一次批准后与批准结果一起回传，保证一轮只问一次。
+      pendingAutoResultsRef.current.set(assistantIndex, autoResults)
+      for (const result of autoResults) persistMessage(result, convId)
       return
     }
-    patchCard(messageIndex, card.toolCall.id, { status: 'approved' })
-    try {
-      const result = await aiExecuteCommand(card.toolCall.alias, card.toolCall.command, settingsRef.current.permissionMode, true)
-      const text = [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000) || `（命令已执行，退出码 ${result.exitStatus ?? '未知'}，无输出）`
-      patchCard(messageIndex, card.toolCall.id, { status: 'done', resultText: text, exitStatus: result.exitStatus })
-      const toolMessage: AiMessage = {
-        role: 'tool',
-        toolCallId: card.toolCall.id,
-        content: `命令经用户批准后在 ${card.toolCall.alias} 执行（${riskLabel(card.toolCall.riskLevel)}）。退出码：${result.exitStatus ?? '未知'}\n${text}`,
-      }
-      persistMessage(toolMessage, convId)
-      await continueConversation([...messagesRef.current, toolMessage], convId, 0)
-    } catch (cause) {
-      const message = errorMessage(cause)
-      patchCard(messageIndex, card.toolCall.id, { status: 'error', resultText: message })
-      const toolMessage: AiMessage = { role: 'tool', toolCallId: card.toolCall.id, content: `命令执行失败：${message}` }
-      persistMessage(toolMessage, convId)
-      await continueConversation([...messagesRef.current, toolMessage], convId, 0)
+    for (const result of autoResults) persistMessage(result, convId)
+    if (autoResults.length > 0) {
+      await continueConversation([...messagesRef.current, ...autoResults], convId, 0)
     }
+  }, [persistMessage])
+
+  /** 用户对该轮全部待批准命令做一次决定：批准全部执行 或 全部拒绝。 */
+  const resolveBatch = async (messageIndex: number, approved: boolean) => {
+    const convId = conversationRef.current
+    const message = messagesRef.current[messageIndex]
+    const pendingCards = (message?.commandCards ?? []).filter((card) => card.status === 'pending')
+    if (pendingCards.length === 0) return
+    const priorResults = pendingAutoResultsRef.current.get(messageIndex) ?? []
+    pendingAutoResultsRef.current.delete(messageIndex)
+    const toolMessages: AiMessage[] = []
+
+    if (!approved) {
+      for (const card of pendingCards) {
+        patchCard(messageIndex, card.toolCall.id, { status: 'rejected' })
+        toolMessages.push({
+          role: 'tool',
+          toolCallId: card.toolCall.id,
+          content: '用户拒绝了该命令，未执行。请不要重复提议相同命令，改为解释风险或给出手动操作步骤。',
+        })
+      }
+    } else {
+      for (const card of pendingCards) {
+        patchCard(messageIndex, card.toolCall.id, { status: 'approved' })
+        try {
+          const result = await aiExecuteCommand(card.toolCall.alias, card.toolCall.command, settingsRef.current.permissionMode, true)
+          const text = [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000) || `（命令已执行，退出码 ${result.exitStatus ?? '未知'}，无输出）`
+          patchCard(messageIndex, card.toolCall.id, { status: 'done', resultText: text, exitStatus: result.exitStatus })
+          toolMessages.push({
+            role: 'tool',
+            toolCallId: card.toolCall.id,
+            content: `命令经用户批准后在 ${card.toolCall.alias} 执行（${riskLabel(card.toolCall.riskLevel)}）。退出码：${result.exitStatus ?? '未知'}\n${text}`,
+          })
+        } catch (cause) {
+          const message = errorMessage(cause)
+          patchCard(messageIndex, card.toolCall.id, { status: 'error', resultText: message })
+          toolMessages.push({ role: 'tool', toolCallId: card.toolCall.id, content: `命令执行失败：${message}` })
+        }
+      }
+    }
+    const allResults = [...priorResults, ...toolMessages]
+    for (const result of toolMessages) persistMessage(result, convId)
+    await continueConversation([...messagesRef.current, ...allResults], convId, 0)
   }
 
   /**
@@ -652,41 +694,57 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
             <button type="button" onClick={() => quickAsk('请解释下面这段 SSH 命令输出可能意味着什么：')}><Server size={14} />解释命令输出</button>
           </div>
           <div className="ai-messages" aria-live="polite">
-            {messages.filter((message) => message.role !== 'tool').map((message, index) => (
+            {messages.filter((message) => message.role !== 'tool').map((message, index) => {
+              const pendingCount = (message.commandCards ?? []).filter((card) => card.status === 'pending').length
+              const isToolRound = Boolean(message.commandCards?.length)
+              return (
               <article className={message.role === 'user' ? 'ai-message user' : 'ai-message assistant'} key={`${message.role}-${index}`}>
                 <div className="ai-avatar">{message.role === 'user' ? <ShieldCheck size={15} /> : <Bot size={16} />}</div>
                 <div className="ai-message-body">
-                  <div className="ai-message-meta"><strong>{message.role === 'user' ? '你' : 'Kaduox'}</strong><span>{message.role === 'assistant' ? '命令按权限模式执行' : '发送给当前服务商'}</span></div>
-                  {message.content && <pre>{message.content}</pre>}
-                  {message.commandCards?.map((card) => (
-                    <div className={`ai-command-card risk-${card.toolCall.riskLevel}`} key={card.toolCall.id}>
-                      <div className="ai-command-head">
-                        <span className={`risk-badge risk-${card.toolCall.riskLevel}`}>{riskLabel(card.toolCall.riskLevel)}</span>
-                        <code>{card.toolCall.command}</code>
-                      </div>
-                      {card.toolCall.reason && <p className="ai-command-reason">{card.toolCall.reason}</p>}
-                      {card.status === 'pending' && (
-                        <div className="ai-command-actions">
-                          <button className="primary-button compact-button" type="button" onClick={() => void resolveCard(index, card, true)}>批准执行</button>
-                          <button className="secondary-button compact-button" type="button" onClick={() => void resolveCard(index, card, false)}>拒绝</button>
+                  <div className="ai-message-meta"><strong>{message.role === 'user' ? '你' : 'Kaduox'}</strong><span>{message.role === 'assistant' ? (isToolRound ? '命令执行轮' : '综合回答') : '发送给当前服务商'}</span></div>
+                  {/* 命令执行轮只保留卡片；最终回答用 Markdown 渲染成一个大回答。 */}
+                  {message.content && (isToolRound
+                    ? <p className="ai-round-note">{message.content}</p>
+                    : message.role === 'assistant'
+                      ? <Markdown text={message.content} />
+                      : <pre>{message.content}</pre>)}
+                  {isToolRound && (
+                    <div className="ai-command-batch">
+                      {message.commandCards!.map((card) => (
+                        <div className={`ai-command-card risk-${card.toolCall.riskLevel}`} key={card.toolCall.id}>
+                          <div className="ai-command-head">
+                            <span className={`risk-badge risk-${card.toolCall.riskLevel}`}>{riskLabel(card.toolCall.riskLevel)}</span>
+                            <code>{card.toolCall.command}</code>
+                          </div>
+                          {card.toolCall.reason && <p className="ai-command-reason">{card.toolCall.reason}</p>}
+                          {card.status === 'auto' && <p className="ai-command-status">自动执行中…</p>}
+                          {card.status === 'approved' && <p className="ai-command-status">已批准，执行中…</p>}
+                          {card.status === 'rejected' && <p className="ai-command-status">已拒绝，未执行。</p>}
+                          {card.status === 'blocked' && <p className="ai-command-status danger">{card.resultText}</p>}
+                          {(card.status === 'done' || card.status === 'error') && (
+                            <details className="ai-command-result" open={card.status === 'error'}>
+                              <summary>{card.status === 'done' ? `已执行（退出码 ${card.exitStatus ?? '未知'}）` : '执行失败'}</summary>
+                              <pre>{toolResultText(card)}</pre>
+                            </details>
+                          )}
+                        </div>
+                      ))}
+                      {pendingCount > 0 && (
+                        <div className="ai-batch-actions">
+                          <span>以上 {pendingCount} 条命令需要你的批准（本轮仅此一次确认）</span>
+                          <div className="ai-command-actions">
+                            <button className="primary-button compact-button" type="button" onClick={() => void resolveBatch(index, true)}>批准全部执行</button>
+                            <button className="secondary-button compact-button" type="button" onClick={() => void resolveBatch(index, false)}>全部拒绝</button>
+                          </div>
                         </div>
                       )}
-                      {card.status === 'auto' && <p className="ai-command-status">自动执行中…</p>}
-                      {card.status === 'approved' && <p className="ai-command-status">已批准，执行中…</p>}
-                      {card.status === 'rejected' && <p className="ai-command-status">已拒绝，未执行。</p>}
-                      {card.status === 'blocked' && <p className="ai-command-status danger">{card.resultText}</p>}
-                      {(card.status === 'done' || card.status === 'error') && (
-                        <details className="ai-command-result" open={card.status === 'error'}>
-                          <summary>{card.status === 'done' ? `已执行（退出码 ${card.exitStatus ?? '未知'}）` : '执行失败'}</summary>
-                          <pre>{toolResultText(card)}</pre>
-                        </details>
-                      )}
                     </div>
-                  ))}
-                  {message.role === 'assistant' && message.content && <button className="copy-message" type="button" onClick={() => void copyMessage(index, message.content)}>{copiedIndex === index ? <Check size={13} /> : <Copy size={13} />} {copiedIndex === index ? '已复制' : '复制回答'}</button>}
+                  )}
+                  {message.role === 'assistant' && message.content && !isToolRound && <button className="copy-message" type="button" onClick={() => void copyMessage(index, message.content)}>{copiedIndex === index ? <Check size={13} /> : <Copy size={13} />} {copiedIndex === index ? '已复制' : '复制回答'}</button>}
                 </div>
               </article>
-            ))}
+              )
+            })}
             {busy && <div className="ai-thinking"><span /><span /><span />正在思考…</div>}
             <div ref={messagesEndRef} />
           </div>
@@ -702,13 +760,57 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
               disabled={busy}
               aria-label="AI 问题"
             />
-            <div className="composer-footer"><span>{primaryShortcut} + Enter 发送 · 不要粘贴密码、私钥或令牌</span><button className="primary-button" type="submit" disabled={busy || !draft.trim()}><Send size={15} />发送</button></div>
+            <div className="composer-footer">
+              <div className="composer-selects">
+                <select
+                  className="composer-select"
+                  value={settings.permissionMode}
+                  onChange={(event) => requestPermissionMode(event.target.value as AiSettings['permissionMode'])}
+                  aria-label="命令执行权限模式"
+                  title="命令执行权限模式"
+                >
+                  <option value="approval">请求批准</option>
+                  <option value="full">全部权限</option>
+                </select>
+                <select
+                  className="composer-select model-select"
+                  value={`${settings.providerId}::${settings.model}`}
+                  onChange={(event) => {
+                    const [providerId, ...rest] = event.target.value.split('::')
+                    const model = rest.join('::')
+                    const provider = providers.find((item) => item.id === providerId)
+                    if (!provider || !model) return
+                    const next = { ...settings, providerId: provider.id, providerName: provider.name, endpoint: provider.endpoint, model }
+                    setSettings(next)
+                    saveAiSettings(next)
+                  }}
+                  aria-label="模型（按服务商分组）"
+                  title={providerModelsBusy ? '正在获取各服务商模型…' : '模型（按服务商分组）'}
+                >
+                  {!providers.some((p) => (providerModels[p.id] ?? [p.model]).includes(settings.model)) && (
+                    <option value={`${settings.providerId}::${settings.model}`}>{settings.providerName} · {settings.model}</option>
+                  )}
+                  {providers.map((provider) => {
+                    const list = Array.from(new Set([...(providerModels[provider.id] ?? []), provider.model]))
+                    return (
+                      <optgroup key={provider.id} label={provider.name}>
+                        {list.map((model) => (
+                          <option key={`${provider.id}::${model}`} value={`${provider.id}::${model}`}>{model}</option>
+                        ))}
+                      </optgroup>
+                    )
+                  })}
+                </select>
+              </div>
+              <span className="composer-hint">{primaryShortcut} + Enter 发送 · 不要粘贴密码、私钥或令牌</span>
+              <button className="primary-button" type="submit" disabled={busy || !draft.trim()}><Send size={15} />发送</button>
+            </div>
           </form>
         </section>
 
         {showSettings && (
           <aside className="ai-settings-panel"><fieldset disabled={busy || modelBusy} className="ai-settings-fields">
-            <div className="panel-title"><span><Settings2 size={15} />Kaduox 设置</span><span className="ai-local-lock"><ShieldCheck size={13} />本地保存</span></div>
+            <div className="panel-title"><span><Settings2 size={15} />AI 厂商设置</span><span className="ai-local-lock"><ShieldCheck size={13} />本地保存</span></div>
             <div className="provider-picker"><label className="field"><span>AI 服务商</span><select value={currentProviderExists ? settings.providerId : ''} onChange={(event) => event.target.value ? selectProvider(event.target.value) : startCustomProvider()}><option value="">自定义新服务商</option>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label><button className="secondary-button compact-button" type="button" onClick={startCustomProvider}>新建</button><button className="danger-icon" type="button" aria-label="删除当前服务商" title="删除当前服务商（连同已保存的 API 密钥）" disabled={!currentProviderExists} onClick={() => setConfirmDeleteProvider(true)}><Trash2 size={15} /></button></div>
             <label className="field full-width"><span>服务商名称</span><input value={settings.providerName} onChange={(event) => updateSettings('providerName', event.target.value)} placeholder="例如 DeepSeek / OpenAI / Ollama" /></label>
             <label className="field full-width"><span>接口地址</span><input value={settings.endpoint} onChange={(event) => updateSettings('endpoint', event.target.value)} placeholder="https://api.openai.com/v1/chat/completions" /></label>

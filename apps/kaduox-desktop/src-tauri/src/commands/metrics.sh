@@ -17,7 +17,8 @@ printf '\ncpu_usage='
 awk -v before="$before" '/^cpu /{split(before,b," ");t=0;for(i=2;i<=9;i++)t+=$i;d=t-b[1]; if(d>0)printf "%.2f\n",100*(d-($5+$6-b[2]))/d;exit}' /proc/stat 2>/dev/null
 printf '\nmemory='
 awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{if(t>0)printf "%.0f %.0f %.0f\n",t*1024,(t-a)*1024,a*1024}' /proc/meminfo 2>/dev/null
-printf '\ndisk='; df -P -B1 / 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5);print $2,$3,$4,$5}'
+# All real local filesystems (ext*, xfs, btrfs, zfs, ntfs, vfat...), one disk= line per mount.
+df -P -B1 -x tmpfs -x devtmpfs -x overlay -x squashfs -x ramfs 2>/dev/null | awk 'NR>1 && $2+0>0 {gsub(/%/,"",$5); gsub(/=/,"_",$6); printf "\ndisk=%s %s %s %s %s",$6,$2,$3,$4,$5}'
 nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | while IFS= read -r device; do printf '\ngpu=%s\n' "$device"; done
 printf '\nnetwork='
 awk 'BEGIN{rx=0;tx=0} /:/{gsub(/:/,"",$1);if($1!="lo"){rx+=$2;tx+=$10}} END{printf "%.0f %.0f\n",rx,tx}' /proc/net/dev 2>/dev/null

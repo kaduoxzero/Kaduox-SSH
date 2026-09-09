@@ -62,10 +62,13 @@ themes. It does not publish a website or modify the main branch.
     for manual approval on modify/delete; "全部权限" (opt-in with a confirmation
     dialog) also auto-runs modify commands. Delete-class commands always require
     manual approval, and dangerous commands (fork bombs, `rm -rf /`, raw disk
-    writes) are refused outright. Every AI-run command lands in run history
-    with the `AI` source badge and in the SQLite command audit. Conversations
-    persist in `ai-chat.db` next to the host store; provider profiles can be
-    deleted, which also removes their saved API key.
+    writes) are refused outright. Each AI round produces at most one batched
+    approval prompt; intermediate rounds collapse to compact command cards and
+    only the final consolidated answer renders as Markdown. Every AI-run
+    command lands in run history with the `AI` source badge and in the SQLite
+    command audit. Conversations persist in `ai-chat.db` next to the host
+    store; provider profiles can be deleted, which also removes their saved
+    API key.
 7. **Search**: search has visible results on any page, matches name/address/user/
    tags/groups, supports arrow keys, Enter and Escape, and navigates to the
    selected host. Windows/Linux show Ctrl+K and Ctrl+Enter; macOS shows Command.

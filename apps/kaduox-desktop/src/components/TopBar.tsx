@@ -114,7 +114,6 @@ export function TopBar({
             placeholder="搜索主机、地址或标签"
             aria-label="搜索主机"
           />
-          <kbd>{primaryShortcut} K</kbd>
         </label>
         {open && <div className="search-results" id="host-search-results" role="listbox" aria-label="匹配的主机">
           <small>{matches.length} 台匹配主机 · Enter 打开终端</small>

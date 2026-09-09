@@ -34,7 +34,7 @@ const READONLY_CMDS: &[&str] = &[
     "uniq", "diff", "comm", "awk", "sed", "cut", "tr", "xargs", "tee", "man", "info", "help",
     "alias", "jobs", "mount", "lsmount", "blkid", "fdisk", "smartctl", "ethtool", "hostname",
     "hostnamectl", "timedatectl", "localectl", "getent", "groups", "crontab", "atq", "lpq",
-    "sensors", "nvidia-smi", "docker", "kubectl", "systemctl", "service", "chkconfig", "arp",
+    "sensors", "nvidia-smi", "systemctl", "service", "chkconfig", "arp",
     "route", "mtr", "tcpdump", "iftop", "nload", "lsof", "fuser", "pgrep", "pidof", "pstree",
     "tree", "sha256sum", "md5sum", "sha1sum", "cksum", "base64", "od", "hexdump", "strings",
     "zcat", "zgrep", "bzcat", "xzcat", "tar", "zipinfo", "unzip", "rpm", "dpkg", "apt-cache",
@@ -123,7 +123,7 @@ const MODIFY_CMDS: &[&str] = &[
     "systemctl", "service", "chkconfig", "update-rc.d", "useradd", "adduser", "usermod",
     "groupadd", "addgroup", "groupmod", "passwd", "chpasswd", "visudo", "crontab", "at",
     "mount", "umount", "swapon", "mkfs", "fdisk", "parted", "sgdisk", "lvcreate", "lvremove",
-    "vgcreate", "pvcreate", "sed", "patch", "git", "docker", "kubectl", "helm", "compose",
+    "vgcreate", "pvcreate", "sed", "patch", "git", "helm", "compose",
     "ssh", "scp", "sftp", "rsync", "vim", "vi", "nano", "emacs", "ed", "ex", "tee", "rename",
     "update-alternatives", "alternatives", "locale-gen", "timedatectl", "hostnamectl",
     "localectl", "firewall-cmd", "ufw", "iptables", "ip6tables", "nft", "tc", "ip", "route",
@@ -136,7 +136,24 @@ const MODIFY_CMDS: &[&str] = &[
     "cryptsetup", "lvm", "mdadm", "zfs", "zpool", "btrfs", "xfs_admin",
 ];
 
-/// 提取命令的第一个有效 token（跳过环境变量赋值、sudo/doas 前缀等）。
+/// 是否存在 stdout 写重定向（`>`、`>>`、`1>`、`&>`）；
+/// stderr 重定向与 fd 复制（`2>`、`2>>`、`>&2`、`2>&1` 等）不算写入。
+fn has_write_redirect(segment: &str) -> bool {
+    for token in segment.split_whitespace() {
+        let t = token.trim_start_matches(['(', '{']);
+        if t.starts_with("2>") || t.starts_with(">&") || t.starts_with("1>&") || t.starts_with("2>&") {
+            continue;
+        }
+        if t == ">" || t == ">>" || t.starts_with(">>") || t.starts_with("1>") || t.starts_with("&>") {
+            return true;
+        }
+        // 独立 `>` 后接文件名的情况已被 t == ">" 覆盖；`>file` 粘连形式：
+        if t.starts_with('>') && t.len() > 1 {
+            return true;
+        }
+    }
+    false
+}
 fn first_token(segment: &str) -> &str {
     let mut rest = segment.trim_start();
     loop {
@@ -200,12 +217,47 @@ fn classify_segment(segment: &str) -> RiskLevel {
             RiskLevel::Modify
         };
     }
-    // 重定向覆盖 / 追加写入（不区分只读命令）
-    if segment.contains(">>") || segment.contains('>') {
-        // `>` 出现在参数里（如 `grep 'a>b'`）仍按写入处理，宁严勿宽。
-        if !token.is_empty() && !base.is_empty() {
-            return RiskLevel::Modify;
+    // 容器与编排工具按子命令分级：查询类只读，删除类 Delete，其余 Modify。
+    if matches!(base, "docker" | "podman" | "nerdctl") {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        let sub = words.get(1).copied().unwrap_or_default();
+        // docker container rm / image rm 等两级子命令
+        let sub2 = words.get(2).copied().unwrap_or_default();
+        if matches!(
+            sub,
+            "ps" | "images" | "inspect" | "logs" | "stats" | "version" | "info" | "top"
+                | "diff" | "history" | "port" | "search" | "df"
+        ) || (matches!(sub, "container" | "image")
+            && matches!(sub2, "ls" | "inspect" | "logs" | "stats" | "top" | "history"))
+        {
+            return RiskLevel::ReadOnly;
         }
+        if matches!(sub, "rm" | "rmi" | "kill")
+            || (matches!(sub, "container" | "image" | "volume" | "network" | "system")
+                && matches!(sub2, "rm" | "prune"))
+            || matches!(sub, "stop")
+        {
+            return RiskLevel::Delete;
+        }
+        return RiskLevel::Modify;
+    }
+    if base == "kubectl" {
+        let sub = segment.split_whitespace().nth(1).unwrap_or_default();
+        if matches!(
+            sub,
+            "get" | "describe" | "logs" | "top" | "version" | "api-resources" | "api-versions"
+                | "cluster-info" | "config" | "explain"
+        ) {
+            return RiskLevel::ReadOnly;
+        }
+        if sub == "delete" {
+            return RiskLevel::Delete;
+        }
+        return RiskLevel::Modify;
+    }
+    // 重定向覆盖 / 追加写入：忽略 stderr 重定向（2>、2>>、>&2、1>&2 等不算写入）。
+    if has_write_redirect(segment) && !token.is_empty() && !base.is_empty() {
+        return RiskLevel::Modify;
     }
     if DELETE_CMDS.contains(&base) {
         return RiskLevel::Delete;
@@ -381,6 +433,42 @@ mod tests {
             classify_command("cat /etc/passwd >> /tmp/backup"),
             RiskLevel::Modify
         );
+    }
+
+    #[test]
+    fn stderr_redirect_stays_readonly() {
+        assert_eq!(
+            classify_command("ss -tlnp 2>/dev/null | head -30"),
+            RiskLevel::ReadOnly
+        );
+        assert_eq!(
+            classify_command(
+                r#"echo "===== 监听端口 =====" && ss -tlnp 2>/dev/null | head -30 && echo ok"#
+            ),
+            RiskLevel::ReadOnly
+        );
+        assert_eq!(
+            classify_command("journalctl -u ssh --no-pager 2>&1 | tail -20"),
+            RiskLevel::ReadOnly
+        );
+        assert_eq!(classify_command("cat a 2>> err.log"), RiskLevel::ReadOnly);
+    }
+
+    #[test]
+    fn docker_subcommands_are_graded() {
+        assert_eq!(
+            classify_command(r#"docker ps -a --format "table {{.Names}}""#),
+            RiskLevel::ReadOnly
+        );
+        assert_eq!(classify_command("docker logs --tail 50 nginx"), RiskLevel::ReadOnly);
+        assert_eq!(classify_command("docker stats --no-stream"), RiskLevel::ReadOnly);
+        assert_eq!(classify_command("docker run -d nginx"), RiskLevel::Modify);
+        assert_eq!(classify_command("docker pull nginx"), RiskLevel::Modify);
+        assert_eq!(classify_command("docker rm old-container"), RiskLevel::Delete);
+        assert_eq!(classify_command("docker system prune -f"), RiskLevel::Delete);
+        assert_eq!(classify_command("kubectl get pods -A"), RiskLevel::ReadOnly);
+        assert_eq!(classify_command("kubectl delete pod x"), RiskLevel::Delete);
+        assert_eq!(classify_command("kubectl apply -f app.yaml"), RiskLevel::Modify);
     }
 
     #[test]

@@ -29,6 +29,18 @@ export function TerminalSession(props: Props) {
   latest.current = props
   const [error, setError] = useState<string | null>(null)
   const [closed, setClosed] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = xtermTheme(props.theme)
   }, [props.theme])
@@ -73,6 +85,23 @@ export function TerminalSession(props: Props) {
         })
         const fit = new addon.FitAddon()
         terminal.loadAddon(fit); terminal.open(container); terminalRef.current = terminal
+        // 复制粘贴：Ctrl+Shift+C / 有选区时的 Ctrl+C 复制；Ctrl+V / Ctrl+Shift+V 粘贴。
+        terminal.attachCustomKeyEventHandler?.((event) => {
+          if (event.type !== 'keydown' || !terminal) return true
+          const key = event.key.toLowerCase()
+          if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+            if ((event.shiftKey && key === 'c') || (!event.shiftKey && key === 'c' && terminal.hasSelection())) {
+              void navigator.clipboard.writeText(terminal.getSelection()).catch(() => {})
+              terminal.clearSelection()
+              return false
+            }
+            if (key === 'v') {
+              void navigator.clipboard.readText().then((text) => { if (text) terminal?.paste(text) }).catch(() => {})
+              return false
+            }
+          }
+          return true
+        })
         const outputListener = await onTerminalOutput((event) => {
           if (disposed || (terminalId && event.terminalId !== terminalId)) return
           const bytes = decodeBase64(event.dataBase64)
@@ -156,7 +185,33 @@ export function TerminalSession(props: Props) {
   }, [props.alias, props.restartKey])
 
   return <div className="terminal-surface" role="tabpanel" aria-label={props.label} style={props.visible ? undefined : { display: 'none' }}>
-    <div ref={containerRef} className="xterm-mount" />
+    <div
+      ref={containerRef}
+      className="xterm-mount"
+      onContextMenu={(event) => {
+        event.preventDefault()
+        const x = Math.min(event.clientX, window.innerWidth - 170)
+        const y = Math.min(event.clientY, window.innerHeight - 150)
+        setMenu({ x, y })
+      }}
+    />
+    {menu && (
+      <div className="context-menu terminal-menu" role="menu" style={{ left: menu.x, top: menu.y }} onMouseDown={(event) => event.stopPropagation()}>
+        <button type="button" role="menuitem" onClick={() => {
+          const terminal = terminalRef.current
+          if (terminal?.hasSelection()) void navigator.clipboard.writeText(terminal.getSelection()).catch(() => {})
+          terminal?.clearSelection()
+          setMenu(null)
+        }}>复制</button>
+        <button type="button" role="menuitem" onClick={() => {
+          void navigator.clipboard.readText().then((text) => { if (text) terminalRef.current?.paste(text) }).catch(() => {})
+          setMenu(null)
+        }}>粘贴</button>
+        <button type="button" role="menuitem" onClick={() => { terminalRef.current?.selectAll(); setMenu(null) }}>全选</button>
+        <hr />
+        <button type="button" role="menuitem" onClick={() => { terminalRef.current?.clearSelection(); setMenu(null) }}>取消选择</button>
+      </div>
+    )}
     {(error || closed) && <div className="terminal-error-overlay">
       <strong>{error ? '终端通道错误' : '此终端已退出'}</strong>
       <span>{error ?? '其他终端与 SSH 连接仍保留。'}</span>

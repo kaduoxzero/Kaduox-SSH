@@ -18,13 +18,14 @@ use commands::connection::{
 };
 use commands::files::{
     create_remote_directory, create_remote_file, delete_remote_path, download_file,
-    list_remote_files, read_remote_file, rename_remote_path, upload_file, write_remote_file,
+    download_remote_directory, list_remote_files, read_remote_file, rename_remote_path,
+    upload_file, write_remote_file,
 };
 use commands::forward::{list_forwards, start_forward, stop_forward};
 use commands::help::open_help_link;
 use commands::hosts::{
-    delete_folder, delete_host, list_chains, list_folders, list_hosts, save_chain, save_folder,
-    save_host,
+    delete_chain, delete_folder, delete_host, list_chains, list_folders, list_hosts, save_chain,
+    save_folder, save_host,
 };
 use commands::info::{
     get_local_basic_info, get_local_system_metrics, query_basic_info, query_system_metrics,
@@ -59,6 +60,7 @@ pub fn run() {
             list_chains,
             save_host,
             save_chain,
+            delete_chain,
             delete_host,
             connect_host,
             disconnect_host,
@@ -76,6 +78,7 @@ pub fn run() {
             list_remote_files,
             upload_file,
             download_file,
+            download_remote_directory,
             create_remote_directory,
             create_remote_file,
             read_remote_file,

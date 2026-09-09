@@ -134,6 +134,16 @@ export async function saveJumpChain(request: JumpChainSaveRequest): Promise<Jump
   return structuredClone(chain)
 }
 
+export async function deleteJumpChain(name: string): Promise<void> {
+  if (isDesktopRuntime) {
+    await invoke('delete_chain', { name })
+    return
+  }
+  const bound = mockHosts.filter((host) => host.jumpChain === name)
+  if (bound.length > 0) throw new Error(`跳板链仍被 ${bound.length} 台主机使用，请先解除绑定`)
+  mockChains = mockChains.filter((chain) => chain.name !== name)
+}
+
 export async function getLocalBasicInfo(): Promise<BasicInfo> {
   if (isDesktopRuntime) return invoke<BasicInfo>('get_local_basic_info')
   return {
@@ -518,6 +528,27 @@ export async function pickUploadFile(): Promise<string | null> {
 export async function pickDownloadPath(defaultPath: string): Promise<string | null> {
   if (!isDesktopRuntime) return null
   return save({ title: '保存远程文件', defaultPath })
+}
+
+/** 选择文件夹下载的本地目标目录。 */
+export async function pickDownloadDirectory(): Promise<string | null> {
+  if (!isDesktopRuntime) return null
+  const selected = await open({ multiple: false, directory: true, title: '选择保存文件夹的位置' })
+  return typeof selected === 'string' ? selected : null
+}
+
+export interface DirectoryDownloadResult {
+  files: number
+  bytes: number
+  skipped: number
+}
+
+/** 递归下载远程文件夹到本地目录（远程文件夹按原名创建在其中）。 */
+export async function downloadRemoteDirectory(alias: string, remotePath: string, localPath: string): Promise<DirectoryDownloadResult> {
+  if (!isDesktopRuntime) throw new Error('请在桌面客户端下载文件夹')
+  return invoke<DirectoryDownloadResult>('download_remote_directory', {
+    request: { alias, remotePath, localPath },
+  })
 }
 
 export async function chatWithAi(
