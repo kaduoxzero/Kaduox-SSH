@@ -69,6 +69,15 @@ themes. It does not publish a website or modify the main branch.
     command audit. Conversations persist in `ai-chat.db` next to the host
     store; provider profiles can be deleted, which also removes their saved
     API key.
+    Tool-call robustness (rc.11): responses are parsed with a three-level
+    fallback — native `tool_calls`, then DSML-style markers, then plain-text
+    `command:` lines (only when a host is bound) — so models that emit pseudo
+    tool-call text still produce approval cards instead of stalling; the
+    system prompt injects the bound host alias to discourage such markers.
+    If a provider answers a tools request with HTTP 400, the request is
+    retried once without tools. Long conversations are trimmed in
+    assistant+tool pairs (never splitting a call from its result) with an
+    explicit omission notice; the backend caps history at 64 messages.
 7. **Search**: search has visible results on any page, matches name/address/user/
    tags/groups, supports arrow keys, Enter and Escape, and navigates to the
    selected host. Windows/Linux show Ctrl+K and Ctrl+Enter; macOS shows Command.

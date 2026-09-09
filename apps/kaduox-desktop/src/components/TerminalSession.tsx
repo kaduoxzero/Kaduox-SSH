@@ -91,11 +91,15 @@ export function TerminalSession(props: Props) {
           const key = event.key.toLowerCase()
           if ((event.ctrlKey || event.metaKey) && !event.altKey) {
             if ((event.shiftKey && key === 'c') || (!event.shiftKey && key === 'c' && terminal.hasSelection())) {
+              // preventDefault 阻断浏览器默认行为，避免与 xterm 隐藏 textarea 的处理重复。
+              event.preventDefault()
               void navigator.clipboard.writeText(terminal.getSelection()).catch(() => {})
               terminal.clearSelection()
               return false
             }
             if (key === 'v') {
+              // 不 preventDefault 时原生 paste 事件会再送一次，导致粘贴内容出现两份。
+              event.preventDefault()
               void navigator.clipboard.readText().then((text) => { if (text) terminal?.paste(text) }).catch(() => {})
               return false
             }

@@ -242,10 +242,10 @@ pub fn commands(path: &Path, alias: Option<&str>, limit: usize) -> Result<Vec<St
             Ok(entry) => entry,
             Err(_) => continue,
         };
-        if let Some(alias) = alias {
-            if entry.alias != alias {
-                continue;
-            }
+        if let Some(alias) = alias
+            && entry.alias != alias
+        {
+            continue;
         }
         if seen.insert(entry.command.clone()) {
             output.push(entry.command);

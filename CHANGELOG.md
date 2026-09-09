@@ -4,6 +4,20 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.11] - 2026-09-09
+
+### Changed (desktop)
+
+- AI composer: Enter now sends and Shift+Enter inserts a newline (was Ctrl+Enter to send); hint text updated, and the settings toggle is renamed to “AI 厂商配置”;
+- run history page: the seldom-used command runner bar (and the per-row edit-and-rerun button) is removed — the page is now purely for browsing, filtering and copying records.
+
+### Fixed (desktop)
+
+- AI tool calling is far more robust with third-party models: requests now parse tool calls with a three-level fallback (native `tool_calls` → DSML-style markers → plain-text `command:` lines), fixing conversations that silently stalled with no approval card when a model emitted pseudo tool-call text; the system prompt also injects the bound host alias to discourage such pseudo markers.
+- models that do not support function calling no longer fail hard: a 400 response to a tools request triggers an automatic retry without tools, so chat still works.
+- long AI conversations are trimmed in assistant+tool pairs (never splitting a tool call from its result) with an explicit omission notice, fixing 400 errors and the AI "losing memory" on long sessions; the backend message cap is raised from 48 to 64.
+- terminal Ctrl+V pasted the clipboard twice (the custom key handler raced the xterm hidden textarea's native paste event); copy/paste branches now preventDefault first.
+
 ## [0.33.0-rc.10] - 2026-09-09
 
 ### Added (desktop)

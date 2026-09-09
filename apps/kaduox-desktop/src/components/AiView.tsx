@@ -29,9 +29,9 @@ import {
   getAiModels,
   saveAiApiKey,
 } from '../lib/desktop'
-import { primaryShortcut } from '../lib/platform'
 import { errorMessage } from '../lib/format'
 import { Markdown } from '../lib/markdown'
+import { trimWireMessages } from '../lib/aiTrim'
 import {
   loadAiProviders,
   loadAiSettings,
@@ -574,9 +574,9 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     }
     setBusy(true)
     try {
-      const wireMessages = conversation
-        .filter((message) => message.role !== 'tool' || message.toolCallId)
-        .slice(-48)
+      const wireMessages = trimWireMessages(
+        conversation.filter((message) => message.role !== 'tool' || message.toolCallId),
+      )
       const response = await chatWithAi(
         settingsRef.current,
         wireMessages,
@@ -661,7 +661,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
             </select>
           </label>
           <button className="secondary-button" type="button" onClick={() => setShowSettings((current) => !current)}>
-            <Settings2 size={15} /> {showSettings ? '隐藏设置' : 'Kaduox 设置'}
+            <Settings2 size={15} /> {showSettings ? '隐藏设置' : 'AI 厂商配置'}
           </button>
         </div>
       </div>
@@ -764,7 +764,11 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') void submit()
+                // Enter 发送，Shift+Enter 换行。
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  void submit()
+                }
               }}
               placeholder={targetAlias ? `描述问题，或让 Kaduox 在 ${targetAlias} 上执行排查命令…` : '描述 SSH / Linux 问题；选择已连接主机后可让 AI 直接执行命令…'}
               rows={3}
@@ -813,7 +817,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
                   })}
                 </select>
               </div>
-              <span className="composer-hint">{primaryShortcut} + Enter 发送 · 不要粘贴密码、私钥或令牌</span>
+              <span className="composer-hint">Enter 发送 · Shift+Enter 换行 · 不要粘贴密码、私钥或令牌</span>
               <button className="primary-button" type="submit" disabled={busy || !draft.trim()}><Send size={15} />发送</button>
             </div>
           </form>
