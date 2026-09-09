@@ -1516,7 +1516,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-daemon"
-version = "0.33.0-rc.5"
+version = "0.33.0-rc.6"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "0.33.0-rc.5"
+version = "0.33.0-rc.6"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-mcp"
-version = "0.33.0-rc.5"
+version = "0.33.0-rc.6"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
