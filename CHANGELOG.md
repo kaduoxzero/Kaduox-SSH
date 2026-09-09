@@ -4,6 +4,12 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.7] - 2026-09-09
+
+### Fixed (desktop)
+
+- window controls (minimize/maximize/close) now work: the frameless window's Tauri capabilities were missing the explicit window permissions, so clicks were silently rejected.
+
 ## [0.33.0-rc.6] - 2026-09-09
 
 ### Added (desktop)

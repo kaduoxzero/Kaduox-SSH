@@ -147,9 +147,9 @@ export function TopBar({
         </button>
         {isDesktopRuntime && (
           <div className="window-controls" role="group" aria-label="窗口控制">
-            <button type="button" aria-label="最小化" title="最小化" onClick={() => void getCurrentWindow().minimize()}><Minus size={14} /></button>
-            <button type="button" aria-label={maximized ? '还原' : '最大化'} title={maximized ? '还原' : '最大化'} onClick={() => void getCurrentWindow().toggleMaximize()}>{maximized ? <CopyIcon size={12} /> : <Square size={12} />}</button>
-            <button type="button" className="window-close" aria-label="关闭" title="关闭" onClick={() => void getCurrentWindow().close()}><X size={14} /></button>
+            <button type="button" aria-label="最小化" title="最小化" onClick={() => void getCurrentWindow().minimize().catch((error) => console.error('最小化失败', error))}><Minus size={14} /></button>
+            <button type="button" aria-label={maximized ? '还原' : '最大化'} title={maximized ? '还原' : '最大化'} onClick={() => void getCurrentWindow().toggleMaximize().catch((error) => console.error('切换最大化失败', error))}>{maximized ? <CopyIcon size={12} /> : <Square size={12} />}</button>
+            <button type="button" className="window-close" aria-label="关闭" title="关闭" onClick={() => void getCurrentWindow().close().catch((error) => console.error('关闭失败', error))}><X size={14} /></button>
           </div>
         )}
       </div>
