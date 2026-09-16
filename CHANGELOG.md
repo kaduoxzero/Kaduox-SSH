@@ -4,6 +4,17 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.12] - 2026-09-16
+
+### Fixed (desktop)
+
+- hosts workspace no longer leaves a large blank area below the terminal/SFTP panels when no session tab bar is shown: the terminal and file panels are now pinned to the workspace's stretching grid row instead of relying on auto-placement.
+- light theme: the AI composer permission/model selectors (and AI command cards, Markdown tables/quotes/code blocks, batch-approval bar) no longer render with dark GitHub-style fallback colors — the AI section now uses the app's theme variables, and native select dropdowns use a light color scheme.
+
+### Changed (desktop)
+
+- deduplicated AI stylesheet rules: the double `.composer-footer` definition and the trailing override block are folded into their primary rules, and the fixed `min-height: 590px` on AI layout panels is removed in favor of flexible layout.
+
 ## [0.33.0-rc.11] - 2026-09-09
 
 ### Changed (desktop)
