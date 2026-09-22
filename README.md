@@ -6,6 +6,8 @@
 
 Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files, SSH jump chains, system metrics, port forwarding, and Agent integration. The Windows application supports light and dark themes and runs as a desktop client; no separately hosted web application is needed.
 
+![Terminal workspace with SFTP sidebar](docs/screenshots/terminal.png)
+
 [Download v0.33.0-rc.14](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.14) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.14.md)
 
 ## Download and install
@@ -16,7 +18,7 @@ This prerelease provides **Windows x64** binaries. Linux desktop packages are no
 
 A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is built by the `Desktop macOS installer` workflow on every relevant `develop` push or manual dispatch; download the `.pkg` from the workflow run's artifacts. Double-click the package to install Kaduox SSH into Applications. It is **not Developer ID-signed or notarized**: on first launch, right-click the app and choose **Open**, or allow it under System Settings → Privacy & Security. The macOS client uses the native traffic-light window, stores passwords in macOS Keychain, and uses `ssh-agent` for agent authentication. This build has passed CI compilation and screenshot checks but not full on-device qualification yet.
 
-| Download | Choose this when�?|
+| Download | Choose this when |
 | --- | --- |
 | [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/Kaduox-SSH-0.33.0-rc.14-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
 | [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/Kaduox-SSH-0.33.0-rc.14-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
@@ -30,27 +32,59 @@ No personal servers, passwords, API keys, or user-data files are bundled. A new 
 ## Desktop quick start
 
 1. **Save a host.** Enter a display name, address, SSH port, and login user. Display names support Chinese, spaces, and parentheses. Save passwords in Windows Credential Manager, or use a private key / SSH Agent.
- 2. **Open a terminal.** Click a saved host to connect using its stored authentication (new hosts can auto-connect right after saving). Clicking an already-connected host only switches to its session; the session tab bar above the terminal lists every connection, and its **�?* adds another independent terminal to the current session. A command-history panel next to it persists commands per host—including the ones actually typed in that machine's shell—and supports copy/edit/re-run. Missing or invalid credentials still require input.
+ 2. **Open a terminal.** Click a saved host to connect using its stored authentication (new hosts can auto-connect right after saving). Clicking an already-connected host only switches to its session; the session tab bar above the terminal lists every connection, and its **+** adds another independent terminal to the current session. A command-history panel next to it persists commands per host—including the ones actually typed in that machine's shell—and supports copy/edit/re-run. Missing or invalid credentials still require input.
 3. **Organize targets and jump servers.** Choose target-only, dedicated jump server, or both. Dedicated jump servers have a separate sidebar section. Both sections collapse and share one scroll area. Create folders per section, rename them, or delete a folder together with the hosts inside (two-step confirm); move hosts using the folder selector.
 4. **Use the workspaces.** SFTP supports browsing, upload/download, creating folders/files, rename, delete (empty directories), properties, name search, and in-place editing of small text files. Open Info for CPU, memory, disk, network, and available GPU metrics; it samples the selected object immediately and every **10 seconds** while open. Operation history persists locally with **50 entries per page**. Terminal process state is not restored after closing the client.
 
 Use **Ctrl K** on Windows to search host names, addresses, or tags, then Enter to open a terminal. The top-bar Help page links to the full guide and this repository.
 
+## Screenshots
+
+The dark-theme desktop client at a glance:
+
+![Terminal workspace with host list and SFTP sidebar](docs/screenshots/terminal.png)
+
+The main workspace: saved hosts on the left, independent terminal tabs in the center, and a remote SFTP panel on the right.
+
+![SFTP remote file workspace](docs/screenshots/sftp.png)
+
+The SFTP workspace supports browsing, upload/download, creating folders/files, rename, delete, properties, name search, and in-place editing of small text files.
+
+![Host metrics dashboard](docs/screenshots/metrics.png)
+
+The Info page samples CPU, memory, disk, network, and available GPU metrics immediately and every 10 seconds while open.
+
+![Port forwarding configuration](docs/screenshots/forwarding.png)
+
+Local `-L`, remote `-R`, and SOCKS5 `-D` forwarding over an existing authenticated SSH connection, plus SSH jump chain configuration.
+
+![Persistent run history](docs/screenshots/history.png)
+
+Operation history persists locally with 50 entries per page and per-host, per-day filtering; sensitive inputs such as passwords are never recorded.
+
+![Kaduox AI operations assistant](docs/screenshots/ai-assistant.png)
+
+The Kaduox AI assistant calls only the OpenAI-compatible provider you configure; read-only commands run automatically while mutations require your approval.
+
+![Add-host dialog](docs/screenshots/add-host.png)
+
+Saving a host: display name, purpose (target / jump server), credentials, host-key policy, folders, tags, and the SSH connection path.
+
 ### SSH jumps: configure the final target
 
 ```text
-Your computer �?Jump A (demo@192.0.2.10:22) �?Target B (deploy@198.51.100.20:22)
+Your computer → Jump A (demo@192.0.2.10:22) → Target B (deploy@198.51.100.20:22)
 ```
 
 These addresses are documentation examples. Save A and B with their own authentication, mark A as a jump server or dual-purpose host, then edit **B** and add A to its SSH connection path. Clicking B connects through A automatically. The chain supports **up to five jump servers plus one final target**, in connection order. Each hop uses SSH and its own user, port, and credentials; reconnect after changing a route. You do not need a separate port-forward rule for an ordinary SSH jump.
 
 ### Forwarding and server identity
 
-| Mode | Listening side �?service side |
+| Mode | Listening side → service side |
 | --- | --- |
-| Local `-L` | Your computer �?SSH tunnel �?service reachable from the remote host |
-| Remote `-R` | Remote host �?SSH tunnel �?service reachable from your computer |
-| SOCKS5 `-D` | Local SOCKS5 listener �?SSH tunnel �?remote network |
+| Local `-L` | Your computer → SSH tunnel → service reachable from the remote host |
+| Remote `-R` | Remote host → SSH tunnel → service reachable from your computer |
+| SOCKS5 `-D` | Local SOCKS5 listener → SSH tunnel → remote network |
 
 Forwarding transports TCP traffic; it does **not** start a website or replace Nginx's HTTP routing, TLS termination, or load balancing. Listeners default to loopback. Public access through remote forwarding also needs the intended bind address, server forwarding/GatewayPorts permission, and firewall rules; the exposed service needs its own HTTPS and authentication. See the [forwarding guide](docs/DESKTOP_GUIDE.zh-CN.md#端口转发不是-nginx).
 
@@ -314,7 +348,7 @@ By default host keys use `accept-new`: unknown ordinary keys are written to the 
 
 Transfers use bounded buffers and leave large-file request pipelining to `russh-sftp`, while Kaduox-SSH controls higher-level policy such as stable resume files, atomic finalization, directory concurrency, progress, cancellation, and privileged staging. SFTP session limits are configurable locally and are still constrained by limits negotiated with the remote server.
 
-Transfer tuning is fail-closed rather than unbounded: file concurrency is limited to 128, pipelined SFTP writes to 128, packet size to 4 KiB�? MiB, and the estimated `file_concurrency × write_concurrency × packet_size` window must stay at or below 512 MiB. Defaults remain 4 files, 16 pipelined writes, and 256 KiB packets, for an estimated 16 MiB in-flight write window.
+Transfer tuning is fail-closed rather than unbounded: file concurrency is limited to 128, pipelined SFTP writes to 128, packet size to 4 KiB–1 MiB, and the estimated `file_concurrency × write_concurrency × packet_size` window must stay at or below 512 MiB. Defaults remain 4 files, 16 pipelined writes, and 256 KiB packets, for an estimated 16 MiB in-flight write window.
 
 Synchronization scans both local and remote directory trees and builds a typed action plan before mutation. The CLI prints the plan before applying it. Remote-only entries are preserved by default; deletion and file/directory conflict replacement are only permitted when `--delete` is explicitly supplied. `--dry-run` never mutates the remote tree.
 
