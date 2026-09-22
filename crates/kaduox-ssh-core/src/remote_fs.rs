@@ -92,19 +92,43 @@ pub(crate) async fn stat_path(sftp: &SftpSession, path: &str) -> Result<RemoteFi
     })
 }
 
+/// 目录遍历时同层并发 readdir 的上限。SFTP 通道本身支持请求多路复用，
+/// 并发可以摊薄每层的网络往返；上限避免对服务器造成请求突刺。
+const DIRECTORY_WALK_CONCURRENCY: usize = 8;
+
 /// 递归统计目录总大小（字节）。不跟随符号链接，避免环路。
+/// 逐层 BFS，同层目录并发 readdir；串行递归在宽目录树下会被 RTT 放大数倍。
 pub(crate) async fn directory_size(sftp: &SftpSession, path: &str) -> Result<u64> {
     let mut total = 0u64;
-    let mut pending = vec![path.to_owned()];
-    while let Some(directory) = pending.pop() {
-        for entry in list_directory(sftp, &directory).await? {
-            match entry.metadata.file_type {
-                RemoteFileType::Directory => pending.push(entry.path),
-                _ => total = total.saturating_add(entry.metadata.size.unwrap_or(0)),
+    let mut level = vec![path.to_owned()];
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for chunk in level.chunks(DIRECTORY_WALK_CONCURRENCY) {
+            let listings = futures::future::join_all(
+                chunk.iter().map(|directory| list_directory(sftp, directory)),
+            )
+            .await;
+            for entries in listings {
+                for entry in entries? {
+                    match entry.metadata.file_type {
+                        RemoteFileType::Directory => next.push(entry.path),
+                        _ => total = total.saturating_add(entry.metadata.size.unwrap_or(0)),
+                    }
+                }
             }
         }
+        level = next;
     }
     Ok(total)
+}
+
+/// 解析 `du -sb -- <path>` 的 stdout，格式为 "<bytes>\t<path>\n"。
+/// GNU coreutils 的 `-b` 等价于 `--apparent-size --block-size=1`，
+/// 与 SFTP 遍历累加的文件逻辑大小语义一致。
+pub(crate) fn parse_du_bytes(stdout: &[u8]) -> Option<u64> {
+    let line = std::str::from_utf8(stdout).ok()?.lines().next()?.trim();
+    let (size, _) = line.split_once(char::is_whitespace).or(Some((line, "")))?;
+    size.parse().ok()
 }
 
 fn validate_remote_entry_name(name: &str) -> Result<()> {
@@ -201,5 +225,16 @@ mod tests {
         assert_eq!(join_remote_child("/", "etc"), "/etc");
         assert_eq!(join_remote_child("/var/log", "syslog"), "/var/log/syslog");
         assert_eq!(join_remote_child("relative/", "file"), "relative/file");
+    }
+
+    #[test]
+    fn parses_du_output_first_field() {
+        assert_eq!(parse_du_bytes(b"129372160\t/var/log\n"), Some(129372160));
+        assert_eq!(parse_du_bytes(b"0\t/empty\n"), Some(0));
+        assert_eq!(parse_du_bytes(b"4096 /dir with spaces\n"), Some(4096));
+        assert_eq!(parse_du_bytes(b""), None);
+        assert_eq!(parse_du_bytes(b"du: cannot access\n"), None);
+        assert_eq!(parse_du_bytes(b"abc\t/path\n"), None);
+        assert_eq!(parse_du_bytes(&[0xff, 0xfe]), None);
     }
 }

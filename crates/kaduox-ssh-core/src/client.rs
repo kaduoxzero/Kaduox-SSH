@@ -27,7 +27,7 @@ use crate::forward::{
 };
 use crate::handler::{ClientHandler, HandlerState};
 use crate::host_trust::HostTrustPolicy;
-use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, directory_size, list_directory, stat_path};
+use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, directory_size, list_directory, parse_du_bytes, stat_path};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
@@ -520,13 +520,32 @@ impl SshClient {
         Ok(stat)
     }
 
+    /// 统计目录总大小：优先 `du -sb`（服务器本地遍历，一次往返拿结果）；
+    /// exec 不可用或输出无法解析时回退到 SFTP 并发遍历，保证任何服务器都能出结果。
     pub async fn remote_directory_size(&self, path: &str) -> Result<u64> {
+        if let Ok(size) = self.remote_directory_size_via_du(path).await {
+            return Ok(size);
+        }
         let sftp = self.open_sftp_for_inspection().await?;
         let result = directory_size(&sftp, path).await;
         let close_result = sftp.close().await;
         let size = result?;
         close_result?;
         Ok(size)
+    }
+
+    async fn remote_directory_size_via_du(&self, path: &str) -> Result<u64> {
+        let command = format!("du -sb -- {}", quote_posix(path));
+        let output = self.exec(&command, &RemoteUser::Current).await?;
+        if output.exit_status != Some(0) {
+            bail!(
+                "du exited with {:?}: {}",
+                output.exit_status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        parse_du_bytes(&output.stdout)
+            .with_context(|| format!("unparsable du output: {:?}", output.stdout))
     }
 
     pub async fn local_forward(&self, spec: LocalForward) -> Result<ForwardHandle> {

@@ -2159,6 +2159,7 @@ name = "kaduox-ssh-core"
 version = "0.33.0-rc.12"
 dependencies = [
  "anyhow",
+ "futures",
  "hmac",
  "russh",
  "russh-config",
