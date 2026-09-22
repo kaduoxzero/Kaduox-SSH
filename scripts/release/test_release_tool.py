@@ -37,12 +37,11 @@ class ReleaseToolTests(unittest.TestCase):
         for value in ("0.13.0-rc.1", "1.0.0", "1.0.0+build.7"):
             self.assertIsNotNone(release_tool.SEMVER.fullmatch(value), value)
 
-    def test_version_rewrite_updates_workspace_and_both_lock_records(self) -> None:
+    def test_version_rewrite_updates_workspace_and_all_lock_records(self) -> None:
         cargo = "[workspace]\n\n[workspace.package]\nversion = \"0.13.0-rc.1\"\nedition = \"2024\"\n"
-        lock = (
-            "version = 4\n\n"
-            "[[package]]\nname = \"kaduox-ssh-cli\"\nversion = \"0.13.0-rc.1\"\n\n"
-            "[[package]]\nname = \"kaduox-ssh-core\"\nversion = \"0.13.0-rc.1\"\n"
+        lock = "version = 4\n\n" + "\n".join(
+            f'[[package]]\nname = "{name}"\nversion = "0.13.0-rc.1"\n'
+            for name in release_tool.LOCAL_PACKAGES
         )
         updated_cargo = release_tool.replace_workspace_version(
             cargo, "0.13.0-rc.1", "1.0.0"
@@ -51,14 +50,19 @@ class ReleaseToolTests(unittest.TestCase):
             lock, "0.13.0-rc.1", "1.0.0"
         )
         self.assertIn('version = "1.0.0"', updated_cargo)
-        self.assertEqual(updated_lock.count('version = "1.0.0"'), 2)
+        self.assertEqual(
+            updated_lock.count('version = "1.0.0"'), len(release_tool.LOCAL_PACKAGES)
+        )
         self.assertNotIn("0.13.0-rc.1", updated_cargo)
         self.assertNotIn("0.13.0-rc.1", updated_lock)
 
     def test_version_rewrite_fails_before_mutation_on_unexpected_lock(self) -> None:
-        lock = (
-            "[[package]]\nname = \"kaduox-ssh-cli\"\nversion = \"0.13.0-rc.1\"\n\n"
-            "[[package]]\nname = \"kaduox-ssh-core\"\nversion = \"0.12.0\"\n"
+        lock = "\n".join(
+            f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+            for name, version in zip(
+                release_tool.LOCAL_PACKAGES,
+                ["0.13.0-rc.1"] * (len(release_tool.LOCAL_PACKAGES) - 1) + ["0.12.0"],
+            )
         )
         with self.assertRaises(ValueError):
             release_tool.replace_lock_versions(lock, "0.13.0-rc.1", "1.0.0")

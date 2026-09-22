@@ -185,7 +185,7 @@ def validate_target_sbom(path: Path, tag: str, target: str) -> None:
     ):
         raise ValueError("target-specific SPDX root package does not match release target")
     package_names = {package.get("name") for package in packages}
-    if not set(release_tool.LOCAL_PACKAGES).issubset(package_names):
+    if not set(release_tool.SBOM_LOCAL_PACKAGES).issubset(package_names):
         raise ValueError("target-specific SPDX SBOM is missing local Kaduox packages")
 
     relationships = document.get("relationships")
