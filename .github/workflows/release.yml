@@ -245,12 +245,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          extra=()
+          # Curated release notes are mandatory: docs/releases/v<version>.md must
+          # exist and its first heading becomes the release title. A missing file
+          # fails closed instead of publishing a bare auto-generated changelog.
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          test -f "$notes"
+          title="$(head -n 1 "$notes" | sed -e 's/^#[[:space:]]*//')"
+          test -n "$title"
+          extra=(--title "$title" --notes-file "$notes")
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             extra+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --generate-notes \
             --verify-tag \
             "${extra[@]}"

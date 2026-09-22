@@ -129,6 +129,8 @@ The target SBOM is a Cargo dependency/build-material graph for that release targ
 
 ## Final release asset contract
 
+The publish job requires curated release notes at `docs/releases/v<tag>.md`; the first Markdown heading becomes the release title and the file becomes the release body. A missing notes file fails closed — no bare auto-generated changelog is published.
+
 Before GitHub Release creation, the publish job requires exactly:
 
 - four release archives;
