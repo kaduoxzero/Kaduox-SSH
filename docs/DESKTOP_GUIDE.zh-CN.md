@@ -6,9 +6,19 @@
 
 Windows x64 用户下载 `Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe`，可选择安装目录和中文/英文安装界面。安装包包含 WebView2 离线安装组件。单文件桌面 EXE 适合已有 WebView2 Runtime 的电脑，不包含个人主机配置。数据保存在当前 Windows 用户的应用数据目录，不随 EXE 移动。
 
-本版本为未签名的预发布版，Windows 可能显示发行者未知。只从本项目 Releases 下载，并核对 SHA256SUMS.txt；不要为运行软件关闭系统安全防护。macOS/Linux 桌面包不在本次发行中。
+本版本为未签名的预发布版，Windows 可能显示发行者未知。只从本项目 Releases 下载，并核对 SHA256SUMS.txt；不要为运行软件关闭系统安全防护。Linux 桌面包不在本次发行中。
 
-初次打开是空主机列表，无演示服务器、密码或自动连接。右上角选择深色/浅色主题。`Ctrl K` 搜索主机名、地址或标签，Enter 打开对应终端。
+### macOS 版（实验性）
+
+macOS 用户可从 `Desktop macOS dmg` workflow 的运行产物中下载 Universal 2 dmg（同时支持 Intel 与 Apple Silicon，要求 macOS 11 及以上）。该包**未经 Apple 签名与公证**，首次打开请在访达中右键应用图标选择“打开”，或在 系统设置 → 隐私与安全性 中允许运行。与 Windows 版的差异：
+
+- 窗口使用 macOS 原生红绿灯按钮，无自绘窗口控制键；
+- 密码保存在 macOS 钥匙串（Windows 版为凭据管理器）；
+- Agent 认证使用 `ssh-agent`（`SSH_AUTH_SOCK`），不支持 Pageant；
+- 全局搜索快捷键为 `⌘K`（Windows 版为 `Ctrl K`）；
+- 本地数据位于 `~/Library/Application Support/com.kaduox.ssh`，主机库在 `~/Library/Application Support/Kaduox-SSH/hosts.toml`。
+
+初次打开是空主机列表，无演示服务器、密码或自动连接。右上角选择深色/浅色主题。`Ctrl K`（macOS 为 `⌘K`）搜索主机名、地址或标签，Enter 打开对应终端。
 
 ## 保存主机并打开终端
 

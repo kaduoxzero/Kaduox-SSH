@@ -10,7 +10,11 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ## Download and install
 
-This prerelease provides **Windows x64** binaries. Linux/macOS desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the supplied SHA-256 checksums.
+This prerelease provides **Windows x64** binaries. Linux desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the supplied SHA-256 checksums.
+
+### macOS (experimental)
+
+A **Universal 2** dmg (Intel + Apple Silicon, macOS 11+) is built by the `Desktop macOS dmg` workflow on every relevant `develop` push or manual dispatch; download it from the workflow run's artifacts. It is **not Developer ID-signed or notarized**: on first launch, right-click the app and choose **Open**, or allow it under System Settings → Privacy & Security. The macOS client uses the native traffic-light window, stores passwords in macOS Keychain, and uses `ssh-agent` for agent authentication. This build has passed CI compilation and screenshot checks but not full on-device qualification yet.
 
 | Download | Choose this when�?|
 | --- | --- |

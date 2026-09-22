@@ -15,7 +15,7 @@ import X from 'lucide-react/dist/esm/icons/x'
 import { useEffect, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { isDesktopRuntime } from '../lib/desktop'
-import { primaryShortcut } from '../lib/platform'
+import { primaryShortcut, isMac } from '../lib/platform'
 
 import type { Host, Theme, ViewId } from '../lib/types'
 
@@ -73,7 +73,7 @@ export function TopBar({
     void getCurrentWindow().startDragging().catch(() => {})
   }
   return (
-    <header className="top-bar" onMouseDown={startDrag} onDoubleClick={(event) => {
+    <header className={isMac ? 'top-bar top-bar-macos' : 'top-bar'} onMouseDown={startDrag} onDoubleClick={(event) => {
       if (!isDesktopRuntime || isInteractive(event.target as HTMLElement)) return
       void getCurrentWindow().toggleMaximize().catch(() => {})
     }}>
@@ -144,7 +144,7 @@ export function TopBar({
           <Plus size={16} aria-hidden="true" />
           新建连接
         </button>
-        {isDesktopRuntime && (
+        {isDesktopRuntime && !isMac && (
           <div className="window-controls" role="group" aria-label="窗口控制">
             <button type="button" aria-label="最小化" title="最小化" onClick={() => void getCurrentWindow().minimize().catch((error) => console.error('最小化失败', error))}><Minus size={14} /></button>
             <button type="button" aria-label={maximized ? '还原' : '最大化'} title={maximized ? '还原' : '最大化'} onClick={() => void getCurrentWindow().toggleMaximize().catch((error) => console.error('切换最大化失败', error))}>{maximized ? <CopyIcon size={12} /> : <Square size={12} />}</button>

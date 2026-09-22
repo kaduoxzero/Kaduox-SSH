@@ -171,6 +171,9 @@ kbd,
   background: var(--canvas);
 }
 
+/* macOS 原生交通灯窗口：为左上角红绿灯按钮预留拖拽空白区 */
+.top-bar-macos { padding-left: 84px; }
+
 .top-bar {
   position: relative;
   z-index: 40;

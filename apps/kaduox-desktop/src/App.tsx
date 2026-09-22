@@ -29,6 +29,7 @@ import {
   stopForward,
 } from './lib/desktop'
 import { errorMessage } from './lib/format'
+import { platform } from './lib/platform'
 import { loadTheme, saveTheme } from './lib/storage'
 import type {
   AuthenticationRequest,
@@ -94,7 +95,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     document.documentElement.style.colorScheme = theme
-    document.documentElement.dataset.platform = navigator.userAgent.includes('Windows') ? 'windows' : 'other'
+    document.documentElement.dataset.platform = platform
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0d141c' : '#f2f5f8')
     saveTheme(theme)
   }, [theme])

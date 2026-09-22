@@ -1,0 +1,65 @@
+name: Desktop macOS dmg
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+    paths:
+      - "apps/kaduox-desktop/**"
+      - "crates/**"
+      - ".github/workflows/desktop-macos.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    name: Universal 2 dmg + screenshots
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: apps/kaduox-desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 ref 2026-07-16
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: desktop-macos-universal
+          workspaces: apps/kaduox-desktop/src-tauri
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Frontend tests
+        run: npm test
+      - name: Build Universal 2 app and dmg (unsigned)
+        run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg --ci -- --locked
+      - name: Launch app and capture screenshots
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Kaduox SSH.app"
+          test -d "$app"
+          out="$RUNNER_TEMP/kaduox-screenshots"
+          mkdir -p "$out"
+          open "$app"
+          sleep 12
+          screencapture -x "$out/01-launch.png"
+          osascript -e 'tell application "Kaduox SSH" to activate' || true
+          sleep 2
+          screencapture -x "$out/02-active.png"
+          osascript -e 'tell application "Kaduox SSH" to quit' || true
+          ls -la "$out"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kaduox-ssh-macos-universal
+          path: |
+            apps/kaduox-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            ${{ runner.temp }}/kaduox-screenshots/*.png
+          if-no-files-found: error
+          retention-days: 14
