@@ -36,6 +36,7 @@ interface HostForm {
   note: string
   hostKeyPolicy: Host['hostKeyPolicy']
   jumpChain: string
+  osType: NonNullable<Host['osType']>
 }
 
 function formForHost(host: Host | null): HostForm {
@@ -51,6 +52,7 @@ function formForHost(host: Host | null): HostForm {
     note: host?.note ?? '',
     hostKeyPolicy: host?.hostKeyPolicy ?? 'accept-new',
     jumpChain: host?.jumpChain ?? '',
+    osType: host?.osType ?? 'auto',
   }
 }
 
@@ -210,6 +212,7 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
         note: form.note.trim() || null,
         hostKeyPolicy: form.hostKeyPolicy,
         jumpChain,
+        osType: form.osType,
       }, { connectAfter: !host && connectAfter })
     } catch (error) {
       setFormError(errorMessage(error))
@@ -269,6 +272,14 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
             {(['strict', 'accept-new', 'insecure'] as const).map((policy) => <button type="button" key={policy} className={form.hostKeyPolicy === policy ? 'active' : ''} onClick={() => update('hostKeyPolicy', policy)}>{policy === 'strict' ? '严格' : policy === 'accept-new' ? '首次信任' : '不安全'}</button>)}
           </div>
           <small>{form.hostKeyPolicy === 'strict' ? '仅连接已记录可信指纹的服务器。首次连接需先核验并添加指纹；未知或变化时拒绝。' : form.hostKeyPolicy === 'accept-new' ? '首次自动记住服务器指纹，之后指纹变化时拒绝。首次仍需核对身份，避免连接到冒充的服务器。' : '跳过服务器身份核验，可能遭遇冒充或中间人攻击。仅用于隔离测试，不建议正式使用。'} 这是服务器的身份证明，不是登录密码。</small>
+        </label>
+
+        <label className="field full-width">
+          <span>系统类型</span>
+          <div className="segmented-control three" role="group" aria-label="系统类型">
+            {(['auto', 'linux', 'windows'] as const).map((kind) => <button type="button" key={kind} className={form.osType === kind ? 'active' : ''} onClick={() => update('osType', kind)}>{kind === 'auto' ? '自动探测' : kind === 'linux' ? 'Linux / Unix' : 'Windows'}</button>)}
+          </div>
+          <small>{form.osType === 'windows' ? '目标运行 Windows OpenSSH 服务器：终端使用 cmd.exe，暂不支持提权切换、文件管理和信息面板。' : form.osType === 'linux' ? '按 Linux / Unix 处理，跳过自动探测。' : '连接时自动探测目标系统；探测不准时可手动指定。'}</small>
         </label>
 
         <div className="field-grid">

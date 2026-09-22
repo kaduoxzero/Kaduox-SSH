@@ -83,3 +83,49 @@ jobs:
         run: bash scripts/ci/openssh-command-spec-integration.sh
       - name: Run fleet execution integration suite
         run: bash scripts/ci/openssh-fleet-integration.sh
+
+  windows-target:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Windows target (loopback OpenSSH server)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 ref 2026-07-16
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Enable loopback OpenSSH server with key authentication
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+          Start-Service sshd
+          ssh-keygen -t ed25519 -f "$env:RUNNER_TEMP\kssh_ci_key" -N '' -q
+          Add-Content -Path "C:\ProgramData\ssh\administrators_authorized_keys" -Value (Get-Content "$env:RUNNER_TEMP\kssh_ci_key.pub") -Encoding ascii
+      - name: Build kssh
+        run: cargo build -p kaduox-ssh-cli --locked
+      - name: Smoke-test exec and sudo rejection against the Windows target
+        shell: pwsh
+        run: |
+          $kssh = "target/debug/kssh.exe"
+          $key = "$env:RUNNER_TEMP\kssh_ci_key"
+          # sudo rejection exits non-zero by design; check $LASTEXITCODE and
+          # captured output explicitly instead of relying on EAP=Stop, because
+          # pwsh 7.4+ throws on non-zero native exits when Stop is set.
+          $who = & $kssh 127.0.0.1 --user runneradmin --identity $key --host-key insecure exec -- whoami
+          if ($LASTEXITCODE -ne 0) { throw "exec failed with exit $LASTEXITCODE" }
+          if ($who -notmatch 'runneradmin') { throw "unexpected whoami output: $who" }
+          $sudo = & $kssh 127.0.0.1 --user runneradmin --identity $key --host-key insecure exec --as-user root -- whoami 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) { throw "sudo unexpectedly succeeded: $sudo" }
+          if ($sudo -notmatch 'Windows targets do not support sudo') { throw "sudo was not rejected: $sudo" }
+          # pwsh propagates the last native exit code; the sudo probe above
+          # exits 1 by design, so finish with an explicit success code.
+          exit 0
+      - name: Run live Windows PTY test
+        shell: pwsh
+        run: |
+          $env:KADUOX_LIVE_WINDOWS_HOST = '127.0.0.1'
+          $env:KADUOX_LIVE_WINDOWS_USER = 'runneradmin'
+          $env:KADUOX_LIVE_WINDOWS_KEY = "$env:RUNNER_TEMP\kssh_ci_key"
+          cargo test -p kaduox-ssh-core --locked windows_target_detects_platform_and_runs_cmd_pty -- --ignored --nocapture

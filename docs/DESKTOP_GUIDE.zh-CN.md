@@ -44,6 +44,17 @@ macOS 用户可从 `Desktop macOS installer` workflow 的运行产物中下载 U
 
 最多 5 台中转加 1 台最终目标。按本机到目标的顺序排列中转；不要将最终目标重复放进列表。每段默认 SSH，使用对应机器自己的用户、端口和凭据。上游机器需能访问下游 SSH 端口，并允许 TCP 转发。修改配置后重连才会采用新路线。单纯 SSH 跳转不需要再创建端口转发。
 
+## 连接 Windows 主机
+
+Kaduox SSH 可以把运行 **Windows OpenSSH 服务器** 的 Windows 机器作为目标主机。在 Windows 目标上：设置 → 可选功能 → 添加「OpenSSH 服务器」，然后启动 `sshd` 服务。管理员账户的公钥需写入 `C:\ProgramData\ssh\administrators_authorized_keys`（而不是用户目录下的 `authorized_keys`）。
+
+连接时客户端自动探测目标系统（也可在编辑主机时把「系统类型」手动设为 Windows）。Windows 主机的差异：
+
+- 终端使用 **cmd.exe**（Windows PowerShell 5.1 在 ConPTY-over-SSH 下不产生输出，为已验证的兼容性取舍；非交互命令仍可用 `powershell -Command ...` 执行）；
+- 主机卡片显示 Windows 徽标；
+- 不支持提权切换（sudo 是 Unix 概念）、远程文件管理和系统信息面板（后续版本提供）；
+- 终端、命令执行、端口转发、运行记录、AI 助手与 Linux 主机一致。
+
 ## 主机密钥策略
 
 主机密钥用来验证服务器身份，不是登录密码或私钥文件。

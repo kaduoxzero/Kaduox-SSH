@@ -32,7 +32,9 @@ mod transfer_task_manager;
 pub(crate) use transfer_facade as transfer;
 
 pub use auth::Authentication;
-pub use client::{CommandOutput, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix};
+pub use client::{
+    CommandOutput, RemotePlatform, RemoteUser, SshClient, TerminalSize, TerminalSpec, quote_posix,
+};
 pub use command::RemoteCommandSpec;
 pub use config::{
     ConnectionConfig, ConnectionConfigSnapshot, ConnectionRouteSnapshot, HostKeyPolicy, JumpHost,

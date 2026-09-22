@@ -36,8 +36,8 @@ use crate::transfer::{
 
 const PROXY_EXPANSION_SAFE_PUNCTUATION: &str = "._:@+-[]";
 
-// russh 的 Channel 本身不会在 Drop 时发送 CLOSE。终端任务被取消时，
-// 显式关闭它的独立通道，避免远端 shell 残留，同时保留共享 SSH 传输。
+// russh 鐨?Channel 鏈韩涓嶄細鍦?Drop 鏃跺彂閫?CLOSE銆傜粓绔换鍔¤鍙栨秷鏃讹紝
+// 鏄惧紡鍏抽棴瀹冪殑鐙珛閫氶亾锛岄伩鍏嶈繙绔?shell 娈嬬暀锛屽悓鏃朵繚鐣欏叡浜?SSH 浼犺緭銆?
 struct ShellChannel(Option<russh::Channel<client::Msg>>);
 
 impl std::ops::Deref for ShellChannel {
@@ -70,6 +70,18 @@ pub enum RemoteUser {
     #[default]
     Current,
     Sudo(String),
+}
+
+/// Detected operating-system family of the connected server.
+///
+/// Detection is lazy and probed at most once per connection. Windows targets
+/// run the stock Microsoft OpenSSH server whose default shell is cmd.exe, so
+/// interactive sessions and command composition differ from POSIX targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RemotePlatform {
+    #[default]
+    Unix,
+    Windows,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +141,7 @@ pub struct SshClient {
     jump_sessions: Vec<Arc<client::Handle<ClientHandler>>>,
     state: HandlerState,
     config: ConnectionConfig,
+    platform: tokio::sync::OnceCell<RemotePlatform>,
 }
 
 impl SshClient {
@@ -245,11 +258,74 @@ impl SshClient {
             jump_sessions,
             state,
             config,
+            platform: tokio::sync::OnceCell::new(),
         })
     }
 
     pub fn username(&self) -> &str {
         &self.config.username
+    }
+
+    /// Detected server operating-system family. The probe runs at most once
+    /// per connection and the result is cached for the connection lifetime.
+    pub async fn remote_platform(&self) -> RemotePlatform {
+        *self
+            .platform
+            .get_or_init(|| async { self.detect_remote_platform().await })
+            .await
+    }
+
+    /// Pre-seed the platform from caller configuration (for example the host
+    /// library's explicit OS type), skipping the network probe. A value that
+    /// was already detected or set wins over later overrides.
+    pub fn set_remote_platform(&self, platform: RemotePlatform) {
+        let _ = self.platform.set(platform);
+    }
+
+    /// Probe the server OS with short, read-only commands. Order matters:
+    /// `uname` answers POSIX systems, `ver` answers cmd.exe, and the
+    /// PowerShell probe answers Windows servers whose default OpenSSH shell
+    /// was changed from cmd.exe to PowerShell. An undetectable server keeps
+    /// the historical Unix behavior rather than misclassifying it.
+    async fn detect_remote_platform(&self) -> RemotePlatform {
+        async fn probe(client: &SshClient, command: &str) -> Option<(Option<u32>, String)> {
+            let mut stdout = BufferWriter::default();
+            let mut stderr = BufferWriter::default();
+            let status = client
+                .exec_stream_raw(command, &mut stdout, &mut stderr)
+                .await
+                .ok()?;
+            Some((status, String::from_utf8_lossy(&stdout.0).to_lowercase()))
+        }
+
+        if let Some((status, text)) = probe(self, "uname -s").await {
+            if text.contains("windows")
+                || text.contains("msys")
+                || text.contains("mingw")
+                || text.contains("cygwin")
+            {
+                return RemotePlatform::Windows;
+            }
+            if status == Some(0) {
+                return RemotePlatform::Unix;
+            }
+        }
+        if let Some((status, text)) = probe(self, "ver").await {
+            if status == Some(0) || text.contains("windows") {
+                return RemotePlatform::Windows;
+            }
+        }
+        if let Some((status, text)) = probe(
+            self,
+            "powershell -NoProfile -Command \"Write-Output $env:OS\"",
+        )
+        .await
+        {
+            if status == Some(0) && text.contains("windows_nt") {
+                return RemotePlatform::Windows;
+            }
+        }
+        RemotePlatform::Unix
     }
 
     pub fn config(&self) -> &ConnectionConfig {
@@ -305,7 +381,24 @@ impl SshClient {
         WOut: AsyncWrite + Unpin,
         WErr: AsyncWrite + Unpin,
     {
-        let command = command_for_user(command, remote_user);
+        let platform = self.remote_platform().await;
+        let command = command_for_user(command, remote_user, platform)?;
+        self.exec_stream_raw(&command, stdout, stderr).await
+    }
+
+    /// Execute a pre-composed command without platform detection or
+    /// user-context wrapping. Used by platform detection itself, which must
+    /// not recurse back into `remote_platform`.
+    async fn exec_stream_raw<WOut, WErr>(
+        &self,
+        command: &str,
+        stdout: &mut WOut,
+        stderr: &mut WErr,
+    ) -> Result<Option<u32>>
+    where
+        WOut: AsyncWrite + Unpin,
+        WErr: AsyncWrite + Unpin,
+    {
         let mut channel = timeout(
             self.config.channel_open_timeout,
             self.session.channel_open_session(),
@@ -382,7 +475,20 @@ impl SshClient {
             .context("SSH shell agent-forward request timed out")??;
         }
 
+        let platform = self.remote_platform().await;
         match remote_user {
+            RemoteUser::Current if platform == RemotePlatform::Windows => {
+                // Windows PowerShell 5.1 produces no output under a
+                // ConPTY-over-SSH session in the stock OpenSSH server, so the
+                // interactive shell stays on cmd.exe. PowerShell remains
+                // available for non-interactive exec commands.
+                timeout(
+                    self.config.channel_request_timeout,
+                    channel.exec(true, "cmd.exe"),
+                )
+                .await
+                .context("SSH cmd.exe exec request timed out")??;
+            }
             RemoteUser::Current => {
                 timeout(
                     self.config.channel_request_timeout,
@@ -392,6 +498,9 @@ impl SshClient {
                 .context("SSH shell request timed out")??;
             }
             RemoteUser::Sudo(user) => {
+                if platform == RemotePlatform::Windows {
+                    bail!("Windows targets do not support sudo privilege switching");
+                }
                 timeout(
                     self.config.channel_request_timeout,
                     channel.exec(true, sudo_login_shell(user)),
@@ -522,8 +631,8 @@ impl SshClient {
         Ok(stat)
     }
 
-    /// 统计目录总大小：优先 `du -sb`（服务器本地遍历，一次往返拿结果）；
-    /// exec 不可用或输出无法解析时回退到 SFTP 并发遍历，保证任何服务器都能出结果。
+    /// 缁熻鐩綍鎬诲ぇ灏忥細浼樺厛 `du -sb`锛堟湇鍔″櫒鏈湴閬嶅巻锛屼竴娆″線杩旀嬁缁撴灉锛夛紱
+    /// exec 涓嶅彲鐢ㄦ垨杈撳嚭鏃犳硶瑙ｆ瀽鏃跺洖閫€鍒?SFTP 骞跺彂閬嶅巻锛屼繚璇佷换浣曟湇鍔″櫒閮借兘鍑虹粨鏋溿€?
     pub async fn remote_directory_size(&self, path: &str) -> Result<u64> {
         if let Ok(size) = self.remote_directory_size_via_du(path).await {
             return Ok(size);
@@ -985,14 +1094,23 @@ fn jump_handler(jump: &JumpHost) -> ClientHandler {
     }
 }
 
-fn command_for_user(command: &str, remote_user: &RemoteUser) -> String {
+fn command_for_user(
+    command: &str,
+    remote_user: &RemoteUser,
+    platform: RemotePlatform,
+) -> Result<String> {
     match remote_user {
-        RemoteUser::Current => command.to_owned(),
-        RemoteUser::Sudo(user) => format!(
-            "sudo -n -u {} -- sh -lc {}",
-            quote_posix(user),
-            quote_posix(command)
-        ),
+        RemoteUser::Current => Ok(command.to_owned()),
+        RemoteUser::Sudo(user) => {
+            if platform == RemotePlatform::Windows {
+                bail!("Windows targets do not support sudo privilege switching");
+            }
+            Ok(format!(
+                "sudo -n -u {} -- sh -lc {}",
+                quote_posix(user),
+                quote_posix(command)
+            ))
+        }
     }
 }
 
@@ -1147,9 +1265,111 @@ fn platform_shell(command: &str) -> Command {
 mod tests {
     use super::*;
 
+    /// Live loopback smoke test against a Windows OpenSSH server. Enable with:
+    /// KADUOX_LIVE_WINDOWS_HOST=127.0.0.1 KADUOX_LIVE_WINDOWS_USER=.. KADUOX_LIVE_WINDOWS_KEY=..
+    #[tokio::test]
+    #[ignore = "requires a reachable Windows OpenSSH server and key material"]
+    async fn windows_target_detects_platform_and_runs_cmd_pty() {
+        let host = std::env::var("KADUOX_LIVE_WINDOWS_HOST").unwrap();
+        let user = std::env::var("KADUOX_LIVE_WINDOWS_USER").unwrap();
+        let key = std::env::var("KADUOX_LIVE_WINDOWS_KEY").unwrap();
+        let mut config = ConnectionConfig::new(&host, &user);
+        config.host_key_policy = crate::config::HostKeyPolicy::Insecure;
+        let client = SshClient::connect(
+            config,
+            Authentication::PrivateKey {
+                path: key.into(),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        let client = Arc::new(client);
+        assert_eq!(client.remote_platform().await, RemotePlatform::Windows);
+
+        let (mut input, mut shell_input) = tokio::io::duplex(8192);
+        let (mut shell_output, mut output) = tokio::io::duplex(64 * 1024);
+        let shell_client = Arc::clone(&client);
+        let shell = tokio::spawn(async move {
+            shell_client
+                .interactive_shell(
+                    &mut shell_input,
+                    &mut shell_output,
+                    &TerminalSpec::default(),
+                    &RemoteUser::Current,
+                    None,
+                )
+                .await
+        });
+        // ConPTY renders VT sequences; only the marker text matters.
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            input
+                .write_all(b"echo __KDX_WIN_PTY__\r\nexit\r\n")
+                .await
+                .unwrap();
+        });
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        let seen = timeout(Duration::from_secs(20), async {
+            loop {
+                let count = output.read(&mut buf).await.unwrap();
+                if count == 0 {
+                    break false;
+                }
+                data.extend_from_slice(&buf[..count]);
+                if String::from_utf8_lossy(&data).contains("__KDX_WIN_PTY__") {
+                    break true;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        let _ = timeout(Duration::from_secs(5), writer).await;
+        shell.abort();
+        client.close().await.ok();
+        assert!(
+            seen,
+            "cmd.exe PTY did not echo the marker command; captured {} bytes; tail: {}",
+            data.len(),
+            String::from_utf8_lossy(&data)
+                .chars()
+                .rev()
+                .take(800)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        );
+    }
+
     #[test]
     fn posix_quote_escapes_single_quotes() {
         assert_eq!(quote_posix("a'b"), "'a'\"'\"'b'");
+    }
+
+    #[test]
+    fn command_for_user_passes_through_current_user_on_both_platforms() {
+        for platform in [RemotePlatform::Unix, RemotePlatform::Windows] {
+            assert_eq!(
+                command_for_user("id", &RemoteUser::Current, platform).unwrap(),
+                "id"
+            );
+        }
+    }
+
+    #[test]
+    fn command_for_user_wraps_sudo_only_on_unix() {
+        let wrapped =
+            command_for_user("id", &RemoteUser::Sudo("root".into()), RemotePlatform::Unix).unwrap();
+        assert_eq!(wrapped, "sudo -n -u root -- sh -lc id");
+        let error = command_for_user(
+            "id",
+            &RemoteUser::Sudo("root".into()),
+            RemotePlatform::Windows,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Windows targets"));
     }
 
     #[test]
@@ -1201,7 +1421,7 @@ mod tests {
             "x!VAR!",
             "x=y",
             "example/path",
-            "例子.example",
+            "渚嬪瓙.example",
         ] {
             assert!(
                 validate_proxy_expansion_value("test", value).is_err(),

@@ -157,6 +157,7 @@ The shared Rust core prioritizes bounded memory, explicit trust checks, reusable
 - `kssh-daemon` per-user local IPC connection-reuse daemon; `kssh` reuses authenticated transports through it before falling back to a direct connection, with per-hop interactive jump authentication bridged over the private IPC channel
 - optional login-password persistence in the operating system credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service) via `kssh credentials set/check/delete`; Kaduox-SSH never writes passwords to its own files
 - shell completion scripts for bash/zsh/fish/powershell/elvish via `kssh completions <shell>`
+- Windows OpenSSH server targets: automatic platform detection, cmd.exe interactive terminals over ConPTY, command execution, and explicit rejection of sudo user switching
 - native Tauri Windows desktop client with light/dark themes, independent terminals, host folders, metrics/SFTP/forwarding workspaces, and a configurable external OpenAI-compatible AI provider (no offline mode)
 - `kaduox-ssh-mcp` local stdio MCP server for Agent integration; read-only host/route/basic-info/SFTP tools are enabled by default, while remote exec and transfers require explicit environment switches
 - real OpenSSH protocol integration fixtures, including fleet and Host Certificate coverage

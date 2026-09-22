@@ -155,6 +155,7 @@ async fn connect_host_inner(request: ConnectRequest, state: &DesktopState) -> Re
     };
     let resolved = resolve_host(store.database(), alias, None, None)
         .with_context(|| format!("无法解析主机 {alias}"))?;
+    let stored_os_type = store.host(alias).map(|host| host.os_type);
     let config = resolved.config;
     let selection = select_authentication(&config, request.authentication)?;
     let auth_method = selection.stored_method.as_str().to_owned();
@@ -164,6 +165,21 @@ async fn connect_host_inner(request: ConnectRequest, state: &DesktopState) -> Re
         .connect_saved(alias, config.clone(), selection.authentication)
         .await
         .with_context(|| format!("连接 {alias} 失败"))?;
+    // 主机库中的手动系统类型优先于自动探测；auto 时按需探测一次。
+    match stored_os_type {
+        Some(kaduox_ssh_hosts::StoredOsType::Windows) => {
+            lease.set_remote_platform(kaduox_ssh_core::RemotePlatform::Windows);
+        }
+        Some(kaduox_ssh_hosts::StoredOsType::Linux) => {
+            lease.set_remote_platform(kaduox_ssh_core::RemotePlatform::Unix);
+        }
+        _ => {}
+    }
+    let platform = match lease.remote_platform().await {
+        kaduox_ssh_core::RemotePlatform::Windows => "windows",
+        kaduox_ssh_core::RemotePlatform::Unix => "unix",
+    }
+    .to_owned();
     let host_key = lease.server_host_key().await.map(host_key_to_dto);
 
     let mut warning = None;
@@ -192,6 +208,7 @@ async fn connect_host_inner(request: ConnectRequest, state: &DesktopState) -> Re
         auth_method,
         connected_at_unix,
         host_key,
+        platform,
         warning,
     };
     state.sessions.write().await.insert(

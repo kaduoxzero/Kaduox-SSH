@@ -14,6 +14,7 @@ pub struct HostDto {
     pub note: Option<String>,
     pub host_key_policy: String,
     pub jump_chain: Option<String>,
+    pub os_type: String,
     pub last_connected_unix: Option<u64>,
     pub connection_count: u64,
     pub last_auth_method: Option<String>,
@@ -39,6 +40,8 @@ pub struct HostSaveRequest {
     pub note: Option<String>,
     pub host_key_policy: String,
     pub jump_chain: Option<String>,
+    /// auto / linux / windows；缺省视为 auto（自动探测）。
+    pub os_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +110,8 @@ pub struct SessionDto {
     pub auth_method: String,
     pub connected_at_unix: u64,
     pub host_key: Option<HostKeyDto>,
+    /// 探测到的目标系统："unix" 或 "windows"。
+    pub platform: String,
     pub warning: Option<String>,
 }
 

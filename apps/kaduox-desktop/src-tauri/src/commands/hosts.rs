@@ -123,6 +123,7 @@ pub fn host_to_dto(store: &HostStore, host: &HostRecord) -> HostDto {
         note: host.note.clone(),
         host_key_policy: host.host_key_policy.as_str().to_owned(),
         jump_chain: host.jump_chain.clone(),
+        os_type: host.os_type.as_str().to_owned(),
         last_connected_unix: host.stats.last_connected_unix,
         connection_count: host.stats.connection_count,
         last_auth_method: host
@@ -366,6 +367,14 @@ async fn save_host_inner(request: HostSaveRequest, state: &DesktopState) -> Resu
     host.note = clean_optional(request.note);
     host.host_key_policy = policy_from_str(request.host_key_policy.trim())?;
     host.jump_chain = clean_optional(request.jump_chain);
+    host.os_type = request
+        .os_type
+        .as_deref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(kaduox_ssh_hosts::StoredOsType::parse)
+        .transpose()?
+        .unwrap_or_else(|| previous.as_ref().map(|host| host.os_type).unwrap_or_default());
     if let Some(previous) = previous {
         host.stats = previous.stats;
     }

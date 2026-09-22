@@ -22,7 +22,7 @@ EXPECTED_TOOLCHAINS = {
     "qualification": Counter(),
     "ci": Counter({PINNED_RUST: 2, MSRV_RUST: 1}),
     "quality": Counter({PINNED_RUST: 2}),
-    "openssh": Counter({PINNED_RUST: 1}),
+    "openssh": Counter({PINNED_RUST: 2}),
     "desktop-macos": Counter({PINNED_RUST: 1}),
 }
 RUST_ACTION = re.compile(r"^(?P<indent>\s*)-\s+uses:\s+dtolnay/rust-toolchain@")

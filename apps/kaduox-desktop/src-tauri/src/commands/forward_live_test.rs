@@ -39,6 +39,10 @@ async fn register(state: &DesktopState, lease: ConnectionLease) {
             .await
             .map(crate::commands::connection::host_key_to_dto),
         route: route_to_dto(config),
+        platform: match lease.remote_platform().await {
+            kaduox_ssh_core::RemotePlatform::Windows => "windows".to_owned(),
+            kaduox_ssh_core::RemotePlatform::Unix => "unix".to_owned(),
+        },
         warning: None,
     };
     state
