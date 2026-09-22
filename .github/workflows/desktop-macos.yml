@@ -1,4 +1,4 @@
-name: Desktop macOS dmg
+name: Desktop macOS installer
 
 on:
   workflow_dispatch:
@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 jobs:
-  dmg:
-    name: Universal 2 dmg + screenshots
+  pkg:
+    name: Universal 2 pkg installer + screenshots
     runs-on: macos-15
     defaults:
       run:
@@ -42,28 +42,41 @@ jobs:
         run: npm ci
       - name: Frontend tests
         run: npm test
-      - name: Build Universal 2 app and dmg (unsigned)
-        run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg --ci -- --locked
+      - name: Build Universal 2 app (unsigned)
+        run: npm run tauri -- build --target universal-apple-darwin --bundles app --ci -- --locked
+      - name: Package .pkg installer
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Kaduox SSH.app"
+          test -d "$app"
+          pkg="Kaduox-SSH-${version}-macos-universal.pkg"
+          pkgbuild \
+            --component "$app" \
+            --install-location /Applications \
+            --identifier com.kaduox.ssh \
+            --version "$version" \
+            "$pkg"
+          ls -la "$pkg"
       - name: Launch app and capture screenshots
         run: |
           set -euo pipefail
           app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Kaduox SSH.app"
-          test -d "$app"
           out="$RUNNER_TEMP/kaduox-screenshots"
           mkdir -p "$out"
           open "$app"
           sleep 12
-          screencapture -x "$out/01-launch.png"
+          osascript -e 'tell application "System Events" to tell process "Kaduox SSH" to set position of window 1 to {0, 25}' || true
           osascript -e 'tell application "Kaduox SSH" to activate' || true
           sleep 2
-          screencapture -x "$out/02-active.png"
+          screencapture -x "$out/01-launch.png"
           osascript -e 'tell application "Kaduox SSH" to quit' || true
           ls -la "$out"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: kaduox-ssh-macos-universal
           path: |
-            apps/kaduox-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            apps/kaduox-desktop/*.pkg
             ${{ runner.temp }}/kaduox-screenshots/*.png
           if-no-files-found: error
           retention-days: 14

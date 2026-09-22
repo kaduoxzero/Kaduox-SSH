@@ -171,9 +171,6 @@ kbd,
   background: var(--canvas);
 }
 
-/* macOS 原生交通灯窗口：为左上角红绿灯按钮预留拖拽空白区 */
-.top-bar-macos { padding-left: 84px; }
-
 .top-bar {
   position: relative;
   z-index: 40;
@@ -4283,3 +4280,7 @@ kbd,
   .brand > span { display: none; }
   .search-box { width: 180px; }
 }
+
+/* macOS 原生交通灯窗口：为左上角红绿灯按钮预留拖拽空白区。
+   属性选择器 + 类选择器的优先级高于 .top-bar 及其媒体查询变体，保证不被覆盖。 */
+html[data-platform='macos'] .top-bar { padding-left: 84px; }

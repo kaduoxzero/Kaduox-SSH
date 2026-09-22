@@ -10,7 +10,7 @@ Windows x64 用户下载 `Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe`，可选
 
 ### macOS 版（实验性）
 
-macOS 用户可从 `Desktop macOS dmg` workflow 的运行产物中下载 Universal 2 dmg（同时支持 Intel 与 Apple Silicon，要求 macOS 11 及以上）。该包**未经 Apple 签名与公证**，首次打开请在访达中右键应用图标选择“打开”，或在 系统设置 → 隐私与安全性 中允许运行。与 Windows 版的差异：
+macOS 用户可从 `Desktop macOS installer` workflow 的运行产物中下载 Universal 2 安装包（`.pkg`，同时支持 Intel 与 Apple Silicon，要求 macOS 11 及以上）。双击安装包进入安装向导，自动装入“应用程序”。该包**未经 Apple 签名与公证**，首次打开请在访达中右键应用图标选择“打开”，或在 系统设置 → 隐私与安全性 中允许运行。与 Windows 版的差异：
 
 - 窗口使用 macOS 原生红绿灯按钮，无自绘窗口控制键；
 - 密码保存在 macOS 钥匙串（Windows 版为凭据管理器）；

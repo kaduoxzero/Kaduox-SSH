@@ -73,7 +73,7 @@ export function TopBar({
     void getCurrentWindow().startDragging().catch(() => {})
   }
   return (
-    <header className={isMac ? 'top-bar top-bar-macos' : 'top-bar'} onMouseDown={startDrag} onDoubleClick={(event) => {
+    <header className="top-bar" onMouseDown={startDrag} onDoubleClick={(event) => {
       if (!isDesktopRuntime || isInteractive(event.target as HTMLElement)) return
       void getCurrentWindow().toggleMaximize().catch(() => {})
     }}>
