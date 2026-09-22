@@ -122,9 +122,9 @@ mod tests {
         assert_eq!(endpoint("2001:db8::1", 2222), "[2001:db8::1]:2222");
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn windows_credentials_survive_a_fresh_lookup() {
+    fn os_credentials_survive_a_fresh_lookup() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

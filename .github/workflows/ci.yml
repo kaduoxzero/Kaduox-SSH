@@ -70,6 +70,11 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install D-Bus development headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Formatting
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
@@ -88,5 +93,37 @@ jobs:
         with:
           toolchain: 1.85.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install D-Bus development headers (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Cargo check
         run: cargo check --workspace --all-targets --locked
+
+  desktop-macos:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: Desktop (macOS compile gate)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: apps/kaduox-desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 ref 2026-07-16
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: desktop-macos
+          workspaces: apps/kaduox-desktop/src-tauri
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Frontend tests
+        run: npm test
+      - name: Frontend production build
+        run: npm run build
+      - name: Desktop backend check (macOS)
+        run: cargo check --locked
+        working-directory: apps/kaduox-desktop/src-tauri
+      - name: Desktop debug bundle check (macOS)
+        run: npm run tauri -- build --debug --no-bundle --ci

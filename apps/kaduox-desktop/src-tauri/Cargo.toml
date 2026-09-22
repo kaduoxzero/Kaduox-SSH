@@ -1,7 +1,7 @@
 [package]
 name = "kaduox-ssh-desktop"
-version = "0.33.0-rc.12"
-description = "Native Windows desktop client for Kaduox-SSH"
+version = "0.33.0-rc.14"
+description = "Native Windows/macOS desktop client for Kaduox-SSH"
 edition = "2024"
 # The root CLI/workspace remains MSRV 1.85. Windows Pageant support used by
 # the desktop client relies on let-chains stabilized in Rust 1.88.
@@ -21,7 +21,6 @@ anyhow = "1.0"
 base64 = "0.22"
 kaduox-ssh-core = { path = "../../../crates/kaduox-ssh-core" }
 kaduox-ssh-hosts = { path = "../../../crates/kaduox-ssh-hosts" }
-keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -33,6 +32,12 @@ tokio = { version = "1.47", features = ["io-util", "rt-multi-thread", "sync", "t
 
 [workspace]
 resolver = "2"
+
+[target."cfg(windows)".dependencies]
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
+
+[target."cfg(target_os = \"macos\")".dependencies]
+keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
 tempfile = "3"

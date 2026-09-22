@@ -6,7 +6,7 @@ import ShieldCheck from 'lucide-react/dist/esm/icons/shield-check'
 import Trash2 from 'lucide-react/dist/esm/icons/trash-2'
 import X from 'lucide-react/dist/esm/icons/x'
 import { useState } from 'react'
-
+import { credentialStoreName, sshAgentName } from '../lib/platform'
 import { deleteStoredPassword, pickIdentityFile } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
 import type { AuthenticationRequest, AuthKind, Host, Session } from '../lib/types'
@@ -138,7 +138,7 @@ export function ConnectDialog({
             {method === 'auto' && (
               <>
                 <div className="auth-explanation">
-                  依次尝试 Windows OpenSSH Agent、主机配置的密钥，以及默认 Ed25519 / ECDSA 密钥。
+                  依次尝试 {sshAgentName}、主机配置的密钥，以及默认 Ed25519 / ECDSA 密钥。
                 </div>
                 <label className="field full-width">
                   <span>密钥口令（可选）</span>
@@ -148,7 +148,7 @@ export function ConnectDialog({
             )}
             {method === 'agent' && (
               <div className="auth-explanation">
-                使用 Windows OpenSSH Agent 或 Pageant 中已加载的密钥；RSA 密钥也必须通过此路径使用。
+                使用 {sshAgentName} 中已加载的密钥；RSA 密钥也必须通过此路径使用。
               </div>
             )}
             {method === 'password' && (
@@ -165,7 +165,7 @@ export function ConnectDialog({
                 </label>
                 <label className="check-field">
                   <input type="checkbox" checked={savePassword} onChange={(event) => setSavePassword(event.target.checked)} />
-                  <span>连接成功后保存到 Windows 凭据管理器</span>
+                  <span>连接成功后保存到 {credentialStoreName}</span>
                 </label>
                 {host.hasStoredPassword && (
                   <button className="credential-remove" type="button" onClick={removeCredential} disabled={busy}>

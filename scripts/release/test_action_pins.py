@@ -13,6 +13,7 @@ WORKFLOW_FILES = {
     "ci": release_tool.ROOT / ".github" / "workflows" / "ci.yml",
     "quality": release_tool.ROOT / ".github" / "workflows" / "quality.yml",
     "openssh": release_tool.ROOT / ".github" / "workflows" / "integration-openssh.yml",
+    "desktop-macos": release_tool.ROOT / ".github" / "workflows" / "desktop-macos.yml",
 }
 USES_LINE = re.compile(
     r"^\s*(?:-\s+)?uses:\s+(?P<spec>[^\s#]+)(?:\s+#\s*(?P<comment>.+))?\s*$"
@@ -54,9 +55,9 @@ EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
     ),
     "ci": Counter(
         {
-            spec("actions/checkout", CHECKOUT_V4): 2,
-            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 2,
-            spec("Swatinem/rust-cache", RUST_CACHE_V2): 2,
+            spec("actions/checkout", CHECKOUT_V4): 3,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 3,
+            spec("Swatinem/rust-cache", RUST_CACHE_V2): 3,
         }
     ),
     "quality": Counter(
@@ -74,6 +75,14 @@ EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
             spec("actions/checkout", CHECKOUT_V4): 1,
             spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 1,
             spec("Swatinem/rust-cache", RUST_CACHE_V2): 1,
+        }
+    ),
+    "desktop-macos": Counter(
+        {
+            spec("actions/checkout", CHECKOUT_V4): 1,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 1,
+            spec("Swatinem/rust-cache", RUST_CACHE_V2): 1,
+            spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 1,
         }
     ),
 }

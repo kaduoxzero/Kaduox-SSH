@@ -1014,7 +1014,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        std::env::temp_dir().join(format!("kaduox-{label}-{stamp}"))
+        // macOS exposes /var as a symlink to /private/var; the symlink-safe
+        // transfer helpers under test would reject the temp root itself.
+        // Canonicalize so tests exercise the policy, not the platform layout.
+        let temp_root =
+            std::fs::canonicalize(std::env::temp_dir()).unwrap_or_else(|_| std::env::temp_dir());
+        temp_root.join(format!("kaduox-{label}-{stamp}"))
     }
 
     #[tokio::test]

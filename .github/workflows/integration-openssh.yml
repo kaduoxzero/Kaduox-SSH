@@ -68,7 +68,7 @@ jobs:
       - name: Install OpenSSH fixtures
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server netcat-openbsd curl
+          sudo apt-get install -y openssh-server netcat-openbsd curl libdbus-1-dev pkg-config
       - name: Build Kaduox-SSH
         run: cargo build --workspace --locked
       - name: Run real OpenSSH integration suite

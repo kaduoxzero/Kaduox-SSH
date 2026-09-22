@@ -102,6 +102,31 @@ async fn list_remote_files_inner(
 }
 
 #[tauri::command]
+pub async fn remote_directory_size(
+    request: RemotePathRequest,
+    state: State<'_, DesktopState>,
+) -> Result<u64, String> {
+    remote_directory_size_inner(request, &state)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn remote_directory_size_inner(
+    request: RemotePathRequest,
+    state: &DesktopState,
+) -> Result<u64> {
+    validate_remote_path(&request.path)?;
+    let lease = state
+        .session_lease(request.alias.trim())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    lease
+        .remote_directory_size(&request.path)
+        .await
+        .with_context(|| format!("无法统计远程目录大小 {}", request.path))
+}
+
+#[tauri::command]
 pub async fn upload_file(
     request: UploadRequest,
     state: State<'_, DesktopState>,

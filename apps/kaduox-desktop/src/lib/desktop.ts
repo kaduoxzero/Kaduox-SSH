@@ -370,6 +370,13 @@ export async function listRemoteFiles(alias: string, path: string): Promise<Remo
   ]
 }
 
+export async function remoteDirectorySize(alias: string, path: string): Promise<number> {
+  if (isDesktopRuntime) {
+    return invoke<number>('remote_directory_size', { request: { alias, path } })
+  }
+  return 1024 * 256
+}
+
 export async function uploadFile(
   alias: string,
   localPath: string,

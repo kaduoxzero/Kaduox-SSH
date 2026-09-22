@@ -15,13 +15,15 @@ WORKFLOW_FILES = {
     "ci": release_tool.ROOT / ".github" / "workflows" / "ci.yml",
     "quality": release_tool.ROOT / ".github" / "workflows" / "quality.yml",
     "openssh": release_tool.ROOT / ".github" / "workflows" / "integration-openssh.yml",
+    "desktop-macos": release_tool.ROOT / ".github" / "workflows" / "desktop-macos.yml",
 }
 EXPECTED_TOOLCHAINS = {
     "release": Counter({PINNED_RUST: 1}),
     "qualification": Counter(),
-    "ci": Counter({PINNED_RUST: 1, MSRV_RUST: 1}),
+    "ci": Counter({PINNED_RUST: 2, MSRV_RUST: 1}),
     "quality": Counter({PINNED_RUST: 2}),
     "openssh": Counter({PINNED_RUST: 1}),
+    "desktop-macos": Counter({PINNED_RUST: 1}),
 }
 RUST_ACTION = re.compile(r"^(?P<indent>\s*)-\s+uses:\s+dtolnay/rust-toolchain@")
 TOOLCHAIN_INPUT = re.compile(r"^\s+toolchain:\s*[\"']?(?P<version>[^\s\"']+)")

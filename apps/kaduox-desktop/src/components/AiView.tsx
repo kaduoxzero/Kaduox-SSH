@@ -30,6 +30,7 @@ import {
   saveAiApiKey,
 } from '../lib/desktop'
 import { errorMessage } from '../lib/format'
+import { credentialStoreName } from '../lib/platform'
 import { Markdown } from '../lib/markdown'
 import { trimWireMessages } from '../lib/aiTrim'
 import {
@@ -407,7 +408,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
   const removeKey = async () => {
     try {
       setHasStoredKey(await deleteAiApiKey(settings))
-      onNotify('info', 'AI 密钥已删除', '系统凭据管理器中的 AI 密钥已移除')
+      onNotify('info', 'AI 密钥已删除', `${credentialStoreName}中的 AI 密钥已移除`)
     } catch (cause) {
       onNotify('error', '删除 AI 密钥失败', errorMessage(cause))
     }
@@ -838,7 +839,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
             }}>{modelBusy ? '获取中…' : '获取模型列表'}</button>
             {modelError && <div className="inline-error" role="alert">{modelError}</div>}
             <label className="field full-width"><span>本次 API 密钥</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasStoredKey ? '已保存密钥，留空以继续使用' : '输入本次密钥'} autoComplete="off" /></label>
-            <label className="check-field"><input type="checkbox" checked={rememberApiKey} onChange={(event) => setRememberApiKey(event.target.checked)} /><span>本次请求成功后保存到系统凭据管理器</span></label>
+            <label className="check-field"><input type="checkbox" checked={rememberApiKey} onChange={(event) => setRememberApiKey(event.target.checked)} /><span>本次请求成功后保存到{credentialStoreName}</span></label>
             <div className="ai-key-actions"><button className="secondary-button" type="button" onClick={() => void storeKey()} disabled={!apiKey.trim()}><KeyRound size={14} />保存密钥</button><button className="danger-icon" type="button" onClick={() => void removeKey()} disabled={!hasStoredKey} aria-label="删除 AI 密钥" title="删除系统中的 AI 密钥"><Trash2 size={15} /></button></div>
             <label className="field full-width">
               <span>命令执行权限模式</span>
@@ -873,7 +874,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
         <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-label="删除服务商">
           <div className="modal-card">
             <h2><Trash2 size={18} /> 删除服务商 {settings.providerName}？</h2>
-            <p>将同时删除该服务商的配置和系统凭据管理器中保存的 API 密钥，此操作不可撤销。</p>
+            <p>将同时删除该服务商的配置和{credentialStoreName}中保存的 API 密钥，此操作不可撤销。</p>
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={() => setConfirmDeleteProvider(false)}>取消</button>
               <button className="danger-button" type="button" onClick={() => void deleteProvider()}>确认删除</button>
