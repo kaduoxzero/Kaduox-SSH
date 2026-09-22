@@ -108,12 +108,16 @@ jobs:
       - name: Smoke-test exec and sudo rejection against the Windows target
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
           $kssh = "target/debug/kssh.exe"
           $key = "$env:RUNNER_TEMP\kssh_ci_key"
+          # sudo rejection exits non-zero by design; check $LASTEXITCODE and
+          # captured output explicitly instead of relying on EAP=Stop, because
+          # pwsh 7.4+ throws on non-zero native exits when Stop is set.
           $who = & $kssh 127.0.0.1 --user runneradmin --identity $key --host-key insecure exec -- whoami
+          if ($LASTEXITCODE -ne 0) { throw "exec failed with exit $LASTEXITCODE" }
           if ($who -notmatch 'runneradmin') { throw "unexpected whoami output: $who" }
           $sudo = & $kssh 127.0.0.1 --user runneradmin --identity $key --host-key insecure exec --as-user root -- whoami 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0) { throw "sudo unexpectedly succeeded: $sudo" }
           if ($sudo -notmatch 'Windows targets do not support sudo') { throw "sudo was not rejected: $sudo" }
       - name: Run live Windows PTY test
         shell: pwsh
