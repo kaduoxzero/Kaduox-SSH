@@ -27,7 +27,7 @@ use crate::forward::{
 };
 use crate::handler::{ClientHandler, HandlerState};
 use crate::host_trust::HostTrustPolicy;
-use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, list_directory, stat_path};
+use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, directory_size, list_directory, stat_path};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
@@ -518,6 +518,15 @@ impl SshClient {
         let stat = result?;
         close_result?;
         Ok(stat)
+    }
+
+    pub async fn remote_directory_size(&self, path: &str) -> Result<u64> {
+        let sftp = self.open_sftp_for_inspection().await?;
+        let result = directory_size(&sftp, path).await;
+        let close_result = sftp.close().await;
+        let size = result?;
+        close_result?;
+        Ok(size)
     }
 
     pub async fn local_forward(&self, spec: LocalForward) -> Result<ForwardHandle> {

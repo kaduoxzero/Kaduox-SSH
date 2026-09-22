@@ -18,8 +18,8 @@ use commands::connection::{
 };
 use commands::files::{
     create_remote_directory, create_remote_file, delete_remote_path, download_file,
-    download_remote_directory, list_remote_files, read_remote_file, rename_remote_path,
-    upload_file, write_remote_file,
+    download_remote_directory, list_remote_files, read_remote_file, remote_directory_size,
+    rename_remote_path, upload_file, write_remote_file,
 };
 use commands::forward::{list_forwards, start_forward, stop_forward};
 use commands::help::open_help_link;
@@ -76,6 +76,7 @@ pub fn run() {
             record_terminal_command,
             clear_history,
             list_remote_files,
+            remote_directory_size,
             upload_file,
             download_file,
             download_remote_directory,

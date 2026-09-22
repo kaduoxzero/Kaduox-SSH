@@ -29,6 +29,7 @@ import {
   pickDownloadPath,
   pickUploadFile,
   readRemoteFile,
+  remoteDirectorySize,
   renameRemotePath,
   uploadFile,
   writeRemoteFile,
@@ -59,6 +60,7 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
   const [path, setPath] = useState('/')
   const [pathInput, setPathInput] = useState('/')
   const [files, setFiles] = useState<RemoteFile[]>([])
+  const [propsDirSize, setPropsDirSize] = useState<{ path: string; size: number | 'error' } | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [transferBusy, setTransferBusy] = useState(false)
@@ -134,6 +136,24 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
       cancelled = true
     }
   }, [session?.alias, path, reloadKey])
+
+  // 目录大小需递归统计，仅在打开属性弹窗时按需计算
+  useEffect(() => {
+    setPropsDirSize(null)
+    if (!session || !propsTarget || propsTarget.fileType !== 'directory') return
+    let cancelled = false
+    const target = propsTarget.path
+    void remoteDirectorySize(session.alias, target)
+      .then((size) => {
+        if (!cancelled) setPropsDirSize({ path: target, size })
+      })
+      .catch(() => {
+        if (!cancelled) setPropsDirSize({ path: target, size: 'error' })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [session?.alias, propsTarget])
 
   const reload = () => setReloadKey((current) => current + 1)
 
@@ -477,7 +497,15 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
               <dt>名称</dt><dd>{propsTarget.name}</dd>
               <dt>路径</dt><dd className="file-props-path">{propsTarget.path}</dd>
               <dt>类型</dt><dd>{fileTypeLabel(propsTarget)}</dd>
-              <dt>大小</dt><dd>{propsTarget.size === null ? '—' : `${formatBytes(propsTarget.size)}（${propsTarget.size} 字节）`}</dd>
+              <dt>大小</dt><dd>{propsTarget.fileType === 'directory'
+                ? propsDirSize?.path === propsTarget.path
+                  ? propsDirSize.size === 'error'
+                    ? '—'
+                    : `${formatBytes(propsDirSize.size)}（${propsDirSize.size} 字节）`
+                  : '计算中…'
+                : propsTarget.size === null
+                  ? '—'
+                  : `${formatBytes(propsTarget.size)}（${propsTarget.size} 字节）`}</dd>
               <dt>权限</dt><dd>{propsTarget.permissions ?? '—'}</dd>
               <dt>属主</dt><dd>{propsTarget.owner ?? '—'}</dd>
               <dt>修改时间</dt><dd>{propsTarget.modifiedAtUnix ? formatDateTime(propsTarget.modifiedAtUnix) : '—'}</dd>

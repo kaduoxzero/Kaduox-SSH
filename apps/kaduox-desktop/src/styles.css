@@ -1190,7 +1190,7 @@ kbd,
 .file-table-header,
 .file-row {
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) 54px 74px;
+  grid-template-columns: minmax(110px, 1fr) 54px 96px;
   align-items: center;
   gap: 7px;
 }

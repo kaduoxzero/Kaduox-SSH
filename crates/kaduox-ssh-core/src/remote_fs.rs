@@ -92,6 +92,21 @@ pub(crate) async fn stat_path(sftp: &SftpSession, path: &str) -> Result<RemoteFi
     })
 }
 
+/// 递归统计目录总大小（字节）。不跟随符号链接，避免环路。
+pub(crate) async fn directory_size(sftp: &SftpSession, path: &str) -> Result<u64> {
+    let mut total = 0u64;
+    let mut pending = vec![path.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in list_directory(sftp, &directory).await? {
+            match entry.metadata.file_type {
+                RemoteFileType::Directory => pending.push(entry.path),
+                _ => total = total.saturating_add(entry.metadata.size.unwrap_or(0)),
+            }
+        }
+    }
+    Ok(total)
+}
+
 fn validate_remote_entry_name(name: &str) -> Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         bail!("remote directory returned an invalid entry name");
@@ -115,7 +130,8 @@ fn join_remote_child(parent: &str, name: &str) -> String {
 fn map_metadata(attrs: FileAttributes, file_type: RemoteFileType) -> RemoteFileMetadata {
     RemoteFileMetadata {
         file_type,
-        size: attrs.size,
+        // SFTP 服务器对目录返回的 size 不可靠（块大小或垃圾值），统一置空由前端显示占位符
+        size: if file_type == RemoteFileType::Directory { None } else { attrs.size },
         uid: attrs.uid,
         user: attrs.user,
         gid: attrs.gid,
@@ -162,11 +178,14 @@ mod tests {
             atime: Some(11),
             mtime: Some(22),
         };
-        let metadata = map_metadata(attrs, RemoteFileType::File);
+        let metadata = map_metadata(attrs.clone(), RemoteFileType::File);
         assert_eq!(metadata.size, Some(123));
         assert_eq!(metadata.permissions, Some(0o100640));
         assert_eq!(metadata.modified_at, Some(22));
         assert_eq!(metadata.user.as_deref(), Some("deploy"));
+
+        let directory = map_metadata(attrs, RemoteFileType::Directory);
+        assert_eq!(directory.size, None);
     }
 
     #[test]
