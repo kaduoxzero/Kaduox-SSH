@@ -103,6 +103,16 @@ class ReleaseQualificationTests(unittest.TestCase):
                     "name": "kaduox-ssh-core",
                     "versionInfo": self.version,
                 },
+                {
+                    "SPDXID": "SPDXRef-Package-kaduox-ssh-hosts-test",
+                    "name": "kaduox-ssh-hosts",
+                    "versionInfo": self.version,
+                },
+                {
+                    "SPDXID": "SPDXRef-Package-kaduox-ssh-daemon-test",
+                    "name": "kaduox-ssh-daemon",
+                    "versionInfo": self.version,
+                },
             ],
             "relationships": [
                 {
