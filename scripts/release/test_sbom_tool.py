@@ -17,6 +17,9 @@ class SbomToolTests(unittest.TestCase):
         ids = {
             "cli": f"path+file:///repo/crates/kaduox-ssh-cli#kaduox-ssh-cli@{version}",
             "core": f"path+file:///repo/crates/kaduox-ssh-core#kaduox-ssh-core@{version}",
+            "hosts": f"path+file:///repo/crates/kaduox-ssh-hosts#kaduox-ssh-hosts@{version}",
+            "daemon": f"path+file:///repo/crates/kaduox-ssh-daemon#kaduox-ssh-daemon@{version}",
+            "mcp": f"path+file:///repo/crates/kaduox-ssh-mcp#kaduox-ssh-mcp@{version}",
             "runtime": f"{registry}#runtime@1.0.0",
             "build": f"{registry}#build-helper@1.0.0",
             "dev": f"{registry}#dev-only@1.0.0",
@@ -25,6 +28,9 @@ class SbomToolTests(unittest.TestCase):
         packages = [
             {"name": "kaduox-ssh-cli", "version": version},
             {"name": "kaduox-ssh-core", "version": version},
+            {"name": "kaduox-ssh-hosts", "version": version},
+            {"name": "kaduox-ssh-daemon", "version": version},
+            {"name": "kaduox-ssh-mcp", "version": version},
             {
                 "name": "runtime",
                 "version": "1.0.0",
@@ -53,6 +59,9 @@ class SbomToolTests(unittest.TestCase):
         metadata_packages = [
             {"id": ids["cli"], "name": "kaduox-ssh-cli", "version": version, "source": None},
             {"id": ids["core"], "name": "kaduox-ssh-core", "version": version, "source": None},
+            {"id": ids["hosts"], "name": "kaduox-ssh-hosts", "version": version, "source": None},
+            {"id": ids["daemon"], "name": "kaduox-ssh-daemon", "version": version, "source": None},
+            {"id": ids["mcp"], "name": "kaduox-ssh-mcp", "version": version, "source": None},
             {"id": ids["runtime"], "name": "runtime", "version": "1.0.0", "source": registry},
             {"id": ids["build"], "name": "build-helper", "version": "1.0.0", "source": registry},
             {"id": ids["dev"], "name": "dev-only", "version": "1.0.0", "source": registry},
@@ -63,7 +72,16 @@ class SbomToolTests(unittest.TestCase):
                 "id": ids["cli"],
                 "deps": [
                     {"pkg": ids["core"], "dep_kinds": [{"kind": None, "target": None}]},
+                    {"pkg": ids["hosts"], "dep_kinds": [{"kind": None, "target": None}]},
+                    {"pkg": ids["daemon"], "dep_kinds": [{"kind": None, "target": None}]},
                     {"pkg": ids["dev"], "dep_kinds": [{"kind": "dev", "target": None}]},
+                ],
+            },
+            {
+                "id": ids["daemon"],
+                "deps": [
+                    {"pkg": ids["core"], "dep_kinds": [{"kind": None, "target": None}]},
+                    {"pkg": ids["hosts"], "dep_kinds": [{"kind": None, "target": None}]},
                 ],
             },
             {
@@ -77,11 +95,19 @@ class SbomToolTests(unittest.TestCase):
             {"id": ids["build"], "deps": []},
             {"id": ids["dev"], "deps": []},
             {"id": ids["foreign"], "deps": []},
+            {"id": ids["hosts"], "deps": []},
+            {"id": ids["mcp"], "deps": []},
         ]
         lock_data = {"version": 4, "package": packages}
         metadata = {
             "packages": metadata_packages,
-            "workspace_members": [ids["cli"], ids["core"]],
+            "workspace_members": [
+                ids["cli"],
+                ids["core"],
+                ids["hosts"],
+                ids["daemon"],
+                ids["mcp"],
+            ],
             "resolve": {"nodes": nodes, "root": None},
         }
         return lock_data, metadata
@@ -104,8 +130,17 @@ class SbomToolTests(unittest.TestCase):
         names = {package["name"] for package in first["packages"]}
         self.assertEqual(
             names,
-            {"Kaduox-SSH", "kaduox-ssh-cli", "kaduox-ssh-core", "runtime", "build-helper"},
+            {
+                "Kaduox-SSH",
+                "kaduox-ssh-cli",
+                "kaduox-ssh-core",
+                "kaduox-ssh-hosts",
+                "kaduox-ssh-daemon",
+                "runtime",
+                "build-helper",
+            },
         )
+        self.assertNotIn("kaduox-ssh-mcp", names)
         self.assertNotIn("dev-only", names)
         self.assertNotIn("foreign-target", names)
 

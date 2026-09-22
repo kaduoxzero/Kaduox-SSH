@@ -24,7 +24,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_BINARIES = ("kssh", "kssh-tui", "kssh-fleet", "kssh-inventory")
-LOCAL_PACKAGES = ("kaduox-ssh-core", "kaduox-ssh-cli")
+LOCAL_PACKAGES = (
+    "kaduox-ssh-core",
+    "kaduox-ssh-hosts",
+    "kaduox-ssh-daemon",
+    "kaduox-ssh-cli",
+    "kaduox-ssh-mcp",
+)
+# The target-specific SBOM graph is walked from kaduox-ssh-cli, which ships the
+# four release binaries. kaduox-ssh-mcp is a standalone stdio server outside
+# the release archives, so it is a workspace member but not an SBOM local root.
+SBOM_LOCAL_PACKAGES = (
+    "kaduox-ssh-core",
+    "kaduox-ssh-hosts",
+    "kaduox-ssh-daemon",
+    "kaduox-ssh-cli",
+)
 MAX_MANIFEST_BYTES = 16 * 1024
 ARCHIVE_FILE_MTIME = 0
 ZIP_FILE_TIME = (1980, 1, 1, 0, 0, 0)

@@ -376,7 +376,7 @@ def build_spdx_document(
         for package in ordered_lock_packages
         if lock_package_identity(package)[2] == ""
     }
-    if not set(release_tool.LOCAL_PACKAGES).issubset(local_names):
+    if not set(release_tool.SBOM_LOCAL_PACKAGES).issubset(local_names):
         raise ValueError("target SBOM graph does not contain every local Kaduox package")
 
     namespace = (
