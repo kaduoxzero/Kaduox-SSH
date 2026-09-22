@@ -76,6 +76,34 @@ pub struct HostStats {
     pub last_auth_method: Option<StoredAuthMethod>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StoredOsType {
+    /// Detect the server OS automatically on connect.
+    #[default]
+    Auto,
+    Linux,
+    Windows,
+}
+
+impl StoredOsType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "linux" => Ok(Self::Linux),
+            "windows" => Ok(Self::Windows),
+            _ => bail!("unknown operating-system type {value:?}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRecord {
     pub alias: String,
@@ -89,6 +117,7 @@ pub struct HostRecord {
     pub note: Option<String>,
     pub host_key_policy: StoredHostKeyPolicy,
     pub jump_chain: Option<String>,
+    pub os_type: StoredOsType,
     pub stats: HostStats,
 }
 
@@ -110,6 +139,7 @@ impl HostRecord {
             note: None,
             host_key_policy: StoredHostKeyPolicy::AcceptNew,
             jump_chain: None,
+            os_type: StoredOsType::Auto,
             stats: HostStats::default(),
         }
     }

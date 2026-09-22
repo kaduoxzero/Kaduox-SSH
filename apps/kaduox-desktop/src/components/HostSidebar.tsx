@@ -31,6 +31,9 @@ export function HostSidebar({ hosts, sessions, selectedAlias, search, folders = 
   const query = search.trim().toLowerCase()
   const visible = hosts.filter((host) => [host.alias, host.address, host.user, hostRoleLabel(host), ...host.groups, ...host.tags].join(' ').toLowerCase().includes(query))
   const connected = new Set(sessions.map((session) => session.alias))
+  const platformOf = (host: Host): 'windows' | 'unix' | null =>
+    sessions.find((session) => session.alias === host.alias)?.platform
+    ?? (host.osType === 'windows' ? 'windows' : host.osType === 'linux' ? 'unix' : null)
   const folderRole = (name: string): 'target' | 'jump' => folders.find((folder) => folder.name === name)?.role === 'jump' ? 'jump' : 'target'
   const toggle = (key: string) => setCollapsed((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next })
   const editFolder = (original: string | null, role: 'target' | 'jump') => { setError(''); setConfirmDelete(null); setEditor({ name: original ?? '', original, role }) }
@@ -107,7 +110,7 @@ export function HostSidebar({ hosts, sessions, selectedAlias, search, folders = 
                   {!closed && group.map((host) => <div className={'host-row' + (selectedAlias === host.alias ? ' selected' : '')} key={host.alias}>
                     <button className="host-row-main" type="button" onClick={() => onSelect(host.alias)} title={connected.has(host.alias) ? '切换到该主机的连接' : '点击建立连接'}>
                       <span className={'host-status' + (connected.has(host.alias) ? ' online' : '')} aria-label={connected.has(host.alias) ? '已连接' : '未连接'} />
-                      <span className="host-copy"><strong>{host.alias} <span className="host-role-label">{hostRoleLabel(host)}</span></strong><small>{host.user}@{host.address}:{host.port}</small><span className="host-meta">{connected.has(host.alias) ? '已连接 · 点击切换会话' : formatRelativeTime(host.lastConnectedUnix) + ' · 点击连接'}</span></span>
+                      <span className="host-copy"><strong>{host.alias} <span className="host-role-label">{hostRoleLabel(host)}</span>{platformOf(host) === 'windows' && <span className="host-os-badge">Windows</span>}</strong><small>{host.user}@{host.address}:{host.port}</small><span className="host-meta">{connected.has(host.alias) ? '已连接 · 点击切换会话' : formatRelativeTime(host.lastConnectedUnix) + ' · 点击连接'}</span></span>
                     </button>
                     <button className="icon-button host-edit" type="button" onClick={() => onEdit(host)} aria-label={'编辑 ' + host.alias} title="编辑主机"><MoreHorizontal size={16} /></button>
                   </div>)}

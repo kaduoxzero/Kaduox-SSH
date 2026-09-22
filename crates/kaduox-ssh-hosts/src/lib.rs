@@ -7,7 +7,7 @@ mod store;
 pub use import::{ImportReport, import_openssh};
 pub use model::{
     DATABASE_VERSION, HostDatabase, HostRecord, HostRole, HostStats, InlineJump, JumpChain,
-    JumpHop, MAX_CHAIN_HOPS, StoredAuthMethod, StoredHostKeyPolicy,
+    JumpHop, MAX_CHAIN_HOPS, StoredAuthMethod, StoredHostKeyPolicy, StoredOsType,
 };
 pub use resolver::{
     ResolutionSource, ResolvedHost, map_host_key_policy, resolve_chain, resolve_host,

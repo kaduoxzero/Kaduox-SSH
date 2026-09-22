@@ -275,6 +275,7 @@ export async function connectHost(
       fingerprintSha256: 'SHA256:prototypeHostKeyForVisualReviewOnly',
       verification: 'known',
     },
+    platform: 'unix',
     warning: null,
   }
   mockSessions = [...mockSessions, session]

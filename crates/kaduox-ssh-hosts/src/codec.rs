@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::model::{
     DATABASE_VERSION, HostDatabase, HostRecord, HostRole, HostStats, InlineJump, JumpChain,
-    JumpHop, StoredAuthMethod, StoredHostKeyPolicy,
+    JumpHop, StoredAuthMethod, StoredHostKeyPolicy, StoredOsType,
 };
 
 #[derive(Debug, Clone)]
@@ -64,6 +64,10 @@ pub fn encode(database: &HostDatabase) -> Result<String> {
             "host_key_policy",
             host.host_key_policy.as_str(),
         );
+        // 自动探测为默认值；未指定系统类型的旧记录不必增加字段。
+        if host.os_type != StoredOsType::Auto {
+            write_string(&mut output, "os_type", host.os_type.as_str());
+        }
         if let Some(chain) = &host.jump_chain {
             write_string(&mut output, "jump_chain", chain);
         }
@@ -209,6 +213,10 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
                     .transpose()?
                     .unwrap_or_default();
                 let jump_chain = take_string(&mut table.values, "jump_chain")?;
+                let os_type = take_string(&mut table.values, "os_type")?
+                    .map(|value| StoredOsType::parse(&value))
+                    .transpose()?
+                    .unwrap_or_default();
                 let last_connected_unix = take_integer(&mut table.values, "last_connected_unix")?;
                 let connection_count =
                     take_integer(&mut table.values, "connection_count")?.unwrap_or(0);
@@ -229,6 +237,7 @@ pub fn decode(input: &str) -> Result<HostDatabase> {
                     note,
                     host_key_policy,
                     jump_chain,
+                    os_type,
                     stats: HostStats {
                         last_connected_unix,
                         connection_count,
@@ -572,6 +581,26 @@ mod tests {
             }
         }
         assert!(HostRole::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn os_type_round_trips_and_defaults_to_auto() {
+        let mut database = HostDatabase::default();
+        let mut windows = HostRecord::new("win-box", "192.0.2.10", "admin");
+        windows.os_type = StoredOsType::Windows;
+        let auto = HostRecord::new("linux-box", "192.0.2.20", "deploy");
+        database.hosts.insert(windows.alias.clone(), windows);
+        database.hosts.insert(auto.alias.clone(), auto);
+
+        let encoded = encode(&database).unwrap();
+        assert!(encoded.contains("os_type = \"windows\""));
+        // auto 是默认值，不落盘，旧版本文件读取行为不变。
+        assert!(!encoded.contains("os_type = \"auto\""));
+
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded, database);
+        assert_eq!(decoded.hosts["linux-box"].os_type, StoredOsType::Auto);
+        assert!(StoredOsType::parse("unknown").is_err());
     }
 
     #[test]

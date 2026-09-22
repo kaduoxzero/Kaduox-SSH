@@ -22,6 +22,7 @@ export interface Host {
   note: string | null
   hostKeyPolicy: 'strict' | 'accept-new' | 'insecure'
   jumpChain: string | null
+  osType?: 'auto' | 'linux' | 'windows'
   lastConnectedUnix: number | null
   connectionCount: number
   lastAuthMethod: string | null
@@ -48,6 +49,7 @@ export interface HostSaveRequest {
   note: string | null
   hostKeyPolicy: Host['hostKeyPolicy']
   jumpChain: string | null
+  osType?: 'auto' | 'linux' | 'windows'
 }
 
 export interface JumpChain {
@@ -83,6 +85,8 @@ export interface Session {
   authMethod: string
   connectedAtUnix: number
   hostKey: HostKey | null
+  /** 探测到的目标系统：unix 或 windows；旧数据/测试夹具可缺省 */
+  platform?: 'unix' | 'windows'
   warning: string | null
 }
 
