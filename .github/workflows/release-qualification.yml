@@ -76,13 +76,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Download only the official four-target asset set: the release also
+          # carries manually attached desktop packages that are not part of
+          # the qualified archive/SBOM contract.
+          version="${KADUOX_RELEASE_TAG#v}"
           mkdir release-assets
           gh release download "$KADUOX_RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --dir release-assets
+            --dir release-assets \
+            --pattern "kaduox-ssh-${version}-*" \
+            --pattern "SHA256SUMS"
       - name: Verify, extract, and launch published archive
         id: qualify
         shell: bash
+        env:
+          # qualification_tool imports the scripts.release package; make the
+          # repository root importable instead of relying on sys.path layout.
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           set -euo pipefail
           python scripts/release/qualification_tool.py qualify \
