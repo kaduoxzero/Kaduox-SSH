@@ -121,7 +121,12 @@ impl HostStore {
     }
 
     pub fn folder_role(&self, name: &str) -> &'static str {
-        if self.database.jump_folders.iter().any(|folder| folder == name) {
+        if self
+            .database
+            .jump_folders
+            .iter()
+            .any(|folder| folder == name)
+        {
             "jump"
         } else {
             "target"
@@ -172,7 +177,9 @@ impl HostStore {
         updated.folders.retain(|folder| folder != name);
         updated.jump_folders.retain(|folder| folder != name);
         if original_name.is_some_and(|old| old != name) {
-            updated.folders.retain(|folder| Some(folder.as_str()) != original_name);
+            updated
+                .folders
+                .retain(|folder| Some(folder.as_str()) != original_name);
             updated
                 .jump_folders
                 .retain(|folder| Some(folder.as_str()) != original_name);
@@ -607,11 +614,17 @@ mod tests {
                 .save_folder("空文件夹", Some("新分组（开发）"), "target")
                 .is_err()
         );
-        assert!(store.save_folder("不存在", Some("不存在"), "target").is_err());
+        assert!(
+            store
+                .save_folder("不存在", Some("不存在"), "target")
+                .is_err()
+        );
         assert!(store.save_folder("", None, "target").is_err());
         store.save_folder("跳板分组", None, "jump").unwrap();
         assert_eq!(store.folder_role("跳板分组"), "jump");
-        store.save_folder("跳板分组", Some("跳板分组"), "target").unwrap();
+        store
+            .save_folder("跳板分组", Some("跳板分组"), "target")
+            .unwrap();
         assert_eq!(store.folder_role("跳板分组"), "target");
         store.save_folder("中转分组", None, "jump").unwrap();
         store.save().unwrap();

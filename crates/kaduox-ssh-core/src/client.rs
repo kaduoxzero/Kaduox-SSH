@@ -27,7 +27,9 @@ use crate::forward::{
 };
 use crate::handler::{ClientHandler, HandlerState};
 use crate::host_trust::HostTrustPolicy;
-use crate::remote_fs::{RemoteDirEntry, RemoteFileStat, directory_size, list_directory, parse_du_bytes, stat_path};
+use crate::remote_fs::{
+    RemoteDirEntry, RemoteFileStat, directory_size, list_directory, parse_du_bytes, stat_path,
+};
 use crate::transfer::{
     TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };

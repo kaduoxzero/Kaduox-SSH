@@ -105,7 +105,9 @@ pub(crate) async fn directory_size(sftp: &SftpSession, path: &str) -> Result<u64
         let mut next = Vec::new();
         for chunk in level.chunks(DIRECTORY_WALK_CONCURRENCY) {
             let listings = futures::future::join_all(
-                chunk.iter().map(|directory| list_directory(sftp, directory)),
+                chunk
+                    .iter()
+                    .map(|directory| list_directory(sftp, directory)),
             )
             .await;
             for entries in listings {
@@ -155,7 +157,11 @@ fn map_metadata(attrs: FileAttributes, file_type: RemoteFileType) -> RemoteFileM
     RemoteFileMetadata {
         file_type,
         // SFTP 服务器对目录返回的 size 不可靠（块大小或垃圾值），统一置空由前端显示占位符
-        size: if file_type == RemoteFileType::Directory { None } else { attrs.size },
+        size: if file_type == RemoteFileType::Directory {
+            None
+        } else {
+            attrs.size
+        },
         uid: attrs.uid,
         user: attrs.user,
         gid: attrs.gid,
