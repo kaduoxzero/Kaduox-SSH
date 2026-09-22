@@ -119,6 +119,9 @@ jobs:
           $sudo = & $kssh 127.0.0.1 --user runneradmin --identity $key --host-key insecure exec --as-user root -- whoami 2>&1 | Out-String
           if ($LASTEXITCODE -eq 0) { throw "sudo unexpectedly succeeded: $sudo" }
           if ($sudo -notmatch 'Windows targets do not support sudo') { throw "sudo was not rejected: $sudo" }
+          # pwsh propagates the last native exit code; the sudo probe above
+          # exits 1 by design, so finish with an explicit success code.
+          exit 0
       - name: Run live Windows PTY test
         shell: pwsh
         env:
