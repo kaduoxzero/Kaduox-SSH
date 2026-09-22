@@ -72,6 +72,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: release-${{ matrix.target }}
+      - name: Install D-Bus development headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Verify release metadata and tag
         shell: bash
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"

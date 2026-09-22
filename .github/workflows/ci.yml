@@ -70,6 +70,11 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install D-Bus development headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Formatting
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
@@ -88,6 +93,10 @@ jobs:
         with:
           toolchain: 1.85.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install D-Bus development headers (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Cargo check
         run: cargo check --workspace --all-targets --locked
 

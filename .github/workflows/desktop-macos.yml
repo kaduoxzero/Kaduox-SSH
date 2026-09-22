@@ -34,6 +34,10 @@ jobs:
         with:
           key: desktop-macos-universal
           workspaces: apps/kaduox-desktop/src-tauri
+      # The repository rust-toolchain.toml interferes with the action's
+      # `targets` input, so install both Universal 2 targets explicitly.
+      - name: Add Universal 2 Rust targets
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
       - name: Install frontend dependencies
         run: npm ci
       - name: Frontend tests

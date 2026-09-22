@@ -26,7 +26,7 @@ jobs:
       - name: Install OpenSSH fixture dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server
+          sudo apt-get install -y openssh-server libdbus-1-dev pkg-config
       - name: Build release binary
         run: cargo build --workspace --release --locked
       - name: Run local OpenSSH benchmark
