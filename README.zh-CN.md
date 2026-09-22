@@ -8,7 +8,7 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ![终端工作区与 SFTP 侧栏](docs/screenshots/terminal.png)
 
-[下载 v0.33.0-rc.14](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.14) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.14.md)
+[下载 v0.33.0-rc.15](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.15) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.15.md)
 
 ## 下载与安装
 
@@ -20,12 +20,12 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 | 下载                                                                                                                                                        | 适用场景                                                                                             |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/Kaduox-SSH-0.33.0-rc.14-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
-| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/Kaduox-SSH-0.33.0-rc.14-windows-x64.exe)                          | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。          |
-| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/Kaduox-SSH-0.33.0-rc.14-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
-| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/Kaduox-SSH-0.33.0-rc.14-windows-x64-tools.zip)          | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。                                         |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.14/SHA256SUMS.txt)                                                   | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。                           |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
+| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-windows-x64.exe)                          | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。          |
+| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
+| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-windows-x64-tools.zip)          | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。                                         |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/SHA256SUMS.txt)                                                   | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。                           |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
 
