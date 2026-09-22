@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "0.33.0-rc.12"
+version = "0.33.0-rc.13"
 dependencies = [
  "anyhow",
  "futures",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-desktop"
-version = "0.33.0-rc.12"
+version = "0.33.0-rc.13"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "0.33.0-rc.12"
+version = "0.33.0-rc.13"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",

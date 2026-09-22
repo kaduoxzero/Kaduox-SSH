@@ -4,6 +4,21 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
 
+## [0.33.0-rc.13] - 2026-09-22
+
+### Fixed (desktop)
+
+- remote file list: folders no longer show bogus sizes (SFTP servers report unreliable block-size/garbage values for directories — directory sizes are now blanked in list metadata and shown as `—`);
+- modification time column now includes the year (shared `formatDateTime` used by file list, properties, sessions, history and system info), and the column is widened so values are not clipped.
+
+### Added (desktop)
+
+- folder properties dialog now shows the real directory size, computed on demand when the dialog opens (new `remote_directory_size` core API + Tauri command).
+
+### Changed (core)
+
+- directory size is computed via a `du -sb` exec fast path (one server-local traversal, one round trip) with automatic fallback to a same-level concurrent SFTP walk (8-way `readdir` fan-out, BFS) on servers without `du` or exec — both paths skip symlinks to avoid cycles.
+
 ## [0.33.0-rc.12] - 2026-09-16
 
 ### Fixed (desktop)
