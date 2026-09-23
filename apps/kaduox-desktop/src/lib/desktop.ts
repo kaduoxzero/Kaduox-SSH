@@ -357,6 +357,13 @@ export async function onTerminalExit(
   return () => mockEvents.removeEventListener('terminal-exit', listener)
 }
 
+export async function remoteHomeDirectory(alias: string): Promise<string | null> {
+  if (isDesktopRuntime) {
+    return invoke<string | null>('remote_home_directory', { alias })
+  }
+  return null
+}
+
 export async function listRemoteFiles(alias: string, path: string): Promise<RemoteFile[]> {
   if (isDesktopRuntime) {
     return invoke<RemoteFile[]>('list_remote_files', { request: { alias, path } })

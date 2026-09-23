@@ -19,6 +19,7 @@ use commands::connection::{
 use commands::files::{
     create_remote_directory, create_remote_file, delete_remote_path, download_file,
     download_remote_directory, list_remote_files, read_remote_file, remote_directory_size,
+    remote_home_directory,
     rename_remote_path, upload_file, write_remote_file,
 };
 use commands::forward::{list_forwards, start_forward, stop_forward};
@@ -104,6 +105,7 @@ pub fn run() {
             list_command_history,
             record_terminal_command,
             clear_history,
+            remote_home_directory,
             list_remote_files,
             remote_directory_size,
             upload_file,
