@@ -57,6 +57,26 @@ export function remoteHomePath(username: string): string {
   return `/home/${normalized}`
 }
 
+/** Windows 目标的 home 探测失败回退：按惯例拼 C:/Users/<user>，比 /home/<user> 命中率高。 */
+export function windowsHomePath(username: string): string {
+  const normalized = username.trim()
+  return `C:/Users/${normalized || 'Administrator'}`
+}
+
+/** Windows 会话的路径输入归一：反斜杠转正斜杠，并去掉尾部多余斜杠（保留盘符根 C:/）。 */
+export function normalizeWindowsPath(input: string): string {
+  const normalized = input.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+  if (/^[A-Za-z]:$/.test(normalized)) return normalized + '/'
+  return normalized || '/'
+}
+
+/** 新建/重命名校验：Unix 只挡 /；Windows 额外挡 \ 与非法文件名字符。返回错误提示，合法返回 null。 */
+export function validateEntryName(name: string, isWindows: boolean): string | null {
+  if (!name || name.includes('/')) return '名称不能为空，也不能包含 /'
+  if (isWindows && /[\\<>:"|?*]/.test(name)) return 'Windows 目标名称不能包含 \\ < > : " | ? *'
+  return null
+}
+
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error

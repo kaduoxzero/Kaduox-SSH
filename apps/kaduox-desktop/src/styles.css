@@ -3897,6 +3897,7 @@ kbd,
 :root:not([data-theme='dark']) .composer-select { color-scheme: light; }
 .composer-select.model-select { max-width: 260px; }
 .composer-hint { flex: 1; font-size: 12px; color: var(--text-muted); }
+.ai-offline-hint { margin: 0 0 8px; font-size: 12px; color: var(--text-muted); }
 
 .ai-chat-panel {
   display: flex;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { errorMessage, fileName, formatBytes, formatDateTime, joinRemotePath, parentRemotePath } from './format'
+import { errorMessage, fileName, formatBytes, formatDateTime, joinRemotePath, normalizeWindowsPath, parentRemotePath, validateEntryName, windowsHomePath } from './format'
 
 describe('format helpers', () => {
   it('formats byte sizes with stable units', () => {
@@ -37,5 +37,28 @@ describe('format helpers', () => {
     expect(errorMessage(new Error('connection refused'))).toBe('connection refused')
     expect(errorMessage('bad credentials')).toBe('bad credentials')
     expect(errorMessage({ reason: 'unknown' })).toBe('发生未知错误')
+  })
+
+  it('falls back to a plausible Windows home instead of /home/<user>', () => {
+    expect(windowsHomePath('kaduox')).toBe('C:/Users/kaduox')
+    expect(windowsHomePath('  deploy  ')).toBe('C:/Users/deploy')
+    expect(windowsHomePath('')).toBe('C:/Users/Administrator')
+  })
+
+  it('normalizes pasted Windows paths for SFTP', () => {
+    expect(normalizeWindowsPath('C:\\Users\\kaduox\\')).toBe('C:/Users/kaduox')
+    expect(normalizeWindowsPath('C:\\')).toBe('C:/')
+    expect(normalizeWindowsPath('C:')).toBe('C:/')
+    expect(normalizeWindowsPath('D:/tools/')).toBe('D:/tools')
+    expect(normalizeWindowsPath('   ')).toBe('/')
+  })
+
+  it('rejects entry names per target platform rules', () => {
+    expect(validateEntryName('', false)).toBeTruthy()
+    expect(validateEntryName('a/b', false)).toBeTruthy()
+    expect(validateEntryName('a\\b', false)).toBeNull()
+    expect(validateEntryName('a\\b', true)).toBeTruthy()
+    expect(validateEntryName('a:b', true)).toBeTruthy()
+    expect(validateEntryName('报告', true)).toBeNull()
   })
 })
