@@ -1466,7 +1466,12 @@ mod tests {
             .await
             .unwrap();
         client.close().await.ok();
-        assert_eq!(status, Some(0), "stderr: {:?}", String::from_utf8_lossy(&stderr.0));
+        assert_eq!(
+            status,
+            Some(0),
+            "stderr: {:?}",
+            String::from_utf8_lossy(&stderr.0)
+        );
         assert!(
             String::from_utf8_lossy(&stdout.0).contains("__KDX_STDIN_OK__"),
             "stdout: {:?}",
@@ -1504,7 +1509,12 @@ mod tests {
             .await
             .unwrap();
         client.close().await.ok();
-        assert_eq!(status, Some(0), "stderr: {:?}", String::from_utf8_lossy(&stderr.0));
+        assert_eq!(
+            status,
+            Some(0),
+            "stderr: {:?}",
+            String::from_utf8_lossy(&stderr.0)
+        );
         assert!(
             String::from_utf8_lossy(&stdout.0).contains("__KDX_STDIN_BIG_OK__"),
             "big-script stdout: {:?}",
