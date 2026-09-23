@@ -81,8 +81,8 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
     event.preventDefault()
     event.stopPropagation()
     // 防止菜单超出窗口边缘
-    const x = Math.min(event.clientX, window.innerWidth - 190)
-    const y = Math.min(event.clientY, window.innerHeight - 260)
+    const x = Math.max(0, Math.min(event.clientX, window.innerWidth - 190))
+    const y = Math.max(0, Math.min(event.clientY, window.innerHeight - 260))
     setMenu({ x, y, entry })
     if (entry) setSelectedPath(entry.path)
   }

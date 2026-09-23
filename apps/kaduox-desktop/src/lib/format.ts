@@ -70,9 +70,10 @@ export function normalizeWindowsPath(input: string): string {
   return normalized || '/'
 }
 
-/** 新建/重命名校验：Unix 只挡 /；Windows 额外挡 \ 与非法文件名字符。返回错误提示，合法返回 null。 */
+/** 新建/重命名校验：挡穿越组件 `.`/`..`；Unix 只挡 /；Windows 额外挡 \ 与非法文件名字符。返回错误提示，合法返回 null。 */
 export function validateEntryName(name: string, isWindows: boolean): string | null {
   if (!name || name.includes('/')) return '名称不能为空，也不能包含 /'
+  if (name === '.' || name === '..') return '名称不能是 . 或 ..'
   if (isWindows && /[\\<>:"|?*]/.test(name)) return 'Windows 目标名称不能包含 \\ < > : " | ? *'
   return null
 }

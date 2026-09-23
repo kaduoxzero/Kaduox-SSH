@@ -142,6 +142,8 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
   const chainTokenRef = useRef(0)
   /** 一轮中已自动执行、等待与批准后结果一起回传给 AI 的 tool 消息（按 assistant 消息索引暂存）。 */
   const pendingAutoResultsRef = useRef<Map<number, AiMessage[]>>(new Map())
+  /** 批准批次的重入保护：批处理期间 busy 由本函数持有，不能再靠 busy 拦重复点击。 */
+  const resolvingBatchRef = useRef(false)
 
   const selectedHost = useMemo(() => hosts.find((host) => host.alias === target) ?? null, [hosts, target])
   const selectedSession = useMemo(() => sessions.find((session) => session.alias === target) ?? null, [sessions, target])
@@ -190,6 +192,10 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
   const breakChain = useCallback(() => {
     chainTokenRef.current += 1
     pendingAutoResultsRef.current.clear()
+    resolvingBatchRef.current = false
+    // A broken chain may still hold busy (e.g. waiting for batch approval);
+    // the UI must unlock once the chain is abandoned.
+    setBusy(false)
   }, [])
 
   // 切换目标主机：刷新该主机的会话列表，并回到未保存的新会话，
@@ -509,8 +515,11 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       patchCard(assistantIndex, call.id, { status: 'auto' })
       try {
         const result = await aiExecuteCommand(call.alias, call.command, mode, false)
-        // 执行期间用户切换了目标/会话：丢弃结果，不再写回界面或继续对话。
-        if (token !== chainTokenRef.current) return
+        // 执行期间用户切换了目标/会话：链已废弃，释放 busy 后丢弃结果。
+        if (token !== chainTokenRef.current) {
+          setBusy(false)
+          return
+        }
         const text = [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000) || `（命令已执行，退出码 ${result.exitStatus ?? '未知'}，无输出）`
         patchCard(assistantIndex, call.id, { status: 'done', resultText: text, exitStatus: result.exitStatus })
         autoResults.push({
@@ -519,7 +528,10 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
           content: `命令已在 ${call.alias} 自动执行（${riskLabel(level)}）。退出码：${result.exitStatus ?? '未知'}\n${text}`,
         })
       } catch (cause) {
-        if (token !== chainTokenRef.current) return
+        if (token !== chainTokenRef.current) {
+          setBusy(false)
+          return
+        }
         const message = errorMessage(cause)
         patchCard(assistantIndex, call.id, { status: 'error', resultText: message })
         autoResults.push({ role: 'tool', toolCallId: call.id, content: `命令执行失败：${message}` })
@@ -527,20 +539,24 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     }
     if (hasPending) {
       // 自动执行的结果先暂存，等用户一次批准后与批准结果一起回传，保证一轮只问一次。
+      // busy 保持持有，由 resolveBatch 收尾时释放。
       pendingAutoResultsRef.current.set(assistantIndex, autoResults)
       for (const result of autoResults) persistMessage(result, convId)
       return
     }
     for (const result of autoResults) persistMessage(result, convId)
     if (autoResults.length > 0) {
+      // 续轮由 continueConversation 继续持有/释放 busy。
       await continueConversation([...messagesRef.current, ...autoResults], convId, round + 1)
+    } else {
+      setBusy(false)
     }
   }, [persistMessage])
 
   /** 用户对该轮全部待批准命令做一次决定：批准全部执行 或 全部拒绝。 */
   const resolveBatch = async (messageIndex: number, approved: boolean) => {
-    // 批准执行期间置 busy，防止用户并发提交新一轮导致两条工具链互相踩。
-    if (busy) return
+    // 批处理期间 busy 已由工具链持有（为了让用户能点批准），这里用独立的重入保护。
+    if (resolvingBatchRef.current) return
     const token = chainTokenRef.current
     const convId = conversationRef.current
     const message = messagesRef.current[messageIndex]
@@ -550,6 +566,12 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
     const priorResults = pendingAutoResultsRef.current.get(messageIndex) ?? []
     pendingAutoResultsRef.current.delete(messageIndex)
     const toolMessages: AiMessage[] = []
+    // 链中途中断（切换目标/会话）时，已执行的结果也必须先落盘审计再退出。
+    const persistPartial = () => {
+      for (const result of toolMessages) persistMessage(result, convId)
+      toolMessages.length = 0
+    }
+    resolvingBatchRef.current = true
     setBusy(true)
     try {
       if (!approved) {
@@ -566,7 +588,10 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
           patchCard(messageIndex, card.toolCall.id, { status: 'approved' })
           try {
             const result = await aiExecuteCommand(card.toolCall.alias, card.toolCall.command, settingsRef.current.permissionMode, true)
-            if (token !== chainTokenRef.current) return
+            if (token !== chainTokenRef.current) {
+              persistPartial()
+              return
+            }
             const text = [result.stdout, result.stderr].filter(Boolean).join('\n').slice(0, 4000) || `（命令已执行，退出码 ${result.exitStatus ?? '未知'}，无输出）`
             patchCard(messageIndex, card.toolCall.id, { status: 'done', resultText: text, exitStatus: result.exitStatus })
             toolMessages.push({
@@ -575,18 +600,25 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
               content: `命令经用户批准后在 ${card.toolCall.alias} 执行（${riskLabel(card.toolCall.riskLevel)}）。退出码：${result.exitStatus ?? '未知'}\n${text}`,
             })
           } catch (cause) {
-            if (token !== chainTokenRef.current) return
+            if (token !== chainTokenRef.current) {
+              persistPartial()
+              return
+            }
             const message = errorMessage(cause)
             patchCard(messageIndex, card.toolCall.id, { status: 'error', resultText: message })
             toolMessages.push({ role: 'tool', toolCallId: card.toolCall.id, content: `命令执行失败：${message}` })
           }
         }
       }
-      if (token !== chainTokenRef.current) return
+      if (token !== chainTokenRef.current) {
+        persistPartial()
+        return
+      }
       const allResults = [...priorResults, ...toolMessages]
-      for (const result of toolMessages) persistMessage(result, convId)
+      persistPartial()
       await continueConversation([...messagesRef.current, ...allResults], convId, round + 1)
     } finally {
+      resolvingBatchRef.current = false
       setBusy(false)
     }
   }
@@ -608,6 +640,9 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       return
     }
     setBusy(true)
+    // 发现工具调用时 busy 移交给 runToolCalls / resolveBatch 收尾，这里不再提前释放，
+    // 否则工具链执行期间用户可并发提交新一轮，两条链互相踩。
+    let handedOff = false
     try {
       const wireMessages = trimWireMessages(
         conversation.filter((message) => message.role !== 'tool' || message.toolCallId),
@@ -648,7 +683,8 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
         return [...current, assistantMessage]
       })
       if (assistantMessage.commandCards?.length) {
-        // 等 state 生效后再按索引处理卡片。
+        // 等 state 生效后再按索引处理卡片；busy 由工具链接管。
+        handedOff = true
         window.setTimeout(() => { void runToolCalls(assistantMessage, convId, assistantIndex, round, token) }, 0)
       }
     } catch (cause) {
@@ -658,7 +694,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       setMessages((current) => [...current, failure])
       onNotify('error', 'AI 请求失败', message)
     } finally {
-      setBusy(false)
+      if (!handedOff) setBusy(false)
     }
   }, [apiKey, context, onNotify, persistMessage, rememberApiKey, runToolCalls, shareContext, targetAlias])
 
@@ -744,7 +780,10 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
             <button type="button" onClick={() => quickAsk('请解释下面这段 SSH 命令输出可能意味着什么：')}><Server size={14} />解释命令输出</button>
           </div>
           <div className="ai-messages" aria-live="polite">
-            {messages.filter((message) => message.role !== 'tool').map((message, index) => {
+            {messages
+              .map((message, index) => ({ message, index }))
+              .filter(({ message }) => message.role !== 'tool')
+              .map(({ message, index }) => {
               const pendingCount = (message.commandCards ?? []).filter((card) => card.status === 'pending').length
               const isToolRound = Boolean(message.commandCards?.length)
               return (
