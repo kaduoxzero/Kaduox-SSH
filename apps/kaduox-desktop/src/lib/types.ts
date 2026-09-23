@@ -246,8 +246,8 @@ export interface AiToolCall {
   riskLevel: AiRiskLevel | string
 }
 
-/** 批准卡片的本地状态。 */
-export type AiCommandStatus = 'pending' | 'auto' | 'approved' | 'rejected' | 'blocked' | 'done' | 'error'
+/** 批准卡片的本地状态。interrupted：会话重载后遗留的未决卡片，仅展示、不可再批准。 */
+export type AiCommandStatus = 'pending' | 'auto' | 'approved' | 'rejected' | 'blocked' | 'done' | 'error' | 'interrupted'
 
 export interface AiCommandCard {
   toolCall: AiToolCall
@@ -265,6 +265,8 @@ export interface AiMessage {
   toolCallId?: string
   /** 前端本地渲染用：命令批准卡片。 */
   commandCards?: AiCommandCard[]
+  /** 前端本地渲染用：该 assistant 消息处于工具链的第几轮（不入库）。 */
+  round?: number
 }
 
 export type AiMode = 'compatible'
