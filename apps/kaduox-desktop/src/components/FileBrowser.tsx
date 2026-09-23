@@ -30,6 +30,7 @@ import {
   pickUploadFile,
   readRemoteFile,
   remoteDirectorySize,
+  remoteHomeDirectory,
   renameRemotePath,
   uploadFile,
   writeRemoteFile,
@@ -98,17 +99,29 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
   }, [menu])
 
   useEffect(() => {
-    const home = session ? remoteHomePath(session.user) : '/'
-    setPath(home)
-    setPathInput(home)
-    setSelectedPath(null)
-    setFilter('')
-    setEditTarget(null)
-    setPropsTarget(null)
-    setCreateDialog(null)
-    setRenameTarget(null)
-    setDeleteTarget(null)
-  }, [session?.alias, session?.user])
+    let cancelled = false
+    const fallback = session ? remoteHomePath(session.user) : '/'
+    const applyHome = (home: string) => {
+      if (cancelled) return
+      setPath(home)
+      setPathInput(home)
+      setSelectedPath(null)
+      setFilter('')
+      setEditTarget(null)
+      setPropsTarget(null)
+      setCreateDialog(null)
+      setRenameTarget(null)
+      setDeleteTarget(null)
+    }
+    applyHome(fallback)
+    // Windows 主机的真实 home（C:/Users/<user>）由后端探测；失败保持回退路径。
+    if (session?.platform === 'windows') {
+      void remoteHomeDirectory(session.alias)
+        .then((home) => { if (home) applyHome(home) })
+        .catch(() => {})
+    }
+    return () => { cancelled = true }
+  }, [session?.alias, session?.user, session?.platform])
 
   useEffect(() => {
     if (!session) {

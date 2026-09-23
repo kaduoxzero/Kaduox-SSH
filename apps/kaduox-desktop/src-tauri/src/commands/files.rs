@@ -4,7 +4,9 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use kaduox_ssh_core::{ConnectionLease, RemoteDirEntry, RemoteFileType, TransferOptions};
+use kaduox_ssh_core::{
+    ConnectionLease, RemoteDirEntry, RemoteFileType, RemotePlatform, RemoteUser, TransferOptions,
+};
 use tauri::State;
 
 use crate::models::{
@@ -66,6 +68,39 @@ fn transfer_options_for_destination(destination_exists: bool) -> TransferOptions
 
 fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+/// Windows 会话的远端 home 目录（如 `C:/Users/alice`）；Unix 会话返回 None，
+/// 由前端沿用 /home/<user> 规则。通过 cmd 展开 %USERPROFILE% 探测，比按用户名
+/// 拼接更准确（ roaming profile / 非默认 profile 目录都能命中）。
+#[tauri::command]
+pub async fn remote_home_directory(
+    alias: String,
+    state: State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    remote_home_directory_inner(alias, &state)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn remote_home_directory_inner(alias: String, state: &DesktopState) -> Result<Option<String>> {
+    let lease = state
+        .session_lease(alias.trim())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    if lease.remote_platform().await != RemotePlatform::Windows {
+        return Ok(None);
+    }
+    let output = lease
+        .exec("echo %USERPROFILE%", &RemoteUser::Current)
+        .await
+        .context("无法探测 Windows 主目录")?;
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    // %USERPROFILE% 未展开（非 cmd 默认 shell）时按失败处理。
+    if output.exit_status != Some(0) || !raw.contains(':') {
+        bail!("Windows 主目录探测输出无效: {raw:?}");
+    }
+    Ok(Some(raw.replace('\\', "/")))
 }
 
 #[tauri::command]

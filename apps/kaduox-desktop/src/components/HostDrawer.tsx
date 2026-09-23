@@ -279,7 +279,7 @@ export function HostDrawer({ hosts, folders = [], host, onClose, onSave, onDelet
           <div className="segmented-control three" role="group" aria-label="系统类型">
             {(['auto', 'linux', 'windows'] as const).map((kind) => <button type="button" key={kind} className={form.osType === kind ? 'active' : ''} onClick={() => update('osType', kind)}>{kind === 'auto' ? '自动探测' : kind === 'linux' ? 'Linux / Unix' : 'Windows'}</button>)}
           </div>
-          <small>{form.osType === 'windows' ? '目标运行 Windows OpenSSH 服务器：终端使用 cmd.exe，暂不支持提权切换、文件管理和信息面板。' : form.osType === 'linux' ? '按 Linux / Unix 处理，跳过自动探测。' : '连接时自动探测目标系统；探测不准时可手动指定。'}</small>
+          <small>{form.osType === 'windows' ? '目标运行 Windows OpenSSH 服务器：终端使用 cmd.exe，不支持提权切换（sudo 为 Unix 概念）；文件管理与信息面板可正常使用。' : form.osType === 'linux' ? '按 Linux / Unix 处理，跳过自动探测。' : '连接时自动探测目标系统；探测不准时可手动指定。'}</small>
         </label>
 
         <div className="field-grid">

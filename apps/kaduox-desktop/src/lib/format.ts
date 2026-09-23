@@ -44,8 +44,11 @@ export function joinRemotePath(parent: string, child: string): string {
 export function parentRemotePath(path: string): string {
   if (path === '/') return '/'
   const normalized = path.replace(/\/+$/, '')
+  // Windows 盘符根目录（C: 或 C:/）没有可用的上级：SFTP 无法枚举盘符。
+  if (/^[A-Za-z]:$/.test(normalized)) return normalized + '/'
   const separator = normalized.lastIndexOf('/')
-  return separator <= 0 ? '/' : normalized.slice(0, separator)
+  const parent = separator <= 0 ? '/' : normalized.slice(0, separator)
+  return /^[A-Za-z]:$/.test(parent) ? parent + '/' : parent
 }
 
 export function remoteHomePath(username: string): string {

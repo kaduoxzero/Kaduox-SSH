@@ -139,6 +139,8 @@ Before GitHub Release creation, the publish job requires exactly:
 
 It creates `SHA256SUMS` over those eight primary assets and requires exactly eight checksum entries. The GitHub Release therefore contains the eight checksummed primary assets plus `SHA256SUMS`.
 
+Desktop packages (Windows NSIS installer, standalone EXE, CLI tools ZIP, MCP server, macOS Universal pkg) are built by the `desktop-windows`/`desktop-macos` jobs and attached by the `attach-desktop` job **after** the primary release exists, with their own `SHA256SUMS.txt`. They are deliberately outside the eight-primary-asset contract and the post-publication qualification scope.
+
 Pre-release SemVer tags containing `-` are created as GitHub pre-releases automatically.
 
 ## GitHub artifact attestation policy

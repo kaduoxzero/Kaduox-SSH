@@ -139,6 +139,89 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  desktop-windows:
+    needs: preflight
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build CLI tools and MCP server
+        run: cargo build --release --locked
+      - name: Build desktop NSIS installer
+        working-directory: apps/kaduox-desktop
+        run: |
+          npm ci
+          npm test
+          npm run tauri -- build --bundles nsis --ci -- --locked
+      - name: Collect desktop Windows assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "apps/kaduox-desktop/src-tauri/target/release/bundle/nsis/Kaduox SSH_${version}_x64-setup.exe" "dist/Kaduox-SSH-${version}-windows-x64-setup.exe"
+          Copy-Item "apps/kaduox-desktop/src-tauri/target/release/kaduox-ssh-desktop.exe" "dist/Kaduox-SSH-${version}-windows-x64.exe"
+          Compress-Archive -Path target/release/kssh.exe,target/release/kssh-tui.exe,target/release/kssh-fleet.exe,target/release/kssh-inventory.exe -DestinationPath "dist/Kaduox-SSH-${version}-windows-x64-tools.zip" -Force
+          Copy-Item target/release/kaduox-ssh-mcp.exe dist/kaduox-ssh-mcp.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-macos:
+    needs: preflight
+    permissions:
+      contents: read
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: apps/kaduox-desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
+        with:
+          toolchain: 1.98.1
+      # The repository rust-toolchain.toml interferes with the action's
+      # `targets` input, so install both Universal 2 targets explicitly.
+      - name: Add Universal 2 Rust targets
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-desktop-macos-universal
+          workspaces: apps/kaduox-desktop/src-tauri
+      - name: Install and test frontend
+        run: |
+          npm ci
+          npm test
+      - name: Build Universal 2 app (unsigned)
+        run: npm run tauri -- build --target universal-apple-darwin --bundles app --ci -- --locked
+      - name: Package .pkg installer
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Kaduox SSH.app"
+          test -d "$app"
+          mkdir -p dist
+          pkgbuild \
+            --component "$app" \
+            --install-location /Applications \
+            --identifier com.kaduox.ssh \
+            --version "$version" \
+            "dist/Kaduox-SSH-${version}-macos-universal.pkg"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-macos
+          path: apps/kaduox-desktop/dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   attest:
     needs: build
     if: ${{ !contains(github.ref_name, '-') || vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
@@ -261,3 +344,37 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             "${extra[@]}"
+
+  # Desktop packages attach after the official four-suite release exists so
+  # the publish-time asset contract (4 archives + 4 SBOMs + SHA256SUMS) keeps
+  # its exact-count meaning. Desktop extras carry their own SHA256SUMS.txt.
+  attach-desktop:
+    needs:
+      - publish
+      - desktop-windows
+      - desktop-macos
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: desktop-*
+          path: dist-desktop
+          merge-multiple: true
+      - name: Verify and upload desktop assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mapfile -t files < <(find dist-desktop -maxdepth 1 -type f -print | sort)
+          test "${#files[@]}" -eq 5
+          (cd dist-desktop && sha256sum * | sort -k2 > SHA256SUMS.txt)
+          test "$(wc -l < dist-desktop/SHA256SUMS.txt)" -eq 5
+          cat dist-desktop/SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" dist-desktop/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber

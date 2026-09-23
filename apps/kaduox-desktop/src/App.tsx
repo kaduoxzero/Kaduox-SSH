@@ -308,12 +308,8 @@ export default function App() {
             )}
               <FileBrowser session={selectedSession} onNotify={notify} />
             </div>
-          {view === 'files' && (selectedSession?.platform === 'windows'
-            ? <WindowsTargetNotice feature="远程文件管理" />
-            : <FileBrowser session={selectedSession} expanded onNotify={notify} />)}
-          {view === 'info' && (selectedSession?.platform === 'windows'
-            ? <WindowsTargetNotice feature="系统信息面板" />
-            : (
+          {view === 'files' && <FileBrowser session={selectedSession} expanded onNotify={notify} />}
+          {view === 'info' && (
             <SystemMetricsView
               hosts={hosts}
               sessions={sessions}
@@ -321,7 +317,6 @@ export default function App() {
               onSelect={setSelectedAlias}
               onNotify={notify}
             />
-            )
           )}
           {view === 'forwards' && (
             <ForwardsView
@@ -380,18 +375,6 @@ export default function App() {
           <span>正在载入主机库与本地会话…</span>
         </div>
       )}
-    </div>
-  )
-}
-
-function WindowsTargetNotice({ feature }: { feature: string }) {
-  return (
-    <div className="empty-view" role="note">
-      <strong>{feature}暂不支持 Windows 主机</strong>
-      <p>
-        当前连接的目标运行 Windows。终端、端口转发、运行记录与 AI 助手可正常使用；
-        文件管理和系统信息面板将在后续版本中支持 Windows 主机。
-      </p>
     </div>
   )
 }

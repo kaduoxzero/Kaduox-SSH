@@ -23,6 +23,12 @@ describe('format helpers', () => {
     expect(parentRemotePath('/')).toBe('/')
     expect(parentRemotePath('/var/log/')).toBe('/var')
     expect(parentRemotePath('/home')).toBe('/')
+    // Windows 盘符路径：C:/Users 的上级是 C:/，盘符根的上级仍是自身（SFTP 无法枚举盘符）
+    expect(joinRemotePath('C:/Users', 'docs')).toBe('C:/Users/docs')
+    expect(joinRemotePath('C:/', 'Users')).toBe('C:/Users')
+    expect(parentRemotePath('C:/Users/kaduox')).toBe('C:/Users')
+    expect(parentRemotePath('C:/Users')).toBe('C:/')
+    expect(parentRemotePath('C:/')).toBe('C:/')
   })
 
   it('extracts local file names and safe error messages', () => {

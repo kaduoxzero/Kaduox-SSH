@@ -128,4 +128,4 @@ jobs:
           $env:KADUOX_LIVE_WINDOWS_HOST = '127.0.0.1'
           $env:KADUOX_LIVE_WINDOWS_USER = 'runneradmin'
           $env:KADUOX_LIVE_WINDOWS_KEY = "$env:RUNNER_TEMP\kssh_ci_key"
-          cargo test -p kaduox-ssh-core --locked windows_target_detects_platform_and_runs_cmd_pty -- --ignored --nocapture
+          cargo test -p kaduox-ssh-core --locked windows_target_detects_platform_and_runs_interactive_shell -- --ignored --nocapture

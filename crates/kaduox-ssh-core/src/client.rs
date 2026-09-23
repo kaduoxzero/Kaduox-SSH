@@ -282,6 +282,22 @@ impl SshClient {
         let _ = self.platform.set(platform);
     }
 
+    /// Interactive shell command for Windows targets: prefer PowerShell 7
+    /// (pwsh), which renders correctly under ConPTY; fall back to cmd.exe
+    /// because Windows PowerShell 5.1 produces no output over a ConPTY
+    /// session. Non-interactive PowerShell exec is unaffected by that issue.
+    async fn windows_shell_command(&self) -> &'static str {
+        let mut sink = BufferWriter::default();
+        let mut sink_err = BufferWriter::default();
+        match self
+            .exec_stream_raw("where pwsh", &mut sink, &mut sink_err)
+            .await
+        {
+            Ok(Some(0)) => "pwsh.exe -NoLogo",
+            _ => "cmd.exe",
+        }
+    }
+
     /// Probe the server OS with short, read-only commands. Order matters:
     /// `uname` answers POSIX systems, `ver` answers cmd.exe, and the
     /// PowerShell probe answers Windows servers whose default OpenSSH shell
@@ -479,15 +495,15 @@ impl SshClient {
         match remote_user {
             RemoteUser::Current if platform == RemotePlatform::Windows => {
                 // Windows PowerShell 5.1 produces no output under a
-                // ConPTY-over-SSH session in the stock OpenSSH server, so the
-                // interactive shell stays on cmd.exe. PowerShell remains
-                // available for non-interactive exec commands.
+                // ConPTY-over-SSH session, so fall back to cmd.exe there.
+                // PowerShell 7 (pwsh) renders correctly and is preferred.
+                let shell = self.windows_shell_command().await;
                 timeout(
                     self.config.channel_request_timeout,
-                    channel.exec(true, "cmd.exe"),
+                    channel.exec(true, shell),
                 )
                 .await
-                .context("SSH cmd.exe exec request timed out")??;
+                .context("SSH Windows shell exec request timed out")??;
             }
             RemoteUser::Current => {
                 timeout(
@@ -1269,7 +1285,7 @@ mod tests {
     /// KADUOX_LIVE_WINDOWS_HOST=127.0.0.1 KADUOX_LIVE_WINDOWS_USER=.. KADUOX_LIVE_WINDOWS_KEY=..
     #[tokio::test]
     #[ignore = "requires a reachable Windows OpenSSH server and key material"]
-    async fn windows_target_detects_platform_and_runs_cmd_pty() {
+    async fn windows_target_detects_platform_and_runs_interactive_shell() {
         let host = std::env::var("KADUOX_LIVE_WINDOWS_HOST").unwrap();
         let user = std::env::var("KADUOX_LIVE_WINDOWS_USER").unwrap();
         let key = std::env::var("KADUOX_LIVE_WINDOWS_KEY").unwrap();
@@ -1301,17 +1317,26 @@ mod tests {
                 )
                 .await
         });
-        // ConPTY renders VT sequences; only the marker text matters.
+        // ConPTY renders VT sequences; only the marker text matters. pwsh's first
+        // launch (profile + PSReadLine) can be slow on CI runners, so re-send the
+        // marker every few seconds until the reader confirms the echo.
+        let seen_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_writer = Arc::clone(&seen_flag);
         let writer = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            input
-                .write_all(b"echo __KDX_WIN_PTY__\r\nexit\r\n")
-                .await
-                .unwrap();
+            for _ in 0..12 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if seen_writer.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if input.write_all(b"echo __KDX_WIN_PTY__\r\n").await.is_err() {
+                    break;
+                }
+            }
+            let _ = input.write_all(b"exit\r\n").await;
         });
         let mut data = Vec::new();
         let mut buf = [0u8; 4096];
-        let seen = timeout(Duration::from_secs(20), async {
+        let seen = timeout(Duration::from_secs(90), async {
             loop {
                 let count = output.read(&mut buf).await.unwrap();
                 if count == 0 {
@@ -1325,12 +1350,13 @@ mod tests {
         })
         .await
         .unwrap_or(false);
+        seen_flag.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = timeout(Duration::from_secs(5), writer).await;
         shell.abort();
         client.close().await.ok();
         assert!(
             seen,
-            "cmd.exe PTY did not echo the marker command; captured {} bytes; tail: {}",
+            "Windows interactive PTY did not echo the marker command; captured {} bytes; tail: {}",
             data.len(),
             String::from_utf8_lossy(&data)
                 .chars()
