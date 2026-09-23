@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use kaduox_ssh_core::{RemotePlatform, RemoteUser};
 use sysinfo::{Disks, Networks, System};
 use tauri::State;
@@ -39,14 +37,45 @@ $stdout.Write(($lines -join "`n") + "`n")
 $stdout.Dispose()
 "#;
 
-/// Windows 目标的 exec 默认落在 cmd.exe；用 -EncodedCommand 传 UTF-16LE
-/// base64 脚本，避开 cmd 引号/转义问题。
-fn powershell_encoded_command(script: &str) -> String {
-    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    format!(
-        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {}",
-        BASE64.encode(utf16)
-    )
+/// Windows 目标的 exec 默认落在 cmd.exe；脚本通过 stdin 传给
+/// `powershell -Command -`，避开 cmd 引号/转义问题与命令行长度上限。
+/// 脚本必须保持纯 ASCII（metrics.ps1 注释一律英文），避免 stdin 编码分歧。
+const POWERSHELL_STDIN_COMMAND: &str = "powershell -NoProfile -ExecutionPolicy Bypass -Command -";
+
+/// stderr 尾部片段，用于失败诊断。
+fn stderr_tail(stderr: &[u8]) -> String {
+    const TAIL: usize = 500;
+    let text = String::from_utf8_lossy(stderr);
+    let trimmed = text.trim();
+    if trimmed.len() <= TAIL {
+        return trimmed.to_owned();
+    }
+    let mut start = trimmed.len() - TAIL;
+    while !trimmed.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &trimmed[start..])
+}
+
+/// 通过 stdin 执行 Windows PowerShell 脚本，返回 (exit_status, stdout, stderr)。
+async fn exec_windows_script(
+    lease: &kaduox_ssh_core::ConnectionLease,
+    script: &str,
+) -> Result<(Option<u32>, Vec<u8>, Vec<u8>)> {
+    let mut stdout = super::connection::CappedWriter::default();
+    let mut stderr = super::connection::CappedWriter::default();
+    let status = lease
+        .exec_stream_with_stdin(
+            POWERSHELL_STDIN_COMMAND,
+            script.as_bytes(),
+            &RemoteUser::Current,
+            &mut stdout,
+            &mut stderr,
+        )
+        .await?;
+    let (stdout, _) = stdout.into_parts();
+    let (stderr, _) = stderr.into_parts();
+    Ok((status, stdout, stderr))
 }
 
 #[derive(Default)]
@@ -138,15 +167,26 @@ async fn query_basic_info_inner(alias: String, state: &DesktopState) -> Result<B
         .await
         .map_err(anyhow::Error::msg)?;
 
-    let basic_command = match lease.remote_platform().await {
-        RemotePlatform::Windows => powershell_encoded_command(BASIC_INFO_PS1),
-        RemotePlatform::Unix => BASIC_INFO_COMMAND.to_owned(),
+    let raw = match lease.remote_platform().await {
+        RemotePlatform::Windows => {
+            let (status, stdout, stderr) = exec_windows_script(&lease, BASIC_INFO_PS1)
+                .await
+                .context("无法执行基础信息查询")?;
+            anyhow::ensure!(
+                status == Some(0),
+                "基础信息查询失败（退出码 {status:?}）：{}",
+                stderr_tail(&stderr)
+            );
+            String::from_utf8_lossy(&stdout).into_owned()
+        }
+        RemotePlatform::Unix => {
+            let output = lease
+                .exec(BASIC_INFO_COMMAND, &RemoteUser::Current)
+                .await
+                .context("无法执行基础信息查询")?;
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
     };
-    let output = lease
-        .exec(&basic_command, &RemoteUser::Current)
-        .await
-        .context("无法执行基础信息查询")?;
-    let raw = String::from_utf8_lossy(&output.stdout);
     let parsed = parse_remote_info(&raw)?;
     Ok(BasicInfoDto {
         scope: "remote".to_owned(),
@@ -623,29 +663,41 @@ async fn query_system_metrics_inner(
         .session_lease(alias)
         .await
         .map_err(anyhow::Error::msg)?;
-    let mut stdout = super::connection::CappedWriter::default();
-    let mut stderr = super::connection::CappedWriter::default();
-    let metrics_command = match lease.remote_platform().await {
-        RemotePlatform::Windows => powershell_encoded_command(SYSTEM_METRICS_PS1),
-        RemotePlatform::Unix => SYSTEM_METRICS_COMMAND.to_owned(),
+    let (status, stdout, stdout_truncated, stderr_bytes) = match lease.remote_platform().await {
+        RemotePlatform::Windows => {
+            let (status, stdout, stderr) = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                exec_windows_script(&lease, SYSTEM_METRICS_PS1),
+            )
+            .await
+            .context("指标采集超过 8 秒，下个周期将重试")??;
+            (status, stdout, false, stderr)
+        }
+        RemotePlatform::Unix => {
+            let mut stdout = super::connection::CappedWriter::default();
+            let mut stderr = super::connection::CappedWriter::default();
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                lease.exec_stream(
+                    SYSTEM_METRICS_COMMAND,
+                    &RemoteUser::Current,
+                    &mut stdout,
+                    &mut stderr,
+                ),
+            )
+            .await
+            .context("指标采集超过 8 秒，下个周期将重试")??;
+            let (stdout, truncated) = stdout.into_parts();
+            let (stderr, _) = stderr.into_parts();
+            (status, stdout, truncated, stderr)
+        }
     };
-    let status = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        lease.exec_stream(
-            &metrics_command,
-            &RemoteUser::Current,
-            &mut stdout,
-            &mut stderr,
-        ),
-    )
-    .await
-    .context("指标采集超过 8 秒，下个周期将重试")??;
     anyhow::ensure!(
         status == Some(0),
-        "指标采集命令失败，目标需要 Linux /proc 或 Windows PowerShell 支持"
+        "指标采集命令失败（退出码 {status:?}），目标需要 Linux /proc 或 Windows PowerShell 支持：{}",
+        stderr_tail(&stderr_bytes)
     );
-    let (stdout, truncated) = stdout.into_parts();
-    anyhow::ensure!(!truncated, "指标输出超过大小限制");
+    anyhow::ensure!(!stdout_truncated, "指标输出超过大小限制");
     let metrics = parse_system_metrics(&String::from_utf8_lossy(&stdout))?;
     Ok(metrics_to_dto(
         "remote",

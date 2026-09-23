@@ -66,7 +66,9 @@ Get-NetAdapterStatistics | ForEach-Object {
 }
 $lines.Add("network=$rx $tx")
 
-# 直接以 UTF-8 写标准输出字节流：控制台 OutputEncoding 在 SSH 管道下不可控。
+# Write raw UTF-8 bytes to stdout: console OutputEncoding is not
+# controllable over an SSH pipe. Keep this script pure ASCII so it can be
+# fed verbatim through stdin (`powershell -Command -`).
 $stdout = [System.IO.StreamWriter]::new([Console]::OpenStandardOutput(), [System.Text.UTF8Encoding]::new($false))
 $stdout.AutoFlush = $true
 $stdout.Write(($lines -join "`n") + "`n")
