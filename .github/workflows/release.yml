@@ -353,7 +353,11 @@ jobs:
       - publish
       - desktop-windows
       - desktop-macos
-    if: ${{ needs.publish.result == 'success' }}
+    # always() is required: publish itself runs with always() after a skipped
+    # attest job, and without a status-check function here GitHub treats this
+    # job as skipped even when every direct need succeeded (observed on
+    # v0.33.0-rc.16, run 35843562087).
+    if: ${{ always() && needs.publish.result == 'success' && needs['desktop-windows'].result == 'success' && needs['desktop-macos'].result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

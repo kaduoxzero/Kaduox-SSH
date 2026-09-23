@@ -82,6 +82,15 @@ class ReleaseAttestationPolicyTests(unittest.TestCase):
         for target in TARGETS:
             self.assertIn(target, self.publish_block)
 
+    def test_attach_desktop_uses_always_guard_and_explicit_need_results(self) -> None:
+        attach_block = self.text.split("\n  attach-desktop:\n", 1)[1]
+        self.assertIn(
+            "if: ${{ always() && needs.publish.result == 'success' "
+            "&& needs['desktop-windows'].result == 'success' "
+            "&& needs['desktop-macos'].result == 'success' }}",
+            attach_block,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
