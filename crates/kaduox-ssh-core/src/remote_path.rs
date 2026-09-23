@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 /// Validate one filename returned by an SFTP directory listing before it is
 /// combined with a caller-controlled synchronization root.
-pub(crate) fn validate_remote_child_name(name: &str) -> Result<()> {
+pub fn validate_remote_child_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("remote directory entry name cannot be empty");
     }
@@ -14,8 +14,13 @@ pub(crate) fn validate_remote_child_name(name: &str) -> Result<()> {
     if name.contains('/') || name.contains('\\') {
         bail!("remote directory entry must be a single path component: {name:?}");
     }
-    if name.contains('\0') {
-        bail!("remote directory entry cannot contain NUL bytes");
+    if name.chars().any(char::is_control) {
+        bail!("remote directory entry cannot contain control characters");
+    }
+    if name.contains(':') {
+        // Windows drive-relative paths like `C:escape` would resolve outside
+        // the download root when joined locally.
+        bail!("remote directory entry cannot contain ':': {name:?}");
     }
     Ok(())
 }
