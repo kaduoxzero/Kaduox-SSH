@@ -110,7 +110,7 @@ export function SystemMetricsView({ hosts, sessions, selectedAlias, onSelect, on
     if (selectedAlias === LOCAL_TARGET || (selectedAlias && hosts.some((host) => host.alias === selectedAlias))) {
       setTarget(selectedAlias ?? LOCAL_TARGET)
     }
-  }, [selectedAlias])
+  }, [selectedAlias, hosts])
 
   const changeTarget = (value: string) => {
     setTarget(value)

@@ -159,14 +159,11 @@ pub(crate) async fn upload_file(
             bail!("remote upload staging path is not a regular file: {work_path}");
         }
     }
-    let mut offset = if options.resume {
-        work_metadata
-            .as_ref()
-            .map(|metadata| metadata.len().min(total))
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let offset = resume_offset(
+        work_metadata.as_ref().map(|metadata| metadata.len()),
+        total,
+        options.resume,
+    );
 
     if offset == total && total != 0 {
         if options.atomic {
@@ -181,10 +178,6 @@ pub(crate) async fn upload_file(
             true,
         );
         return Ok(0);
-    }
-
-    if offset > total {
-        offset = 0;
     }
 
     let flags = if offset == 0 {
@@ -272,9 +265,9 @@ pub(crate) async fn download_file(
     let total = remote_metadata.len();
     let work_path = transfer_local_work_path(local_path, options.atomic);
     reject_existing_local_symlink(&work_path, "download staging path").await?;
-    let mut offset = if options.resume {
+    let offset = if options.resume {
         match tokio::fs::metadata(&work_path).await {
-            Ok(metadata) => metadata.len().min(total),
+            Ok(metadata) => resume_offset(Some(metadata.len()), total, true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => return Err(error.into()),
         }
@@ -296,9 +289,6 @@ pub(crate) async fn download_file(
             true,
         );
         return Ok(0);
-    }
-    if offset > total {
-        offset = 0;
     }
 
     let mut remote = sftp
@@ -736,6 +726,21 @@ fn join_remote(parent: &str, child: &str) -> String {
     }
 }
 
+/// Compute the resume offset from a staging file's length.
+///
+/// A staging file longer than the current total is a dirty leftover from an
+/// earlier, larger source; restart from 0. The caller's `offset == 0` path
+/// opens the staging file with TRUNCATE, which discards the residual tail.
+fn resume_offset(work_len: Option<u64>, total: u64, resume: bool) -> u64 {
+    if !resume {
+        return 0;
+    }
+    match work_len {
+        Some(len) if len <= total => len,
+        _ => 0,
+    }
+}
+
 fn transfer_remote_work_path(path: &str, atomic: bool) -> String {
     if atomic {
         format!("{path}.kaduox.part")
@@ -887,6 +892,20 @@ mod tests {
         assert_eq!(join_remote("/", "etc"), "/etc");
         assert_eq!(join_remote("/etc", "ssh"), "/etc/ssh");
         assert_eq!(join_remote("relative", "file"), "relative/file");
+    }
+
+    #[test]
+    fn resume_offset_restarts_dirty_or_missing_staging() {
+        // 不 resume：永远从头。
+        assert_eq!(resume_offset(Some(50), 100, false), 0);
+        // 无残片：从头。
+        assert_eq!(resume_offset(None, 100, true), 0);
+        // 正常断点：从残片长度续传。
+        assert_eq!(resume_offset(Some(40), 100, true), 40);
+        // 已完成：由调用方的 offset == total 提前返回分支处理。
+        assert_eq!(resume_offset(Some(100), 100, true), 100);
+        // 脏尾部（残片比当前源还大）：归零，靠 TRUNCATE 路径截断。
+        assert_eq!(resume_offset(Some(200), 100, true), 0);
     }
 
     #[test]

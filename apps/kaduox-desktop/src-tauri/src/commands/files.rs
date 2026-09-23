@@ -6,6 +6,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use kaduox_ssh_core::{
     ConnectionLease, RemoteDirEntry, RemoteFileType, RemotePlatform, RemoteUser, TransferOptions,
+    validate_remote_child_name,
 };
 use tauri::State;
 
@@ -180,8 +181,17 @@ async fn upload_file_inner(
         bail!("本地文件路径不能为空");
     }
     let local_path = Path::new(&request.local_path);
-    if !local_path.is_file() {
-        bail!("本地路径不是可上传的普通文件");
+    // 先按 symlink_metadata 判定：悬空符号链接的 is_file() 也返回 false，
+    // 需要单独报错文案而不是笼统的"不是普通文件"。
+    match tokio::fs::symlink_metadata(local_path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("本地路径是符号链接，出于安全考虑不支持上传；请选择链接指向的实际文件");
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            bail!("本地路径不是可上传的普通文件");
+        }
+        Ok(_) => {}
+        Err(_) => bail!("本地文件不存在或无法访问：{}", request.local_path),
     }
     let lease = state
         .session_lease(request.alias.trim())
@@ -287,20 +297,24 @@ async fn download_remote_directory_inner(
         .session_lease(request.alias.trim())
         .await
         .map_err(anyhow::Error::msg)?;
+    // Windows 远端可能用反斜杠路径，按 `/` 和 `\` 双分隔符切分；
+    // 结果必须是单一正常组件（拒绝盘符残留与穿越）。
     let root_name = request
         .remote_path
-        .trim_end_matches('/')
-        .rsplit('/')
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
         .next()
         .filter(|name| !name.is_empty())
         .context("远程目录路径无效")?;
+    validate_remote_child_name(root_name)
+        .with_context(|| format!("远程目录路径无效：{}", request.remote_path))?;
     let local_root = Path::new(&request.local_path).join(root_name);
     let started_at_unix = now_unix().unwrap_or_default();
     let started = Instant::now();
     let mut stats = DirectoryStats::default();
     let result = download_directory_recursive(
         &lease,
-        request.remote_path.trim_end_matches('/'),
+        request.remote_path.trim_end_matches(['/', '\\']),
         &local_root,
         &mut stats,
         0,
@@ -362,6 +376,13 @@ fn download_directory_recursive<'a>(
             }
             let RemoteDirEntry { name, path, metadata } = entry;
             if name == "." || name == ".." {
+                continue;
+            }
+            // 服务端返回的条目名可能含 `\`、`/`、控制字符等非法组件，
+            // 直接 join 会造成路径穿越。非法条目计入 skipped 而非中止整批。
+            if let Err(error) = validate_remote_child_name(&name) {
+                eprintln!("跳过非法远程目录条目 {name:?}: {error}");
+                stats.skipped += 1;
                 continue;
             }
             let local_target: PathBuf = local_dir.join(&name);

@@ -61,4 +61,13 @@ describe('format helpers', () => {
     expect(validateEntryName('a:b', true)).toBeTruthy()
     expect(validateEntryName('报告', true)).toBeNull()
   })
+
+  it('rejects traversal components as entry names', () => {
+    expect(validateEntryName('.', false)).toBeTruthy()
+    expect(validateEntryName('..', false)).toBeTruthy()
+    expect(validateEntryName('.', true)).toBeTruthy()
+    expect(validateEntryName('..', true)).toBeTruthy()
+    expect(validateEntryName('.hidden', false)).toBeNull()
+    expect(validateEntryName('a..b', true)).toBeNull()
+  })
 })

@@ -141,7 +141,8 @@ pub struct SshClient {
     jump_sessions: Vec<Arc<client::Handle<ClientHandler>>>,
     state: HandlerState,
     config: ConnectionConfig,
-    platform: tokio::sync::OnceCell<RemotePlatform>,
+    platform_manual: tokio::sync::OnceCell<RemotePlatform>,
+    platform_detected: tokio::sync::OnceCell<RemotePlatform>,
 }
 
 impl SshClient {
@@ -258,7 +259,8 @@ impl SshClient {
             jump_sessions,
             state,
             config,
-            platform: tokio::sync::OnceCell::new(),
+            platform_manual: tokio::sync::OnceCell::new(),
+            platform_detected: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -266,20 +268,25 @@ impl SshClient {
         &self.config.username
     }
 
-    /// Detected server operating-system family. The probe runs at most once
-    /// per connection and the result is cached for the connection lifetime.
+    /// Server operating-system family. An explicit value from the host
+    /// library (set via [`Self::set_remote_platform`]) always wins; otherwise
+    /// a probe runs at most once per connection and the result is cached for
+    /// the connection lifetime.
     pub async fn remote_platform(&self) -> RemotePlatform {
+        if let Some(platform) = self.platform_manual.get() {
+            return *platform;
+        }
         *self
-            .platform
+            .platform_detected
             .get_or_init(|| async { self.detect_remote_platform().await })
             .await
     }
 
     /// Pre-seed the platform from caller configuration (for example the host
-    /// library's explicit OS type), skipping the network probe. A value that
-    /// was already detected or set wins over later overrides.
+    /// library's explicit OS type). A manual value always wins over the
+    /// network probe, regardless of whether detection already ran.
     pub fn set_remote_platform(&self, platform: RemotePlatform) {
-        let _ = self.platform.set(platform);
+        let _ = self.platform_manual.set(platform);
     }
 
     /// Interactive shell command for Windows targets: prefer PowerShell 7
@@ -287,13 +294,23 @@ impl SshClient {
     /// because Windows PowerShell 5.1 produces no output over a ConPTY
     /// session. Non-interactive PowerShell exec is unaffected by that issue.
     async fn windows_shell_command(&self) -> &'static str {
+        const PWSH_PROBE_MARKER: &str = "KADUOX_PWSH_OK";
         let mut sink = BufferWriter::default();
         let mut sink_err = BufferWriter::default();
+        // `where` is a PowerShell alias (Where-Object) when the default shell
+        // is PowerShell, so an exit code alone cannot be trusted. Route the
+        // probe through cmd and require the explicit marker in stdout.
         match self
-            .exec_stream_raw("where pwsh", &mut sink, &mut sink_err)
+            .exec_stream_raw(
+                "cmd /c where pwsh >nul 2>&1 && echo KADUOX_PWSH_OK",
+                &mut sink,
+                &mut sink_err,
+            )
             .await
         {
-            Ok(Some(0)) => "pwsh.exe -NoLogo",
+            Ok(Some(0)) if String::from_utf8_lossy(&sink.0).contains(PWSH_PROBE_MARKER) => {
+                "pwsh.exe -NoLogo"
+            }
             _ => "cmd.exe",
         }
     }
@@ -402,6 +419,28 @@ impl SshClient {
         self.exec_stream_raw(&command, stdout, stderr).await
     }
 
+    /// Execute a command like [`Self::exec_stream`], additionally piping
+    /// `stdin` bytes to the remote process before signaling EOF. Used to feed
+    /// scripts (for example `powershell -Command -`) without command-line
+    /// length limits or quoting/encoding pitfalls.
+    pub async fn exec_stream_with_stdin<WOut, WErr>(
+        &self,
+        command: &str,
+        stdin: &[u8],
+        remote_user: &RemoteUser,
+        stdout: &mut WOut,
+        stderr: &mut WErr,
+    ) -> Result<Option<u32>>
+    where
+        WOut: AsyncWrite + Unpin,
+        WErr: AsyncWrite + Unpin,
+    {
+        let platform = self.remote_platform().await;
+        let command = command_for_user(command, remote_user, platform)?;
+        self.exec_stream_raw_inner(&command, Some(stdin), stdout, stderr)
+            .await
+    }
+
     /// Execute a pre-composed command without platform detection or
     /// user-context wrapping. Used by platform detection itself, which must
     /// not recurse back into `remote_platform`.
@@ -415,12 +454,30 @@ impl SshClient {
         WOut: AsyncWrite + Unpin,
         WErr: AsyncWrite + Unpin,
     {
-        let mut channel = timeout(
+        self.exec_stream_raw_inner(command, None, stdout, stderr)
+            .await
+    }
+
+    async fn exec_stream_raw_inner<WOut, WErr>(
+        &self,
+        command: &str,
+        stdin: Option<&[u8]>,
+        stdout: &mut WOut,
+        stderr: &mut WErr,
+    ) -> Result<Option<u32>>
+    where
+        WOut: AsyncWrite + Unpin,
+        WErr: AsyncWrite + Unpin,
+    {
+        let channel = timeout(
             self.config.channel_open_timeout,
             self.session.channel_open_session(),
         )
         .await
         .context("SSH exec session channel-open timed out")??;
+        // Drop-close guard: on timeout/cancellation the channel is explicitly
+        // closed instead of leaking an open server-side process.
+        let mut channel = ShellChannel(Some(channel));
         if self.config.agent_forwarding {
             timeout(
                 self.config.channel_request_timeout,
@@ -435,6 +492,11 @@ impl SshClient {
         )
         .await
         .context("SSH exec request timed out")??;
+
+        if let Some(stdin) = stdin {
+            channel.data(stdin).await?;
+            channel.eof().await?;
+        }
 
         let mut exit_status = None;
         while let Some(message) = channel.wait().await {
@@ -592,8 +654,9 @@ impl SshClient {
     ) -> Result<TransferSummary> {
         let sftp = Arc::new(self.open_sftp_for_transfer(&options).await?);
         let result = upload_tree(Arc::clone(&sftp), local_path, remote_path, options).await;
+        let close_result = sftp.close().await;
         let summary = result?;
-        drop(sftp);
+        close_result?;
         Ok(summary)
     }
 
@@ -624,8 +687,9 @@ impl SshClient {
     ) -> Result<TransferSummary> {
         let sftp = Arc::new(self.open_sftp_for_transfer(&options).await?);
         let result = download_tree(Arc::clone(&sftp), remote_path, local_path, options).await;
+        let close_result = sftp.close().await;
         let summary = result?;
-        drop(sftp);
+        close_result?;
         Ok(summary)
     }
 
@@ -1366,6 +1430,95 @@ mod tests {
                 .chars()
                 .rev()
                 .collect::<String>()
+        );
+    }
+
+    /// Live loopback smoke test for the stdin exec path used by desktop
+    /// metrics: `powershell -Command -` must read the script from stdin and
+    /// emit the marker on stdout. Same env vars as the PTY test above.
+    #[tokio::test]
+    #[ignore = "requires a reachable Windows OpenSSH server and key material"]
+    async fn windows_target_executes_powershell_script_over_stdin() {
+        let host = std::env::var("KADUOX_LIVE_WINDOWS_HOST").unwrap();
+        let user = std::env::var("KADUOX_LIVE_WINDOWS_USER").unwrap();
+        let key = std::env::var("KADUOX_LIVE_WINDOWS_KEY").unwrap();
+        let mut config = ConnectionConfig::new(&host, &user);
+        config.host_key_policy = crate::config::HostKeyPolicy::Insecure;
+        let client = SshClient::connect(
+            config,
+            Authentication::PrivateKey {
+                path: key.clone().into(),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut stdout = BufferWriter::default();
+        let mut stderr = BufferWriter::default();
+        let status = client
+            .exec_stream_with_stdin(
+                "powershell -NoProfile -ExecutionPolicy Bypass -Command -",
+                b"Write-Output '__KDX_STDIN_OK__'\n",
+                &RemoteUser::Current,
+                &mut stdout,
+                &mut stderr,
+            )
+            .await
+            .unwrap();
+        client.close().await.ok();
+        assert_eq!(
+            status,
+            Some(0),
+            "stderr: {:?}",
+            String::from_utf8_lossy(&stderr.0)
+        );
+        assert!(
+            String::from_utf8_lossy(&stdout.0).contains("__KDX_STDIN_OK__"),
+            "stdout: {:?}",
+            String::from_utf8_lossy(&stdout.0)
+        );
+
+        // Oversized script (~20KB) must pass without command-line length limits.
+        let mut config = ConnectionConfig::new(&host, &user);
+        config.host_key_policy = crate::config::HostKeyPolicy::Insecure;
+        let client = SshClient::connect(
+            config,
+            Authentication::PrivateKey {
+                path: key.into(),
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut big = String::with_capacity(21 * 1024);
+        big.push_str("# padding comment block to exceed any command-line cap\n");
+        while big.len() < 20 * 1024 {
+            big.push_str("# 0123456789 abcdefghijklmnopqrstuvwxyz padding line for size\n");
+        }
+        big.push_str("Write-Output '__KDX_STDIN_BIG_OK__'\n");
+        let mut stdout = BufferWriter::default();
+        let mut stderr = BufferWriter::default();
+        let status = client
+            .exec_stream_with_stdin(
+                "powershell -NoProfile -ExecutionPolicy Bypass -Command -",
+                big.as_bytes(),
+                &RemoteUser::Current,
+                &mut stdout,
+                &mut stderr,
+            )
+            .await
+            .unwrap();
+        client.close().await.ok();
+        assert_eq!(
+            status,
+            Some(0),
+            "stderr: {:?}",
+            String::from_utf8_lossy(&stderr.0)
+        );
+        assert!(
+            String::from_utf8_lossy(&stdout.0).contains("__KDX_STDIN_BIG_OK__"),
+            "big-script stdout: {:?}",
+            String::from_utf8_lossy(&stdout.0)
         );
     }
 

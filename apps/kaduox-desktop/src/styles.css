@@ -4185,6 +4185,15 @@ kbd,
     grid-template-columns: minmax(0, 1fr);
   }
 
+  /* 窄窗口下 AI 会话列表从侧栏改为顶部横排，避免聊天区被压缩到不可用。 */
+  .ai-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ai-conversations-panel {
+    max-height: 180px;
+  }
+
   .info-query-controls,
   .ai-heading-controls {
     align-items: stretch;

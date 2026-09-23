@@ -59,6 +59,7 @@ pub use manager::{
 };
 pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
 pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary};
+pub use remote_path::validate_remote_child_name;
 pub use symlink_policy::SymlinkPolicy;
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
 pub use target::ConnectionTarget;

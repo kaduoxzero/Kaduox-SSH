@@ -194,8 +194,8 @@ export function TerminalSession(props: Props) {
       className="xterm-mount"
       onContextMenu={(event) => {
         event.preventDefault()
-        const x = Math.min(event.clientX, window.innerWidth - 170)
-        const y = Math.min(event.clientY, window.innerHeight - 150)
+        const x = Math.max(0, Math.min(event.clientX, window.innerWidth - 170))
+        const y = Math.max(0, Math.min(event.clientY, window.innerHeight - 150))
         setMenu({ x, y })
       }}
     />
