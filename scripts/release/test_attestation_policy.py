@@ -91,6 +91,13 @@ class ReleaseAttestationPolicyTests(unittest.TestCase):
             attach_block,
         )
 
+    def test_desktop_macos_uploads_clean_staging_dir_not_frontend_dist(self) -> None:
+        macos_block = self.text.split("\n  desktop-macos:\n", 1)[1].split("\n  attest:\n", 1)[0]
+        # apps/kaduox-desktop/dist 同时是前端构建输出目录；上传它会污染
+        # attach-desktop 的 5 文件精确契约（rc.17 实测因此失败）。
+        self.assertIn("path: apps/kaduox-desktop/dist-release/*", macos_block)
+        self.assertNotIn("path: apps/kaduox-desktop/dist/*", macos_block)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -208,17 +208,19 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Kaduox SSH.app"
           test -d "$app"
-          mkdir -p dist
+          # dist/ 同时是前端构建输出目录，pkg 须放进干净的暂存目录，
+          # 否则 attach-desktop 的精确资产数校验会被前端文件顶爆。
+          mkdir -p dist-release
           pkgbuild \
             --component "$app" \
             --install-location /Applications \
             --identifier com.kaduox.ssh \
             --version "$version" \
-            "dist/Kaduox-SSH-${version}-macos-universal.pkg"
+            "dist-release/Kaduox-SSH-${version}-macos-universal.pkg"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-macos
-          path: apps/kaduox-desktop/dist/*
+          path: apps/kaduox-desktop/dist-release/*
           if-no-files-found: error
           retention-days: 7
 
