@@ -8,7 +8,7 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ![Terminal workspace with SFTP sidebar](docs/screenshots/terminal.png)
 
-[Download v0.33.0-rc.17](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.17) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.17.md)
+[Download v0.33.0-rc.18](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.18) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.18.md)
 
 ## Download and install
 
@@ -20,12 +20,12 @@ A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is built 
 
 | Download | Choose this when |
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
-| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
-| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
-| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
+| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
+| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. Upgrade older CLI/TUI/MCP programs together if they share the desktop host library.
 
