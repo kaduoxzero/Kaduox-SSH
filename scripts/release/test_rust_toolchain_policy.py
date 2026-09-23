@@ -18,7 +18,7 @@ WORKFLOW_FILES = {
     "desktop-macos": release_tool.ROOT / ".github" / "workflows" / "desktop-macos.yml",
 }
 EXPECTED_TOOLCHAINS = {
-    "release": Counter({PINNED_RUST: 1}),
+    "release": Counter({PINNED_RUST: 3}),
     "qualification": Counter(),
     "ci": Counter({PINNED_RUST: 2, MSRV_RUST: 1}),
     "quality": Counter({PINNED_RUST: 2}),

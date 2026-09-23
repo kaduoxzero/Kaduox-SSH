@@ -12,7 +12,7 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ## 下载与安装
 
-本次预发布仅提供 **Windows x64** 程序，不包含 Linux 桌面包。产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对 SHA-256 校验值。
+本次预发布提供 **Windows x64** 与 **macOS（Universal 2）** 桌面程序，不包含 Linux 桌面包。Windows 产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对 SHA-256 校验值。
 
 ### macOS（实验性）
 
@@ -31,12 +31,12 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ## 桌面版快速上手
 
-1. **保存主机**：填写显示名称、地址、SSH 端口和登录用户。名称支持中文、空格和括号。密码保存到 Windows 凭据管理器，也可使用私钥 / SSH Agent。
+1. **保存主机**：填写显示名称、地址、SSH 端口和登录用户。名称支持中文、空格和括号。密码保存到系统凭据库（Windows 凭据管理器 / macOS 钥匙串），也可使用私钥 / SSH Agent。
 2. **打开终端**：点击已保存主机即可使用保存的认证信息连接（新建主机可勾选保存后立即连接）。已连接时再次点击主机只切换会话；终端上方的会话标签栏列出全部连接，可切换、断开，**+** 为当前会话新增独立终端。会话栏的命令历史面板按主机持久化保存命令——包括该机器终端里真实输入过的命令（自动同步 bash/zsh 历史），支持复制、编辑后再执行。仅在凭据缺失或认证失败等情况下补充输入。
 3. **区分目标和中转**：选择“目标机器”“专用中转”或“两者兼用”。专用中转在侧栏单独展示，两个区域都可折叠、共用一个滚动区域。新建文件夹时可选择归属区域；文件夹可重命名，也可连同其中主机一起删除（二次确认）；在主机编辑页的下拉框中移动主机。
 4. **使用工作区**：SFTP 支持浏览、上传/下载、新建文件夹/文件、重命名、删除（空目录）、属性查看、名称搜索和在线编辑小文本文件；信息页展示 CPU、内存、磁盘、网络及可用 GPU 指标，打开立即采集，之后每 **10 秒**刷新当前对象。运行记录保存在本地，每页 **50 条**，可滚动翻页。关闭客户端不保留终端进程状态。
 
-Windows 使用 **Ctrl K** 搜索主机名、地址或标签，Enter 打开对应终端。顶部“帮助”可查看使用说明和 GitHub 项目入口。
+Windows 使用 **Ctrl K**（macOS 为 **⌘K**）搜索主机名、地址或标签，Enter 打开对应终端。顶部“帮助”可查看使用说明和 GitHub 项目入口。
 
 ## 界面预览
 
@@ -149,7 +149,9 @@ Kaduox AI 助手只调用你自己配置的 OpenAI 兼容服务商；只读命�
 - `kssh-daemon` 单用户本地 IPC 连接复用 daemon；`kssh` 优先通过它复用已认证传输，失败时回退直连；逐跳交互式 jump 认证通过私有 IPC 通道桥接
 - 可选的登录密码持久化，直接写入操作系统凭据存储（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service），通过 `kssh credentials set/check/delete` 管理；Kaduox-SSH 不会把密码写入自有文件
 - 通过 `kssh completions <shell>` 生成 bash/zsh/fish/powershell/elvish 补全脚本
-- Windows 桌面客户端：主机文件夹、独立终端、SFTP、跳板链、转发、运行历史、深浅主题、系统指标数据屏和外部兼容 API AI 助手（无离线模式）
+- Windows OpenSSH 服务器目标：自动系统探测、ConPTY 上的 cmd.exe 交互终端（目标装有 PowerShell 7 时自动改用 pwsh）、命令执行，以及对 sudo 提权切换的显式拒绝
+- Windows 目标主机同样支持 SFTP 文件管理（`C:/...` 盘符路径）与系统信息面板（PowerShell 指标采集）
+- Windows / macOS 桌面客户端：主机文件夹、独立终端、SFTP、跳板链、转发、运行历史、深浅主题、系统指标数据屏和外部兼容 API AI 助手（无离线模式）
 - 本地 stdio MCP Server：默认只读的主机、路由、基础信息和 SFTP 查询，可按环境变量显式开放命令执行与文件传输，详见 [`docs/MCP.md`](docs/MCP.md)
 - 已配置 Linux/macOS/Windows CI、MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁；实际验证范围和编译限制见下文
 - 确定性的四套发行包流程，包含每个二进制的 manifest 和最终 SHA-256 校验文件
@@ -164,7 +166,7 @@ SSH 登录用户在认证完成后无法通过 SSH 协议本身修改。Kaduox-S
 
 | 程序                 | 用途                                                            |
 | -------------------- | --------------------------------------------------------------- |
-| `kaduox-ssh-desktop` | Windows 图形客户端，以顶部链接中的桌面 EXE 和安装包发行。       |
+| `kaduox-ssh-desktop` | Windows / macOS 图形客户端，以顶部链接中的安装包发行。           |
 | `kssh`               | 单目标 shell、exec、传输、同步、转发、检查与诊断。              |
 | `kssh-tui`           | 多主机终端 Dashboard，使用显式连接 lease，支持有界命令广播。    |
 | `kssh-daemon`        | 单用户本地 IPC 服务，复用已认证的连接。                         |
@@ -328,11 +330,11 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签名 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.11 Windows 桌面预发布**基于 `develop` 手动本地构建，不代表跨平台 Actions 发布门禁通过。本次检查通过前端 43 项、主机库 18 项、桌面后端 48 项测试，以及 Rust 工作区全量测试和前端生产构建；三项依赖真实远端凭据的桌面集成测试在本次检查中显式忽略。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v0.33.0-rc.15 预发布**已通过 tag 触发的完整 Release 流水线：四平台 CLI 构建、目标级 SPDX SBOM、发布资产校验与发布后资格验证（含 Linux 真实 OpenSSH 路径）全部通过；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。因 tag 含预发布后缀，按策略跳过原生签名与 GitHub attestation。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.11.md)。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.15.md)。
 
-独立的稳定版 workflow 要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。本次未签名、仅 Windows 的预发布不宣称满足这些稳定版门禁，也不晋升 `main`。
+稳定版（无预发布后缀的 tag）仍要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。当前预发布未启用这些稳定版门禁。
 
 ## 分支模型
 
