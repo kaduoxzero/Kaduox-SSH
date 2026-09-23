@@ -8,7 +8,7 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ![终端工作区与 SFTP 侧栏](docs/screenshots/terminal.png)
 
-[下载 v0.33.0-rc.15](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.15) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.15.md)
+[下载 v0.33.0-rc.17](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.17) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.17.md)
 
 ## 下载与安装
 
@@ -20,12 +20,12 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 | 下载                                                                                                                                                        | 适用场景                                                                                             |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
-| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-windows-x64.exe)                          | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。          |
-| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
-| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/Kaduox-SSH-0.33.0-rc.15-windows-x64-tools.zip)          | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。                                         |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.15/SHA256SUMS.txt)                                                   | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。                           |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
+| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64.exe)                          | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。          |
+| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
+| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64-tools.zip)          | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。                                         |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
+| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/SHA256SUMS.txt)                                                   | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。                           |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
 
@@ -330,9 +330,9 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签名 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.15 预发布**已通过 tag 触发的完整 Release 流水线：四平台 CLI 构建、目标级 SPDX SBOM、发布资产校验与发布后资格验证（含 Linux 真实 OpenSSH 路径）全部通过；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。因 tag 含预发布后缀，按策略跳过原生签名与 GitHub attestation。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v0.33.0-rc.17 预发布**已通过 tag 触发的完整 Release 流水线：四平台 CLI 构建、目标级 SPDX SBOM、发布资产校验与发布后资格验证（含 Linux 真实 OpenSSH 路径）全部通过；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。因 tag 含预发布后缀，按策略跳过原生签名与 GitHub attestation。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.15.md)。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.17.md)。
 
 稳定版（无预发布后缀的 tag）仍要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。当前预发布未启用这些稳定版门禁。
 
