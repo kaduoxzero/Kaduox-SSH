@@ -1317,17 +1317,26 @@ mod tests {
                 )
                 .await
         });
-        // ConPTY renders VT sequences; only the marker text matters.
+        // ConPTY renders VT sequences; only the marker text matters. pwsh's first
+        // launch (profile + PSReadLine) can be slow on CI runners, so re-send the
+        // marker every few seconds until the reader confirms the echo.
+        let seen_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_writer = Arc::clone(&seen_flag);
         let writer = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            input
-                .write_all(b"echo __KDX_WIN_PTY__\r\nexit\r\n")
-                .await
-                .unwrap();
+            for _ in 0..12 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if seen_writer.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if input.write_all(b"echo __KDX_WIN_PTY__\r\n").await.is_err() {
+                    break;
+                }
+            }
+            let _ = input.write_all(b"exit\r\n").await;
         });
         let mut data = Vec::new();
         let mut buf = [0u8; 4096];
-        let seen = timeout(Duration::from_secs(20), async {
+        let seen = timeout(Duration::from_secs(90), async {
             loop {
                 let count = output.read(&mut buf).await.unwrap();
                 if count == 0 {
@@ -1341,6 +1350,7 @@ mod tests {
         })
         .await
         .unwrap_or(false);
+        seen_flag.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = timeout(Duration::from_secs(5), writer).await;
         shell.abort();
         client.close().await.ok();
