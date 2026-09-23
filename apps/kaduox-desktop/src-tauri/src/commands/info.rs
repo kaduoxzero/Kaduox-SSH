@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use kaduox_ssh_core::RemoteUser;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use kaduox_ssh_core::{RemotePlatform, RemoteUser};
 use sysinfo::{Disks, Networks, System};
 use tauri::State;
 use tokio::time::sleep;
@@ -16,6 +18,36 @@ use crate::util::now_unix;
 
 const BASIC_INFO_COMMAND: &str = "printf '__KADUOX_BASIC_INFO_V1__\\n'; printf 'hostname='; hostname 2>/dev/null; printf 'platform='; uname -srmo 2>/dev/null; printf 'username='; id -un 2>/dev/null; printf 'uptime='; uptime -p 2>/dev/null || uptime 2>/dev/null; printf 'addresses='; hostname -I 2>/dev/null";
 const SYSTEM_METRICS_COMMAND: &str = include_str!("metrics.sh");
+const SYSTEM_METRICS_PS1: &str = include_str!("metrics.ps1");
+/// Windows 基础信息：与 SYSTEM_METRICS_PS1 相同的键值协议，仅基础字段。
+const BASIC_INFO_PS1: &str = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$os = Get-CimInstance Win32_OperatingSystem
+$lines = @('__KADUOX_BASIC_INFO_V1__')
+$lines += "hostname=$env:COMPUTERNAME"
+$caption = ($os.Caption -replace 'Microsoft ', '').Trim()
+$lines += "platform=$caption $($os.Version) $env:PROCESSOR_ARCHITECTURE"
+$lines += "username=$env:USERNAME"
+$up = (Get-Date) - $os.LastBootUpTime
+$uptime = if ($up.Days -gt 0) { "up $($up.Days) days, $($up.Hours) hours" } elseif ($up.Hours -gt 0) { "up $($up.Hours) hours, $($up.Minutes) minutes" } else { "up $($up.Minutes) minutes" }
+$lines += "uptime=$uptime"
+$addrs = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown' } | Select-Object -ExpandProperty IPAddress) -join ' '
+$lines += "addresses=$addrs"
+$stdout = [System.IO.StreamWriter]::new([Console]::OpenStandardOutput(), [System.Text.UTF8Encoding]::new($false))
+$stdout.AutoFlush = $true
+$stdout.Write(($lines -join "`n") + "`n")
+$stdout.Dispose()
+"#;
+
+/// Windows 目标的 exec 默认落在 cmd.exe；用 -EncodedCommand 传 UTF-16LE
+/// base64 脚本，避开 cmd 引号/转义问题。
+fn powershell_encoded_command(script: &str) -> String {
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    format!(
+        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {}",
+        BASE64.encode(utf16)
+    )
+}
 
 #[derive(Default)]
 struct ParsedRemoteInfo {
@@ -106,8 +138,12 @@ async fn query_basic_info_inner(alias: String, state: &DesktopState) -> Result<B
         .await
         .map_err(anyhow::Error::msg)?;
 
+    let basic_command = match lease.remote_platform().await {
+        RemotePlatform::Windows => powershell_encoded_command(BASIC_INFO_PS1),
+        RemotePlatform::Unix => BASIC_INFO_COMMAND.to_owned(),
+    };
     let output = lease
-        .exec(BASIC_INFO_COMMAND, &RemoteUser::Current)
+        .exec(&basic_command, &RemoteUser::Current)
         .await
         .context("无法执行基础信息查询")?;
     let raw = String::from_utf8_lossy(&output.stdout);
@@ -589,10 +625,14 @@ async fn query_system_metrics_inner(
         .map_err(anyhow::Error::msg)?;
     let mut stdout = super::connection::CappedWriter::default();
     let mut stderr = super::connection::CappedWriter::default();
+    let metrics_command = match lease.remote_platform().await {
+        RemotePlatform::Windows => powershell_encoded_command(SYSTEM_METRICS_PS1),
+        RemotePlatform::Unix => SYSTEM_METRICS_COMMAND.to_owned(),
+    };
     let status = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         lease.exec_stream(
-            SYSTEM_METRICS_COMMAND,
+            &metrics_command,
             &RemoteUser::Current,
             &mut stdout,
             &mut stderr,
@@ -602,7 +642,7 @@ async fn query_system_metrics_inner(
     .context("指标采集超过 8 秒，下个周期将重试")??;
     anyhow::ensure!(
         status == Some(0),
-        "指标采集命令失败，目标需要 Linux /proc 支持"
+        "指标采集命令失败，目标需要 Linux /proc 或 Windows PowerShell 支持"
     );
     let (stdout, truncated) = stdout.into_parts();
     anyhow::ensure!(!truncated, "指标输出超过大小限制");
