@@ -35,7 +35,7 @@ import {
   uploadFile,
   writeRemoteFile,
 } from '../lib/desktop'
-import { errorMessage, fileName, formatBytes, formatDateTime, joinRemotePath, parentRemotePath, remoteHomePath } from '../lib/format'
+import { errorMessage, fileName, formatBytes, formatDateTime, joinRemotePath, normalizeWindowsPath, parentRemotePath, remoteHomePath, validateEntryName, windowsHomePath } from '../lib/format'
 import type { RemoteFile, Session } from '../lib/types'
 
 interface FileBrowserProps {
@@ -60,6 +60,7 @@ function fileTypeLabel(file: RemoteFile): string {
 export function FileBrowser({ session, expanded = false, onNotify }: FileBrowserProps) {
   const [path, setPath] = useState('/')
   const [pathInput, setPathInput] = useState('/')
+  const [homePath, setHomePath] = useState('/')
   const [files, setFiles] = useState<RemoteFile[]>([])
   const [propsDirSize, setPropsDirSize] = useState<{ path: string; size: number | 'error' } | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -100,9 +101,14 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
 
   useEffect(() => {
     let cancelled = false
-    const fallback = session ? remoteHomePath(session.user) : '/'
+    // Windows 主机的 home 回退用 C:/Users/<user>（/home/<user> 在 Windows 上必然不存在）；
+    // 真实 home 仍由后端探测覆盖。
+    const fallback = session
+      ? session.platform === 'windows' ? windowsHomePath(session.user) : remoteHomePath(session.user)
+      : '/'
     const applyHome = (home: string) => {
       if (cancelled) return
+      setHomePath(home)
       setPath(home)
       setPathInput(home)
       setSelectedPath(null)
@@ -114,11 +120,12 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
       setDeleteTarget(null)
     }
     applyHome(fallback)
-    // Windows 主机的真实 home（C:/Users/<user>）由后端探测；失败保持回退路径。
     if (session?.platform === 'windows') {
       void remoteHomeDirectory(session.alias)
         .then((home) => { if (home) applyHome(home) })
-        .catch(() => {})
+        .catch((error) => {
+          onNotify('info', '未能探测 Windows 主目录', `已使用回退路径 ${fallback}（${errorMessage(error)}）`)
+        })
     }
     return () => { cancelled = true }
   }, [session?.alias, session?.user, session?.platform])
@@ -179,7 +186,8 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
 
   const submitPath = (event: React.FormEvent) => {
     event.preventDefault()
-    navigate(pathInput.trim())
+    // Windows 会话把用户粘贴的反斜杠路径归一为 SFTP 友好的正斜杠形式。
+    navigate(session?.platform === 'windows' ? normalizeWindowsPath(pathInput) : pathInput.trim())
   }
 
   const filtered = filter.trim()
@@ -206,8 +214,9 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
     event.preventDefault()
     if (!session || !createDialog) return
     const name = createDialog.name.trim()
-    if (!name || name.includes('/')) {
-      onNotify('error', '名称无效', '名称不能为空，也不能包含 /')
+    const nameError = validateEntryName(name, session.platform === 'windows')
+    if (nameError) {
+      onNotify('error', '名称无效', nameError)
       return
     }
     const target = joinRemotePath(createDialog.basePath ?? path, name)
@@ -225,8 +234,9 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
     event.preventDefault()
     if (!session || !renameTarget) return
     const name = renameTarget.name.trim()
-    if (!name || name.includes('/')) {
-      onNotify('error', '名称无效', '名称不能为空，也不能包含 /')
+    const nameError = validateEntryName(name, session.platform === 'windows')
+    if (nameError) {
+      onNotify('error', '名称无效', nameError)
       return
     }
     if (name === renameTarget.entry.name) {
@@ -355,7 +365,7 @@ export function FileBrowser({ session, expanded = false, onNotify }: FileBrowser
         <button className="icon-button" type="button" onClick={() => navigate(parentRemotePath(path))} disabled={!session || path === '/'} aria-label="上级目录" title="上级目录">
           <ArrowLeft size={16} />
         </button>
-        <button className="icon-button" type="button" onClick={() => session && navigate(remoteHomePath(session.user))} disabled={!session} aria-label="主目录" title="主目录">
+        <button className="icon-button" type="button" onClick={() => session && navigate(homePath)} disabled={!session} aria-label="主目录" title="主目录">
           <Home size={16} />
         </button>
         <form className="path-input" onSubmit={submitPath}>
