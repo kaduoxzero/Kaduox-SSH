@@ -1,12 +1,13 @@
 {
   "name": "kaduox-ssh-desktop",
   "private": true,
-  "version": "0.33.0-rc.20",
+  "version": "0.33.0-rc.21",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
+    "test:e2e": "wdio run e2e/wdio.conf.js",
     "test:watch": "vitest",
     "tauri": "tauri"
   },
@@ -26,9 +27,17 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.1.1",
+    "@wdio/cli": "^9.32.0",
+    "@wdio/globals": "^9.31.3",
+    "@wdio/local-runner": "^9.32.0",
+    "@wdio/mocha-framework": "^9.32.0",
+    "@wdio/spec-reporter": "^9.32.0",
     "jsdom": "30.0.1",
+    "pixelmatch": "^7.2.0",
+    "pngjs": "^7.0.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
-    "vitest": "5.0.0"
+    "vitest": "5.0.0",
+    "webdriverio": "^9.32.0"
   }
 }
