@@ -8,7 +8,7 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ![Terminal workspace with SFTP sidebar](docs/screenshots/terminal.png)
 
-[Download v0.33.0-rc.19](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.19) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.19.md)
+[Download v0.33.0-rc.20](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.20) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.20.md)
 
 ## Download and install
 
@@ -20,9 +20,9 @@ A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is built 
 
 | Download | Choose this when |
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
-| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. If the MCP server shares the desktop host library, upgrade it together with the desktop client.
 
@@ -364,7 +364,7 @@ The **v0.33.0-rc.11 Windows desktop prerelease** uses manual local builds from `
 
 `cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.11.md) for the scope and limitations.
 
-Since v0.33.0-rc.19 the release is desktop-only: the tag-triggered workflow builds and verifies exactly three assets (Windows NSIS installer, macOS Universal pkg, MCP server) and fails closed on any other count. CLI suites, SPDX SBOMs, checksum manifests, attestations, and post-publication qualification were retired. All packages are unsigned; Windows and macOS may show unknown-publisher prompts.
+Since v0.33.0-rc.20 the release is desktop-only: the tag-triggered workflow builds and verifies exactly three assets (Windows NSIS installer, macOS Universal pkg, MCP server) and fails closed on any other count. CLI suites, SPDX SBOMs, checksum manifests, attestations, and post-publication qualification were retired. All packages are unsigned; Windows and macOS may show unknown-publisher prompts.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
