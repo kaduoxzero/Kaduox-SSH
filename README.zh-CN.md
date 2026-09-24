@@ -8,7 +8,7 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ![终端工作区与 SFTP 侧栏](docs/screenshots/terminal.png)
 
-[下载 v0.33.0-rc.19](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.19) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.19.md)
+[下载 v0.33.0-rc.20](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.20) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.20.md)
 
 ## 下载与安装
 
@@ -20,9 +20,9 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 | 下载                                                                                                                                                        | 适用场景                                                                                             |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
-| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
+| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 MCP 程序与桌面端共用主机库，请与桌面客户端一起升级。
 
@@ -325,7 +325,7 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签名 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.19 预发布**起发行收敛为纯桌面端：Release 流水线只构建并校验 3 个资产（Windows 安装器、macOS Universal pkg、MCP 接口程序），数量不符即发布失败；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。CLI 套件、SPDX SBOM、校验和清单、attestation 与发布后资格验证已随 CLI 发行一并退役。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v0.33.0-rc.20 预发布**起发行收敛为纯桌面端：Release 流水线只构建并校验 3 个资产（Windows 安装器、macOS Universal pkg、MCP 接口程序），数量不符即发布失败；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。CLI 套件、SPDX SBOM、校验和清单、attestation 与发布后资格验证已随 CLI 发行一并退役。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
 本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.17.md)。
 
