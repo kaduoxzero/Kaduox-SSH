@@ -6,7 +6,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{
-    Authentication, ConnectionConfig, HostKeyVerification, RemoteUser, ServerHostKeyInfo,
+    Authentication, ConnectionConfig, HostKeyVerification, RemotePlatform, RemoteUser,
+    ServerHostKeyInfo,
 };
 use kaduox_ssh_hosts::{StoredAuthMethod, resolve_host};
 use tauri::State;
@@ -367,12 +368,22 @@ async fn record_command(state: &DesktopState, alias: &str, command: &str, source
     .await;
 }
 
-fn preview(stdout: &[u8], stderr: &[u8]) -> String {
+/// 按目标平台解码远端命令输出：Windows 远端（cmd/PowerShell 默认代码页）输出为 GBK，
+/// 直接 UTF-8 lossy 解码会产生乱码；Unix 远端为 UTF-8。
+/// 平台在连接时已探测并缓存，此处读取不产生额外往返。
+pub(crate) fn decode_remote_output(bytes: &[u8], platform: RemotePlatform) -> String {
+    match platform {
+        RemotePlatform::Windows => {
+            let (text, _, _) = encoding_rs::GBK.decode(bytes);
+            text.into_owned()
+        }
+        RemotePlatform::Unix => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn preview(stdout: &str, stderr: &str) -> String {
     let combined = if stdout.is_empty() { stderr } else { stdout };
-    String::from_utf8_lossy(combined)
-        .chars()
-        .take(HISTORY_PREVIEW_CHARS)
-        .collect()
+    combined.chars().take(HISTORY_PREVIEW_CHARS).collect()
 }
 
 #[tauri::command]
@@ -402,6 +413,9 @@ pub(crate) async fn execute_recorded(
     let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let (stdout, stdout_truncated) = stdout.into_parts();
     let (stderr, stderr_truncated) = stderr.into_parts();
+    let platform = lease.remote_platform().await;
+    let stdout = decode_remote_output(&stdout, platform);
+    let stderr = decode_remote_output(&stderr, platform);
     let history_id = state.next_id("run");
     record_command(state, alias, command, source).await;
     let username = state
@@ -432,8 +446,8 @@ pub(crate) async fn execute_recorded(
             .err();
             Ok(ExecResponse {
                 history_warning,
-                stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+                stdout,
+                stderr,
                 exit_status,
                 output_truncated: stdout_truncated || stderr_truncated,
                 duration_ms,
@@ -607,6 +621,19 @@ mod tests {
             Some(" pass word ")
         );
         assert_eq!(nonempty_secret(Some(String::new())), None);
+    }
+
+    #[test]
+    fn windows_output_decodes_as_gbk() {
+        // “系统找不到指定的路径。” 的 GBK（CP936）字节。
+        let gbk: &[u8] = b"\xcf\xb5\xcd\xb3\xd5\xd2\xb2\xbb\xb5\xbd\xd6\xb8\xb6\xa8\xb5\xc4\xc2\xb7\xbe\xb6\xa1\xa3";
+        let decoded = decode_remote_output(gbk, RemotePlatform::Windows);
+        assert!(decoded.contains("系统找不到指定的路径"), "got: {decoded}");
+        // Unix 路径保持 UTF-8 lossy 行为。
+        assert_eq!(
+            decode_remote_output("内存正常".as_bytes(), RemotePlatform::Unix),
+            "内存正常"
+        );
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
 # Native release signing
 
+> **已退役（自 v0.33.0-rc.19 起）**：发行已收敛为纯桌面端（Windows 安装器、macOS pkg、MCP server），CLI 构建矩阵及其原生签名/公证流水线随之移除。本文仅保留作历史设计参考，所描述的 workflow 步骤与脚本已不存在于仓库中。
+
 Kaduox-SSH v0.25 adds native platform signing to the production tag-release path without storing private signing material in the repository.
 
 ## Release policy

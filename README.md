@@ -8,11 +8,11 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ![Terminal workspace with SFTP sidebar](docs/screenshots/terminal.png)
 
-[Download v0.33.0-rc.18](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.18) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.18.md)
+[Download v0.33.0-rc.19](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.19) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.19.md)
 
 ## Download and install
 
-This prerelease provides **Windows x64** binaries. Linux desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the supplied SHA-256 checksums.
+This prerelease provides **Windows x64** binaries. Linux desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the SHA-256 digest shown on each asset.
 
 ### macOS (experimental)
 
@@ -20,14 +20,11 @@ A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is built 
 
 | Download | Choose this when |
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [Standalone desktop EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-windows-x64.exe) | Run without installing the app; WebView2 Runtime must already be installed. Settings still use the current user's application-data directories. |
-| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
-| [CLI / TUI / Agent tools ZIP](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/Kaduox-SSH-0.33.0-rc.18-windows-x64-tools.zip) | Use the four command-line programs: kssh, kssh-tui, kssh-fleet, and kssh-inventory. |
-| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.18/SHA256SUMS.txt) | Verify downloaded files, for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
 
-No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. Upgrade older CLI/TUI/MCP programs together if they share the desktop host library.
+No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. If the MCP server shares the desktop host library, upgrade it together with the desktop client.
 
 ## Desktop quick start
 
@@ -164,9 +161,7 @@ The shared Rust core prioritizes bounded memory, explicit trust checks, reusable
 - configured Linux/macOS/Windows CI, MSRV, Clippy, audit, release-policy, and real-OpenSSH workflow gates; see the validation and build limitations below
 - committed `Cargo.lock` with `--locked` builds
 - on-demand real-OpenSSH performance benchmark harness
-- deterministic four-suite release packaging with per-binary manifests and SHA-256 archive checksums
-- stable-release workflow policies for Windows Authenticode signing and macOS Developer ID signing/notarization (not applied to this manual desktop preview)
-- four target-specific SPDX 2.3 SBOMs with provenance and archive-to-SBOM attestation in the stable-release workflow
+- desktop-only distribution: the tag-triggered release workflow publishes exactly three assets (Windows installer, macOS Universal pkg, MCP server) and fails closed on any other count
 
 The authenticated SSH login user cannot be changed after SSH authentication. Kaduox-SSH opens additional channels on the existing transport and uses `sudo -iu <user>` for interactive privilege switching or `sudo -n -u <user> -- sh -lc ...` for commands.
 
@@ -369,7 +364,7 @@ The **v0.33.0-rc.11 Windows desktop prerelease** uses manual local builds from `
 
 `cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.11.md) for the scope and limitations.
 
-The separate stable-release workflow requires native Windows/macOS signing, four target-specific SPDX files, and the four-target GitHub attestation matrix. Its qualification checks primary-asset checksums, target-SBOM identity, signatures, binary versions, and a real Linux OpenSSH path. This unsigned Windows-only preview does not claim those qualifications and does not promote `main`.
+Since v0.33.0-rc.19 the release is desktop-only: the tag-triggered workflow builds and verifies exactly three assets (Windows NSIS installer, macOS Universal pkg, MCP server) and fails closed on any other count. CLI suites, SPDX SBOMs, checksum manifests, attestations, and post-publication qualification were retired. All packages are unsigned; Windows and macOS may show unknown-publisher prompts.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 

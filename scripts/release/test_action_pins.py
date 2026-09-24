@@ -9,7 +9,6 @@ from scripts.release import release_tool
 
 WORKFLOW_FILES = {
     "release": release_tool.ROOT / ".github" / "workflows" / "release.yml",
-    "qualification": release_tool.ROOT / ".github" / "workflows" / "release-qualification.yml",
     "ci": release_tool.ROOT / ".github" / "workflows" / "ci.yml",
     "quality": release_tool.ROOT / ".github" / "workflows" / "quality.yml",
     "openssh": release_tool.ROOT / ".github" / "workflows" / "integration-openssh.yml",
@@ -28,7 +27,6 @@ RUST_CACHE_V2 = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
 ACTIONS_CACHE_V5 = "9255dc7a253b0ccc959486e2bca901246202afeb"
 UPLOAD_ARTIFACT_V4 = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 DOWNLOAD_ARTIFACT_V4 = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
-ATTEST_V4 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 
 
 def spec(action: str, commit: str) -> str:
@@ -38,19 +36,12 @@ def spec(action: str, commit: str) -> str:
 EXPECTED_WORKFLOW_SPECS: dict[str, Counter[str]] = {
     "release": Counter(
         {
-            spec("actions/checkout", CHECKOUT_V7): 5,
-            spec("actions/setup-python", SETUP_PYTHON_V7): 2,
-            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 3,
-            spec("Swatinem/rust-cache", RUST_CACHE_V2): 3,
-            spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 3,
-            spec("actions/download-artifact", DOWNLOAD_ARTIFACT_V4): 3,
-            spec("actions/attest", ATTEST_V4): 2,
-        }
-    ),
-    "qualification": Counter(
-        {
-            spec("actions/checkout", CHECKOUT_V7): 1,
+            spec("actions/checkout", CHECKOUT_V7): 4,
             spec("actions/setup-python", SETUP_PYTHON_V7): 1,
+            spec("dtolnay/rust-toolchain", RUST_TOOLCHAIN_ACTION): 2,
+            spec("Swatinem/rust-cache", RUST_CACHE_V2): 2,
+            spec("actions/upload-artifact", UPLOAD_ARTIFACT_V4): 2,
+            spec("actions/download-artifact", DOWNLOAD_ARTIFACT_V4): 1,
         }
     ),
     "ci": Counter(

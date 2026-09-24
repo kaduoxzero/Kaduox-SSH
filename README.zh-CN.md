@@ -8,11 +8,11 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ![终端工作区与 SFTP 侧栏](docs/screenshots/terminal.png)
 
-[下载 v0.33.0-rc.17](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.17) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.17.md)
+[下载 v0.33.0-rc.19](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.19) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.19.md)
 
 ## 下载与安装
 
-本次预发布提供 **Windows x64** 与 **macOS（Universal 2）** 桌面程序，不包含 Linux 桌面包。Windows 产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对 SHA-256 校验值。
+本次预发布提供 **Windows x64** 与 **macOS（Universal 2）** 桌面程序，不包含 Linux 桌面包。Windows 产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对资产页面上每个文件自动显示的 SHA-256 摘要。
 
 ### macOS（实验性）
 
@@ -20,14 +20,11 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 | 下载                                                                                                                                                        | 适用场景                                                                                             |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
-| [免安装桌面 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64.exe)                          | 电脑已安装 WebView2 Runtime 时直接运行；配置仍保存在当前用户的应用数据目录，不随 EXE 移动。          |
-| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
-| [CLI / TUI / Agent 工具包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/Kaduox-SSH-0.33.0-rc.17-windows-x64-tools.zip)          | 包含命令行 kssh、TUI kssh-tui、fleet、inventory 共四个程序。                                         |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
-| [SHA256SUMS.txt](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.17/SHA256SUMS.txt)                                                   | 核对下载文件，可使用 PowerShell：`Get-FileHash -Algorithm SHA256 <文件>`。                           |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
+| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/Kaduox-SSH-0.33.0-rc.19-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.19/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
 
-发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 CLI/TUI/MCP 与桌面端共用主机库，请一起升级。
+发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 MCP 程序与桌面端共用主机库，请与桌面客户端一起升级。
 
 ## 桌面版快速上手
 
@@ -154,9 +151,7 @@ Kaduox AI 助手只调用你自己配置的 OpenAI 兼容服务商；只读命�
 - Windows / macOS 桌面客户端：主机文件夹、独立终端、SFTP、跳板链、转发、运行历史、深浅主题、系统指标数据屏和外部兼容 API AI 助手（无离线模式）
 - 本地 stdio MCP Server：默认只读的主机、路由、基础信息和 SFTP 查询，可按环境变量显式开放命令执行与文件传输，详见 [`docs/MCP.md`](docs/MCP.md)
 - 已配置 Linux/macOS/Windows CI、MSRV、Clippy、依赖审计、release-policy 和真实 OpenSSH workflow 门禁；实际验证范围和编译限制见下文
-- 确定性的四套发行包流程，包含每个二进制的 manifest 和最终 SHA-256 校验文件
-- 稳定版 workflow 包含 Windows Authenticode、macOS Developer ID 签名/公证策略（本次手动桌面预发布不包含签名）
-- 稳定版 workflow 包含四目标 SPDX 2.3 SBOM、provenance 与 archive-to-SBOM attestation 策略
+- 纯桌面端发行：tag 触发的 Release 流水线只发布 Windows 安装器、macOS Universal pkg 与 MCP 接口程序共 3 个资产，数量不符即发布失败
 
 SSH 登录用户在认证完成后无法通过 SSH 协议本身修改。Kaduox-SSH 会在现有传输上继续打开额外 channel；交互式权限切换使用 `sudo -iu <user>`，远端命令切换用户使用 `sudo -n -u <user> -- sh -lc ...`。
 
@@ -330,11 +325,11 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签名 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.17 预发布**已通过 tag 触发的完整 Release 流水线：四平台 CLI 构建、目标级 SPDX SBOM、发布资产校验与发布后资格验证（含 Linux 真实 OpenSSH 路径）全部通过；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。因 tag 含预发布后缀，按策略跳过原生签名与 GitHub attestation。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v0.33.0-rc.19 预发布**起发行收敛为纯桌面端：Release 流水线只构建并校验 3 个资产（Windows 安装器、macOS Universal pkg、MCP 接口程序），数量不符即发布失败；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。CLI 套件、SPDX SBOM、校验和清单、attestation 与发布后资格验证已随 CLI 发行一并退役。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
 本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.17.md)。
 
-稳定版（无预发布后缀的 tag）仍要求 Windows/macOS 原生签名、四目标 SPDX 文件和 attestation matrix；发行资格检查涵盖主要产物校验值、SBOM 身份、签名、二进制版本及真实 Linux OpenSSH 路径。当前预发布未启用这些稳定版门禁。
+稳定版与预发布使用同一条桌面端流水线；所有产物均未做平台签名，Windows/macOS 可能提示发行者未知，首次运行按提示放行。
 
 ## 分支模型
 

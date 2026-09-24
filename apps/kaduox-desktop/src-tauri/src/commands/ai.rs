@@ -21,7 +21,7 @@ const MAX_CONTEXT_CHARS: usize = 12_000;
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TOOL_CALLS: usize = 4;
 const AI_TIMEOUT: Duration = Duration::from_secs(90);
-const SYSTEM_PROMPT: &str = "你是 Kaduox SSH 内置运维助手。只回答与 SSH、Linux、网络、部署和当前连接诊断有关的问题。不要臆造命令输出；如果信息不足，明确说明。当绑定了远程主机且用户授权时，你可以通过 execute_command 工具请求在该主机上执行命令：每次调用必须给出简短理由（reason），优先使用只读命令排查，不要主动提议删除或危险操作。命令是否真的执行由用户与客户端的权限策略决定；绝不要声称某条命令已执行，除非工具结果里包含其输出。不要要求用户泄露密码、私钥或 API 密钥。回答使用简洁的中文，必要时保留可复制的代码块。";
+const SYSTEM_PROMPT: &str = "你是 Kaduox SSH 内置运维助手。只回答与 SSH、系统运维、网络、部署和当前连接诊断有关的问题。不要臆造命令输出；如果信息不足，明确说明。当绑定了远程主机且用户授权时，你可以通过 execute_command 工具请求在该主机上执行命令：每次调用必须给出简短理由（reason），优先使用只读命令排查，不要主动提议删除或危险操作。必须根据目标主机的操作系统选择命令（Windows 用 cmd/PowerShell 原生命令，Linux 用 shell 命令），不要对未知平台臆测命令。命令中不要使用 $(...)、反引号、<(...) 或 >(...) 等命令替换/子 shell 语法，客户端安全策略会拒绝执行。命令是否真的执行由用户与客户端的权限策略决定；绝不要声称某条命令已执行，除非工具结果里包含其输出。不要要求用户泄露密码、私钥或 API 密钥。回答使用简洁的中文，必要时保留可复制的代码块。";
 
 #[derive(Debug, Deserialize)]
 struct CompletionEnvelope {
@@ -224,13 +224,20 @@ pub async fn ai_chat(
     state: State<'_, DesktopState>,
 ) -> Result<AiChatResponse, String> {
     // 只有目标主机确实已连接时才向 AI 暴露执行工具，避免 AI 幻觉出不可用的调用。
-    let tools_available = match request.target_alias.as_deref().map(str::trim) {
+    let (tools_available, platform) = match request.target_alias.as_deref().map(str::trim) {
         Some(alias) if !alias.is_empty() => {
-            state.sessions.read().await.contains_key(alias)
+            let sessions = state.sessions.read().await;
+            match sessions.get(alias) {
+                Some(entry) => (
+                    true,
+                    command_classify::TargetPlatform::parse(&entry.details.platform),
+                ),
+                None => (false, command_classify::TargetPlatform::Unix),
+            }
         }
-        _ => false,
+        _ => (false, command_classify::TargetPlatform::Unix),
     };
-    ai_chat_inner(request, tools_available)
+    ai_chat_inner(request, tools_available, platform)
         .await
         .map_err(|e| format!("{e:#}"))
 }
@@ -253,7 +260,11 @@ fn execute_command_tool_definition() -> serde_json::Value {
     })
 }
 
-fn parse_tool_calls(message: &CompletionMessage, target_alias: &str) -> Result<Vec<AiToolCall>> {
+fn parse_tool_calls(
+    message: &CompletionMessage,
+    target_alias: &str,
+    platform: command_classify::TargetPlatform,
+) -> Result<Vec<AiToolCall>> {
     let mut calls = Vec::new();
     for (index, call) in message
         .tool_calls
@@ -288,7 +299,7 @@ fn parse_tool_calls(message: &CompletionMessage, target_alias: &str) -> Result<V
             .take(500)
             .collect();
         crate::util::validate_command(&command)?;
-        let risk_level = command_classify::classify_command(&command);
+        let risk_level = command_classify::classify_command_for(&command, platform);
         calls.push(AiToolCall {
             id: call
                 .id
@@ -310,10 +321,11 @@ fn build_tool_call(
     command: &str,
     reason: &str,
     target_alias: &str,
+    platform: command_classify::TargetPlatform,
 ) -> Result<AiToolCall> {
     let command = command.trim().to_owned();
     crate::util::validate_command(&command)?;
-    let risk_level = command_classify::classify_command(&command);
+    let risk_level = command_classify::classify_command_for(&command, platform);
     Ok(AiToolCall {
         id,
         name: "execute_command".to_owned(),
@@ -333,7 +345,11 @@ fn build_tool_call(
 /// <|DSML|parameter name="reason" string="true">查看容器</|DSML|parameter>
 /// </|DSML|invoke>
 /// </|DSML|tool_calls>
-fn extract_dsml_tool_calls(content: &str, target_alias: &str) -> (String, Vec<AiToolCall>) {
+fn extract_dsml_tool_calls(
+    content: &str,
+    target_alias: &str,
+    platform: command_classify::TargetPlatform,
+) -> (String, Vec<AiToolCall>) {
     let mut calls = Vec::new();
     let mut cleaned = String::with_capacity(content.len());
     let mut rest = content;
@@ -362,6 +378,7 @@ fn extract_dsml_tool_calls(content: &str, target_alias: &str) -> (String, Vec<Ai
                 &command,
                 &reason,
                 target_alias,
+                platform,
             ) {
                 calls.push(call);
                 if calls.len() >= MAX_TOOL_CALLS {
@@ -386,7 +403,11 @@ fn dsml_parameter(block: &str, name: &str) -> Option<String> {
 
 /// 第三级回退：识别正文中的 `command: xxx`（可带 `reason:` 前置行，可出现在分隔段内），
 /// 返回（剥除后的正文, 调用列表）。仅在绑定主机时启用。
-fn extract_textual_tool_calls(content: &str, target_alias: &str) -> (String, Vec<AiToolCall>) {
+fn extract_textual_tool_calls(
+    content: &str,
+    target_alias: &str,
+    platform: command_classify::TargetPlatform,
+) -> (String, Vec<AiToolCall>) {
     let mut calls = Vec::new();
     let mut kept_lines: Vec<&str> = Vec::new();
     let mut pending_reason: Option<String> = None;
@@ -416,6 +437,7 @@ fn extract_textual_tool_calls(content: &str, target_alias: &str) -> (String, Vec
                 command,
                 &reason,
                 target_alias,
+                platform,
             ) {
                 calls.push(call);
                 continue;
@@ -439,7 +461,11 @@ fn extract_textual_tool_calls(content: &str, target_alias: &str) -> (String, Vec
     (cleaned, calls)
 }
 
-async fn ai_chat_inner(request: AiChatRequest, tools_available: bool) -> Result<AiChatResponse> {
+async fn ai_chat_inner(
+    request: AiChatRequest,
+    tools_available: bool,
+    platform: command_classify::TargetPlatform,
+) -> Result<AiChatResponse> {
     if request.mode != "compatible" {
         bail!("仅支持第三方 AI 服务，不提供离线模式");
     }
@@ -473,9 +499,13 @@ async fn ai_chat_inner(request: AiChatRequest, tools_available: bool) -> Result<
         .unwrap_or_default()
         .to_owned();
     if tools_available && !target_alias.is_empty() {
+        let platform_hint = match platform {
+            command_classify::TargetPlatform::Windows => "目标平台：Windows（cmd/PowerShell 环境）。请使用 Windows 原生命令（如 ver、systeminfo、tasklist、netstat、ipconfig、dir、type），不要使用 Linux 命令（ss、free、df、cat /proc 等都不存在）。",
+            command_classify::TargetPlatform::Unix => "目标平台：Linux/Unix。请使用 shell 命令排查。",
+        };
         messages.push(json!({
             "role": "system",
-            "content": format!("当前绑定主机别名：{target_alias}。需要执行命令时必须调用 execute_command 工具，绝不要在正文里输出任何工具调用标记或伪调用文本。")
+            "content": format!("当前绑定主机别名：{target_alias}。{platform_hint}需要执行命令时必须调用 execute_command 工具，绝不要在正文里输出任何工具调用标记或伪调用文本。")
         }));
     }
     if let Some(context) = request.context.as_deref().filter(|v| !v.is_empty()) {
@@ -531,7 +561,7 @@ async fn ai_chat_inner(request: AiChatRequest, tools_available: bool) -> Result<
         .first()
         .context("AI 服务没有返回可用回答")?;
     let mut tool_calls = match choice.message.as_ref() {
-        Some(message) if with_tools => parse_tool_calls(message, &target_alias)?,
+        Some(message) if with_tools => parse_tool_calls(message, &target_alias, platform)?,
         _ => Vec::new(),
     };
     let mut content = choice
@@ -542,12 +572,12 @@ async fn ai_chat_inner(request: AiChatRequest, tools_available: bool) -> Result<
         .unwrap_or_default();
     // 回退解析：模型把调用意图写进正文（DSML 标记或 command: 文本）时同样生成标准工具调用。
     if with_tools && tool_calls.is_empty() && !content.is_empty() {
-        let (after_dsml, dsml_calls) = extract_dsml_tool_calls(&content, &target_alias);
+        let (after_dsml, dsml_calls) = extract_dsml_tool_calls(&content, &target_alias, platform);
         if !dsml_calls.is_empty() {
             content = after_dsml;
             tool_calls = dsml_calls;
         } else {
-            let (after_text, text_calls) = extract_textual_tool_calls(&content, &target_alias);
+            let (after_text, text_calls) = extract_textual_tool_calls(&content, &target_alias, platform);
             if !text_calls.is_empty() {
                 content = after_text;
                 tool_calls = text_calls;
@@ -605,9 +635,13 @@ fn ai_db_path() -> Result<std::path::PathBuf, String> {
 
 /// 命令风险分类（前端用于渲染批准卡片；后端执行时仍会二次分类校验）。
 #[tauri::command]
-pub fn ai_classify_command(command: String) -> Result<AiClassifyResponse, String> {
+pub fn ai_classify_command(
+    command: String,
+    platform: Option<String>,
+) -> Result<AiClassifyResponse, String> {
     crate::util::validate_command(&command).map_err(|error| error.to_string())?;
-    let level = command_classify::classify_command(&command);
+    let platform = command_classify::TargetPlatform::parse(platform.as_deref().unwrap_or("unix"));
+    let level = command_classify::classify_command_for(&command, platform);
     Ok(AiClassifyResponse {
         risk_level: level.as_str().to_owned(),
         needs_approval_approval_mode: command_classify::needs_approval(
@@ -633,7 +667,13 @@ pub async fn ai_execute_command(
             bail!("目标主机别名不能为空");
         }
         let mode = PermissionMode::from_str(request.permission_mode.as_deref().unwrap_or("approval"));
-        let level = command_classify::classify_command(command);
+        // 按目标平台分类：Windows 目标启用 Windows 命令白名单（tasklist/netstat 等），
+        // 避免 Windows 只读命令被兜底误判为"修改"。
+        let platform = match state.sessions.read().await.get(alias) {
+            Some(entry) => command_classify::TargetPlatform::parse(&entry.details.platform),
+            None => command_classify::TargetPlatform::Unix,
+        };
+        let level = command_classify::classify_command_for(command, platform);
         if level == RiskLevel::Dangerous {
             bail!("该命令被判定为危险操作，已拒绝执行；如需操作请在终端中手动执行");
         }
@@ -657,10 +697,7 @@ pub async fn ai_execute_command(
                     &alias,
                     &command,
                     level.as_str(),
-                    match mode {
-                        PermissionMode::Approval => "approval",
-                        PermissionMode::Full => "full",
-                    },
+                    mode.as_str(),
                     needs_approval,
                     exit_status,
                     duration_ms,
@@ -869,7 +906,7 @@ mod tests {
                 tool_call_id: None,
             }],
         };
-        let response = ai_chat_inner(request.clone(), false).await.unwrap();
+        let response = ai_chat_inner(request.clone(), false, command_classify::TargetPlatform::Unix).await.unwrap();
         assert_eq!(response.content, "fixture-response");
         assert!(response.tool_calls.is_empty());
         assert!(
@@ -881,7 +918,7 @@ mod tests {
         let mut offline = request;
         offline.mode = "local".into();
         assert!(
-            ai_chat_inner(offline, false)
+            ai_chat_inner(offline, false, command_classify::TargetPlatform::Unix)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -903,7 +940,7 @@ mod tests {
     #[test]
     fn dsml_markup_becomes_tool_calls_and_is_stripped() {
         let content = "好的，我先确认容器状态。\n\n<|DSML|tool_calls>\n<|DSML|invoke name=\"execute_command\">\n<|DSML|parameter name=\"command\" string=\"true\">docker ps --filter name=newapi</|DSML|parameter>\n<|DSML|parameter name=\"reason\" string=\"true\">确认 newapi 容器运行状态</|DSML|parameter>\n</|DSML|invoke>\n</|DSML|tool_calls>";
-        let (cleaned, calls) = extract_dsml_tool_calls(content, "linux");
+        let (cleaned, calls) = extract_dsml_tool_calls(content, "linux", command_classify::TargetPlatform::Unix);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].command, "docker ps --filter name=newapi");
         assert_eq!(calls[0].reason, "确认 newapi 容器运行状态");
@@ -916,14 +953,14 @@ mod tests {
     #[test]
     fn dsml_dangerous_commands_are_still_classified() {
         let content = "<|DSML|tool_calls><|DSML|invoke name=\"execute_command\"><|DSML|parameter name=\"command\" string=\"true\">rm -rf /</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>";
-        let (_, calls) = extract_dsml_tool_calls(content, "linux");
+        let (_, calls) = extract_dsml_tool_calls(content, "linux", command_classify::TargetPlatform::Unix);
         assert_eq!(calls[0].risk_level, "dangerous");
     }
 
     #[test]
     fn textual_command_lines_become_tool_calls() {
         let content = "我来帮您查看本机的CPU信息。\n\n---\nreason: 获取本机CPU信息（只读命令）\ncommand: lscpu\n---\n\n命令已发送，请稍候。";
-        let (cleaned, calls) = extract_textual_tool_calls(content, "linux");
+        let (cleaned, calls) = extract_textual_tool_calls(content, "linux", command_classify::TargetPlatform::Unix);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].command, "lscpu");
         assert_eq!(calls[0].reason, "获取本机CPU信息（只读命令）");
@@ -934,9 +971,39 @@ mod tests {
 
     #[test]
     fn textual_fallback_ignores_non_command_content() {
-        let (cleaned, calls) = extract_textual_tool_calls("这只是普通回答，没有调用意图。", "linux");
+        let (cleaned, calls) = extract_textual_tool_calls("这只是普通回答，没有调用意图。", "linux", command_classify::TargetPlatform::Unix);
         assert!(calls.is_empty());
         assert_eq!(cleaned, "这只是普通回答，没有调用意图。");
+    }
+
+    #[tokio::test]
+    async fn chat_injects_target_platform_into_system_message() {
+        let (endpoint, request_log) = fixture(
+            "200 OK",
+            r#"{"model":"fixture-model","choices":[{"message":{"content":"ok"}}]}"#,
+        );
+        let request = AiChatRequest {
+            mode: "compatible".into(),
+            provider_id: "fixture".into(),
+            endpoint: Some(endpoint),
+            model: Some("fixture-model".into()),
+            api_key: Some("test-only-token".into()),
+            remember_api_key: false,
+            context: None,
+            target_alias: Some("local".into()),
+            messages: vec![AiMessageDto {
+                role: "user".into(),
+                content: Some("排查当前主机".into()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+        };
+        ai_chat_inner(request, true, command_classify::TargetPlatform::Windows)
+            .await
+            .unwrap();
+        let log = request_log.join().unwrap();
+        assert!(log.contains("Windows"), "系统消息应包含目标平台提示: {log}");
+        assert!(log.contains("tasklist"), "Windows 提示应给出原生命令示例: {log}");
     }
 
     #[tokio::test]
@@ -988,7 +1055,7 @@ mod tests {
                 tool_call_id: None,
             }],
         };
-        let response = ai_chat_inner(request, true).await.unwrap();
+        let response = ai_chat_inner(request, true, command_classify::TargetPlatform::Unix).await.unwrap();
         let log = requests.join().unwrap();
         assert_eq!(log.len(), 2);
         assert!(log[0].contains("\"tools\""));

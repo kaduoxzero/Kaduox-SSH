@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""Release preflight, version synchronization, and packaging for Kaduox-SSH.
+"""Release preflight and version synchronization for Kaduox-SSH.
 
 Uses only the Python standard library so GitHub-hosted release jobs can run the
-same validation and packaging logic on Linux, macOS, and Windows.
+same validation logic on Linux, macOS, and Windows. Distribution is desktop-only:
+the release workflow ships the Windows installer, the macOS pkg, and the MCP
+server; CLI archives, SBOMs, and checksum manifests were retired.
 """
 
 from __future__ import annotations
 
 import argparse
-import gzip
-import hashlib
-import json
 import os
 import re
-import shutil
 import stat
 import sys
-import tarfile
 import tempfile
 import tomllib
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,18 +27,6 @@ LOCAL_PACKAGES = (
     "kaduox-ssh-cli",
     "kaduox-ssh-mcp",
 )
-# The target-specific SBOM graph is walked from kaduox-ssh-cli, which ships the
-# four release binaries. kaduox-ssh-mcp is a standalone stdio server outside
-# the release archives, so it is a workspace member but not an SBOM local root.
-SBOM_LOCAL_PACKAGES = (
-    "kaduox-ssh-core",
-    "kaduox-ssh-hosts",
-    "kaduox-ssh-daemon",
-    "kaduox-ssh-cli",
-)
-MAX_MANIFEST_BYTES = 16 * 1024
-ARCHIVE_FILE_MTIME = 0
-ZIP_FILE_TIME = (1980, 1, 1, 0, 0, 0)
 SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
@@ -229,175 +213,6 @@ def set_version(new_version: str) -> tuple[str, str]:
     return old_version, new_version
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def binary_source(target: str, binary: str, exe_suffix: str) -> Path:
-    return ROOT / "target" / target / "release" / f"{binary}{exe_suffix}"
-
-
-def build_manifest(tag: str, target: str, package_dir: Path, exe_suffix: str) -> dict:
-    entries = []
-    for binary in EXPECTED_BINARIES:
-        path = package_dir / f"{binary}{exe_suffix}"
-        entries.append(
-            {
-                "name": binary,
-                "file": path.name,
-                "sha256": sha256(path),
-                "bytes": path.stat().st_size,
-            }
-        )
-    return {
-        "schema": 1,
-        "project": "Kaduox-SSH",
-        "tag": tag,
-        "version": workspace_version(),
-        "target": target,
-        "binaries": entries,
-    }
-
-
-def normalized_archive_mode(path: Path) -> int:
-    if path.is_dir():
-        return 0o755
-    name = path.name
-    if name in EXPECTED_BINARIES or (
-        name.endswith(".exe") and name[:-4] in EXPECTED_BINARIES
-    ):
-        return 0o755
-    return 0o644
-
-
-def normalize_tar_info(info: tarfile.TarInfo, source: Path) -> tarfile.TarInfo:
-    info.uid = 0
-    info.gid = 0
-    info.uname = ""
-    info.gname = ""
-    info.mtime = ARCHIVE_FILE_MTIME
-    info.mode = normalized_archive_mode(source)
-    info.pax_headers = {}
-    return info
-
-
-def iter_archive_paths(source_dir: Path) -> list[Path]:
-    return [
-        source_dir,
-        *sorted(
-            source_dir.rglob("*"),
-            key=lambda path: path.relative_to(source_dir).as_posix(),
-        ),
-    ]
-
-
-def create_tar_gz(source_dir: Path, archive: Path) -> None:
-    with archive.open("wb") as raw:
-        with gzip.GzipFile(
-            filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9
-        ) as compressed:
-            with tarfile.open(
-                fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
-            ) as output:
-                for source in iter_archive_paths(source_dir):
-                    relative = source.relative_to(source_dir)
-                    arcname = (
-                        source_dir.name
-                        if not relative.parts
-                        else f"{source_dir.name}/{relative.as_posix()}"
-                    )
-                    output.add(
-                        source,
-                        arcname=arcname,
-                        recursive=False,
-                        filter=lambda info, source=source: normalize_tar_info(
-                            info, source
-                        ),
-                    )
-
-
-def create_zip(source_dir: Path, archive: Path) -> None:
-    with zipfile.ZipFile(
-        archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
-    ) as output:
-        for source in iter_archive_paths(source_dir):
-            if source.is_dir():
-                continue
-            relative = source.relative_to(source_dir)
-            arcname = f"{source_dir.name}/{relative.as_posix()}"
-            info = zipfile.ZipInfo(arcname, date_time=ZIP_FILE_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.create_system = 3
-            info.external_attr = (
-                stat.S_IFREG | normalized_archive_mode(source)
-            ) << 16
-            with source.open("rb") as handle:
-                output.writestr(
-                    info,
-                    handle.read(),
-                    compress_type=zipfile.ZIP_DEFLATED,
-                    compresslevel=9,
-                )
-
-
-def create_archive(source_dir: Path, archive: Path, archive_format: str) -> None:
-    if archive_format == "tar.gz":
-        create_tar_gz(source_dir, archive)
-        return
-    if archive_format == "zip":
-        create_zip(source_dir, archive)
-        return
-    raise ValueError(f"unsupported archive format: {archive_format}")
-
-
-def package_release(
-    tag: str,
-    target: str,
-    archive_format: str,
-    exe_suffix: str,
-    output_dir: Path,
-) -> Path:
-    version = check_tag(tag)
-    target = safe_component(target, "target")
-    exe_suffix = safe_component(exe_suffix, "exe suffix") if exe_suffix else ""
-    if exe_suffix not in {"", ".exe"}:
-        raise ValueError("exe suffix must be empty or .exe")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    package_name = safe_component(f"kaduox-ssh-{version}-{target}", "package name")
-    archive_suffix = ".tar.gz" if archive_format == "tar.gz" else ".zip"
-    archive = output_dir / f"{package_name}{archive_suffix}"
-
-    with tempfile.TemporaryDirectory(prefix="kaduox-release-") as temp:
-        package_dir = Path(temp) / package_name
-        package_dir.mkdir()
-
-        for binary in EXPECTED_BINARIES:
-            source = binary_source(target, binary, exe_suffix)
-            if not source.is_file():
-                raise FileNotFoundError(f"missing release binary: {source}")
-            shutil.copy2(source, package_dir / source.name)
-
-        for document in ("README.md", "README.zh-CN.md", "LICENSE"):
-            source = ROOT / document
-            if not source.is_file():
-                raise FileNotFoundError(f"missing release document: {source}")
-            shutil.copy2(source, package_dir / document)
-
-        manifest = build_manifest(tag, target, package_dir, exe_suffix)
-        manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        if len(manifest_text.encode("utf-8")) > MAX_MANIFEST_BYTES:
-            raise ValueError("release manifest unexpectedly exceeds safety budget")
-        (package_dir / "manifest.json").write_text(manifest_text, encoding="utf-8")
-        create_archive(package_dir, archive, archive_format)
-
-    return archive
-
-
 def command_check(args: argparse.Namespace) -> int:
     version = validate_repository()
     if args.tag:
@@ -409,18 +224,6 @@ def command_check(args: argparse.Namespace) -> int:
 def command_set_version(args: argparse.Namespace) -> int:
     old, new = set_version(args.version)
     print(f"{old} -> {new}")
-    return 0
-
-
-def command_package(args: argparse.Namespace) -> int:
-    archive = package_release(
-        tag=args.tag,
-        target=args.target,
-        archive_format=args.format,
-        exe_suffix=args.exe_suffix,
-        output_dir=Path(args.output_dir).resolve(),
-    )
-    print(archive)
     return 0
 
 
@@ -437,14 +240,6 @@ def parser() -> argparse.ArgumentParser:
     )
     set_version_parser.add_argument("version")
     set_version_parser.set_defaults(func=command_set_version)
-
-    package = sub.add_parser("package", help="stage and archive all release binaries")
-    package.add_argument("--tag", required=True)
-    package.add_argument("--target", required=True)
-    package.add_argument("--format", choices=("tar.gz", "zip"), required=True)
-    package.add_argument("--exe-suffix", default="")
-    package.add_argument("--output-dir", default="dist")
-    package.set_defaults(func=command_package)
     return root
 
 

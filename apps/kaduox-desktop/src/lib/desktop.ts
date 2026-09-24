@@ -597,9 +597,9 @@ export async function chatWithAi(
   throw new Error('浏览器仅用于界面预览；请在桌面客户端配置第三方 AI 服务。')
 }
 
-export async function aiClassifyCommand(command: string): Promise<AiClassifyResult> {
+export async function aiClassifyCommand(command: string, platform?: string): Promise<AiClassifyResult> {
   if (!isDesktopRuntime) return { riskLevel: 'readOnly', needsApprovalApprovalMode: false, needsApprovalFullMode: false, blocked: false }
-  return invoke<AiClassifyResult>('ai_classify_command', { command })
+  return invoke<AiClassifyResult>('ai_classify_command', { command, platform: platform ?? null })
 }
 
 export async function aiExecuteCommand(

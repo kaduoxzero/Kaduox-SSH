@@ -52,10 +52,19 @@ Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
 }
 
 # GPU: reuse nvidia-smi when the driver is present; otherwise omit GPU lines.
+# The first nvidia-smi call may take seconds while a power-gated dGPU wakes up,
+# so it runs in a job with a timeout: GPU lines are skipped rather than letting
+# the whole snapshot blow the collection deadline.
 $smi = Get-Command nvidia-smi.exe | Select-Object -First 1
 if ($smi) {
-  & $smi.Source --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits |
-    ForEach-Object { $lines.Add("gpu=$_") }
+  $gpuJob = Start-Job -ScriptBlock {
+    param($exe)
+    & $exe --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits
+  } -ArgumentList $smi.Source
+  if (Wait-Job $gpuJob -Timeout 3) {
+    Receive-Job $gpuJob | ForEach-Object { $lines.Add("gpu=$_") }
+  }
+  Remove-Job $gpuJob -Force
 }
 
 $rx = [uint64]0

@@ -123,18 +123,32 @@ export function SystemMetricsView({ hosts, sessions, selectedAlias, onSelect, on
   useEffect(() => {
     let cancelled = false
     let inFlight = false
+    // 首轮采集失败（常见为 Windows 冷启动超时）时立即自动重试一次：第二次命中预热后的路径。
+    let retriedFirstRound = false
     setMetrics(null); setSamples([]); setError(null); setRouteFocus('')
-    const collect = async () => {
+    const collect = async (): Promise<void> => {
       if (cancelled || inFlight || document.visibilityState === 'hidden') return
       inFlight = true; setBusy(true)
+      let retryFirstRound = false
       try {
         if (target !== LOCAL_TARGET && !selectedSession) throw new Error('该主机尚未连接，请先在主机页连接。')
         const next = target === LOCAL_TARGET ? await getLocalSystemMetrics() : await querySystemMetrics(target)
         if (cancelled) return
         setMetrics(next); setSamples((old) => [...old, next].slice(-30)); setError(null)
+        retriedFirstRound = true
         setRouteFocus((old) => old || next.route.at(-1)?.alias || '')
-      } catch (cause) { if (!cancelled) setError(errorMessage(cause)) }
-      finally { inFlight = false; if (!cancelled) setBusy(false) }
+      } catch (cause) {
+        if (cancelled) return
+        if (!retriedFirstRound) {
+          retriedFirstRound = true
+          retryFirstRound = true
+        } else {
+          setError(errorMessage(cause))
+        }
+      } finally {
+        inFlight = false; if (!cancelled) setBusy(false)
+      }
+      if (retryFirstRound && !cancelled) await collect()
     }
     sampler.current = collect
     void collect()

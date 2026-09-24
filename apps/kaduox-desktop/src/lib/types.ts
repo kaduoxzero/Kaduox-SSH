@@ -235,7 +235,7 @@ export interface SystemMetrics {
 }
 
 export type AiRiskLevel = 'readOnly' | 'modify' | 'delete' | 'dangerous'
-export type AiPermissionMode = 'approval' | 'full'
+export type AiPermissionMode = 'strict' | 'approval' | 'full'
 
 export interface AiToolCall {
   id: string

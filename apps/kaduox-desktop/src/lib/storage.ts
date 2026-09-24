@@ -74,7 +74,7 @@ export function loadAiSettings(): AiSettings {
         providerName: typeof parsed.providerName === 'string' && parsed.providerName.trim() ? parsed.providerName : defaultAiSettings.providerName,
         endpoint: typeof parsed.endpoint === 'string' && parsed.endpoint.trim() ? parsed.endpoint : defaultAiSettings.endpoint,
         model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : defaultAiSettings.model,
-        permissionMode: parsed.permissionMode === 'full' ? 'full' : 'approval',
+        permissionMode: parsed.permissionMode === 'full' || parsed.permissionMode === 'strict' ? parsed.permissionMode : 'approval',
       }
     }
   } catch {
@@ -91,7 +91,7 @@ export function saveAiSettings(settings: AiSettings): void {
       providerName: settings.providerName,
       endpoint: settings.endpoint,
       model: settings.model,
-      permissionMode: settings.permissionMode === 'full' ? 'full' : 'approval',
+      permissionMode: settings.permissionMode === 'full' || settings.permissionMode === 'strict' ? settings.permissionMode : 'approval',
     }))
   } catch {
     // Keep the active settings in memory when persistence is unavailable.
