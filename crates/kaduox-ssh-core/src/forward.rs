@@ -143,9 +143,23 @@ pub(crate) async fn start_local_forward(
         .context("failed to read local forward listener address")?;
     let slots = Arc::new(Semaphore::new(MAX_ACTIVE_FORWARD_CONNECTIONS));
     let task = tokio::spawn(async move {
+        // accept 错误退避：暂时性错误（EMFILE/ENFILE 等）短暂等待后重试；
+        // 连续致命错误才退出监听，避免一次抖动就让转发假死。
+        let mut consecutive_errors = 0u32;
         loop {
-            let Ok((mut local, peer)) = listener.accept().await else {
-                break;
+            let (mut local, peer) = match listener.accept().await {
+                Ok(accepted) => {
+                    consecutive_errors = 0;
+                    accepted
+                }
+                Err(_) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= 10 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
             };
             let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
                 // Fail fast under local connection floods instead of creating an
@@ -194,9 +208,22 @@ pub(crate) async fn start_dynamic_forward(
         .context("failed to read SOCKS5 listener address")?;
     let slots = Arc::new(Semaphore::new(MAX_ACTIVE_FORWARD_CONNECTIONS));
     let task = tokio::spawn(async move {
+        // 与本地转发相同的 accept 退避策略：暂时性错误重试，连续致命错误才退出。
+        let mut consecutive_errors = 0u32;
         loop {
-            let Ok((stream, peer)) = listener.accept().await else {
-                break;
+            let (stream, peer) = match listener.accept().await {
+                Ok(accepted) => {
+                    consecutive_errors = 0;
+                    accepted
+                }
+                Err(_) => {
+                    consecutive_errors += 1;
+                    if consecutive_errors >= 10 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
             };
             let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
                 drop(stream);

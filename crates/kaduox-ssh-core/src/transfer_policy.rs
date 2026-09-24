@@ -31,6 +31,7 @@ pub(crate) async fn upload_file(
     options: &TransferOptions,
 ) -> Result<u64> {
     options.validated()?;
+    crate::transfer_engine::validate_remote_file_leaf(remote_path)?;
     if !options.atomic {
         return crate::transfer_engine::upload_file(sftp, local_path, remote_path, options).await;
     }

@@ -290,11 +290,16 @@ pub enum ForwardStartRequest {
         bind_port: u16,
         target_host: String,
         target_port: u16,
+        /// 绑定非 loopback 地址会把隧道暴露到局域网，前端必须先让用户确认。
+        #[serde(default)]
+        allow_public_bind: bool,
     },
     Dynamic {
         alias: String,
         bind_address: String,
         bind_port: u16,
+        #[serde(default)]
+        allow_public_bind: bool,
     },
     Remote {
         alias: String,
@@ -472,6 +477,9 @@ pub struct AiExecRequest {
     /// 前端确认卡片上的用户批准结果。
     #[serde(default)]
     pub approved: bool,
+    /// 批准批次标识：前端在一次批准动作时生成，把执行记录关联到具体批准。
+    #[serde(default)]
+    pub approval_batch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

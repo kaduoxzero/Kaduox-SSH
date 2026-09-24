@@ -148,8 +148,9 @@ export type ForwardStartRequest =
       bindPort: number
       targetHost: string
       targetPort: number
+      allowPublicBind?: boolean
     }
-  | { kind: 'dynamic'; alias: string; bindAddress: string; bindPort: number }
+  | { kind: 'dynamic'; alias: string; bindAddress: string; bindPort: number; allowPublicBind?: boolean }
   | {
       kind: 'remote'
       alias: string

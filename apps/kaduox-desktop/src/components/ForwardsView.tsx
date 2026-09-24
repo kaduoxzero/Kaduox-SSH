@@ -47,9 +47,19 @@ export function ForwardsView({ hosts, onConfigureSsh, sessions, forwards, select
     setBusy(true)
     setFormError(null)
     const common = { alias, bindAddress, bindPort: Number(bindPort) }
+    // 非 loopback 绑定会把隧道暴露到局域网：先让用户显式确认。
+    const isLoopback = ['127.0.0.1', '::1', 'localhost'].includes(bindAddress.trim())
+    let allowPublicBind: boolean | undefined
+    if (!isLoopback && kind !== 'remote') {
+      if (!window.confirm(`监听地址 ${bindAddress} 不是本机回环地址，局域网内其他机器也能访问这条隧道。确认继续？`)) {
+        setBusy(false)
+        return
+      }
+      allowPublicBind = true
+    }
     const request: ForwardStartRequest = kind === 'dynamic'
-      ? { kind, ...common }
-      : { kind, ...common, targetHost, targetPort: Number(targetPort) }
+      ? { kind, ...common, allowPublicBind }
+      : { kind, ...common, targetHost, targetPort: Number(targetPort), ...(kind === 'local' ? { allowPublicBind } : {}) }
     try {
       await onStart(request)
       if (bindPort === '0') setBindPort('2222')

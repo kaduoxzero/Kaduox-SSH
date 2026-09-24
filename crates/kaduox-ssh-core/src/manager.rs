@@ -323,6 +323,17 @@ impl ConnectionManager {
         config: &ConnectionConfig,
         authentication: &AuthenticationReuseKey,
     ) -> Result<Option<Arc<ManagedConnection>>> {
+        self.get_reusable_managed_inner(name, config, authentication, false)
+            .await
+    }
+
+    async fn get_reusable_managed_inner(
+        &self,
+        name: &str,
+        config: &ConnectionConfig,
+        authentication: &AuthenticationReuseKey,
+        allow_non_reusable_pair: bool,
+    ) -> Result<Option<Arc<ManagedConnection>>> {
         let connections = self.connections.read().await;
         let Some(managed) = connections.get(name) else {
             return Ok(None);
@@ -334,13 +345,23 @@ impl ConnectionManager {
             // A dead transport must not block a fresh connect for this name.
             return Ok(None);
         }
-        ensure_reusable(
-            name,
-            managed.client.config(),
-            config,
-            &managed.authentication,
-            authentication,
-        )?;
+        // 单飞 follower 与 leader 的密码/键盘交互认证都是 NonReusable：
+        // 二者同属一批并发 connect，配置一致即可租约 leader 的传输。
+        let authentication_compatible = managed.authentication.can_reuse_with(authentication)
+            || (allow_non_reusable_pair
+                && managed.authentication == AuthenticationReuseKey::NonReusable
+                && *authentication == AuthenticationReuseKey::NonReusable);
+        if authentication_compatible {
+            ensure_config_matches(name, managed.client.config(), config)?;
+        } else {
+            ensure_reusable(
+                name,
+                managed.client.config(),
+                config,
+                &managed.authentication,
+                authentication,
+            )?;
+        }
         managed.touch();
         Ok(Some(Arc::clone(managed)))
     }
@@ -434,7 +455,14 @@ impl ConnectionManager {
                     // Re-run the compatibility-aware lookup after the leader
                     // finishes. An incompatible winner fails closed on the next
                     // iteration instead of being leased merely because the name
-                    // matches.
+                    // matches. Followers of this single-flight batch may lease a
+                    // NonReusable leader transport (same config, same batch).
+                    if let Some(managed) = self
+                        .get_reusable_managed_inner(&name, &config, &authentication_key, true)
+                        .await?
+                    {
+                        return Ok(managed);
+                    }
                     continue;
                 }
                 ConnectClaim::Leader(_leader) => {
@@ -577,6 +605,19 @@ fn managed_is_in_use(managed: &Arc<ManagedConnection>) -> bool {
     managed.active_leases() != 0
         || Arc::strong_count(managed) > 1
         || Arc::strong_count(&managed.client) > 1
+}
+
+fn ensure_config_matches(
+    name: &str,
+    existing_config: &ConnectionConfig,
+    requested_config: &ConnectionConfig,
+) -> Result<()> {
+    if existing_config != requested_config {
+        bail!(
+            "connection name '{name}' is already bound to a different SSH configuration; remove it before reconnecting"
+        );
+    }
+    Ok(())
 }
 
 fn ensure_reusable(

@@ -5,6 +5,7 @@ mod client;
 mod command;
 mod config;
 mod connect;
+mod credentials;
 mod diagnostics;
 mod forward;
 mod handler;
@@ -44,6 +45,7 @@ pub use connect::{
     AuthenticationKind, AutoJumpAuthProvider, ConnectionProgress, JumpAuthFuture, JumpAuthProvider,
     JumpAuthRequest, MAX_JUMP_AUTH_ATTEMPTS, authentication_kind,
 };
+pub use credentials::{account_name as keyring_account_name, endpoint as keyring_endpoint};
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,

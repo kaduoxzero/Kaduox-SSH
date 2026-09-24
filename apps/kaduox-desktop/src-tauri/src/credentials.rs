@@ -4,26 +4,16 @@ use kaduox_ssh_core::ConnectionConfig;
 const KEYCHAIN_SERVICE: &str = "kssh";
 const AI_KEYCHAIN_SERVICE: &str = "kaduox-ai";
 
-fn endpoint(host: &str, port: u16) -> String {
-    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
+// 账户名拼接与 MCP 共用 core 的同一份实现，防止格式漂移。
 fn account_name(config: &ConnectionConfig) -> String {
-    format!(
-        "{}@{}",
-        config.username,
-        endpoint(&config.host, config.port)
-    )
+    kaduox_ssh_core::keyring_account_name(config)
 }
 
-pub fn stored_password(config: &ConnectionConfig) -> Option<String> {
+pub fn stored_password(config: &ConnectionConfig) -> Option<zeroize::Zeroizing<String>> {
     let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account_name(config)).ok()?;
     match entry.get_password() {
-        Ok(password) => Some(password),
+        // Zeroizing：密码在进程内存中的副本在 Drop 时清零，减少崩溃转储/交换残留。
+        Ok(password) => Some(zeroize::Zeroizing::new(password)),
         Err(keyring::Error::NoEntry) => None,
         Err(_) => None,
     }
@@ -53,10 +43,10 @@ pub fn delete_password(config: &ConnectionConfig) -> Result<bool> {
     }
 }
 
-pub fn stored_ai_api_key(account: &str) -> Option<String> {
+pub fn stored_ai_api_key(account: &str) -> Option<zeroize::Zeroizing<String>> {
     let entry = keyring::Entry::new(AI_KEYCHAIN_SERVICE, account).ok()?;
     match entry.get_password() {
-        Ok(value) if !value.is_empty() => Some(value),
+        Ok(value) if !value.is_empty() => Some(zeroize::Zeroizing::new(value)),
         _ => None,
     }
 }
@@ -102,7 +92,7 @@ impl kaduox_ssh_core::JumpAuthProvider for SavedJumpAuth {
             let mut config = ConnectionConfig::new(&request.jump.host, &request.jump.username);
             config.port = request.jump.port;
             Ok(Some(match stored_password(&config) {
-                Some(password) => kaduox_ssh_core::Authentication::Password(password),
+                Some(password) => kaduox_ssh_core::Authentication::Password((*password).clone()),
                 None => kaduox_ssh_core::Authentication::Auto {
                     identity_files: request.jump.identity_files,
                     passphrase: None,
@@ -118,6 +108,7 @@ mod tests {
 
     #[test]
     fn endpoint_format_is_ipv6_safe() {
+        let endpoint = kaduox_ssh_core::keyring_endpoint;
         assert_eq!(endpoint("server.example", 22), "server.example:22");
         assert_eq!(endpoint("2001:db8::1", 2222), "[2001:db8::1]:2222");
     }
@@ -135,7 +126,7 @@ mod tests {
         let fresh = ConnectionConfig::new(&host, "fixture-only");
         let value = stored_password(&fresh);
         let removed = delete_password(&fresh).unwrap();
-        assert_eq!(value.as_deref(), Some("fixture-not-a-real-password"));
+        assert_eq!(value.as_ref().map(|v| v.as_str()), Some("fixture-not-a-real-password"));
         assert!(removed);
         assert!(stored_password(&fresh).is_none());
     }

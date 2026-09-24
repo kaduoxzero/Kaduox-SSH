@@ -9,7 +9,6 @@ use kaduox_ssh_core::{
 };
 use tokio::io::DuplexStream;
 use tokio::sync::{Mutex, RwLock, watch};
-use tokio::task::AbortHandle;
 
 use crate::commands::connection::host_key_to_dto;
 use crate::commands::forward::stop_forwards_for_alias;
@@ -28,7 +27,7 @@ pub struct TerminalControl {
     pub alias: String,
     pub input: Mutex<Option<DuplexStream>>,
     pub resize: watch::Sender<TerminalSize>,
-    pub abort: AbortHandle,
+    pub abort: futures::future::AbortHandle,
 }
 
 pub enum ForwardResource {
@@ -62,6 +61,12 @@ pub struct DesktopState {
     pub history: Mutex<()>,
     pub host_store_guard: Mutex<()>,
     reconnect_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// 显式断开代际：用户点断开后递增，heal 重连完成前比对以丢弃过期重连结果。
+    disconnect_generations: Mutex<HashMap<String, u64>>,
+    /// 重连失败冷却：记录 (上次失败时刻, 连续失败次数)，窗口内直接报错不重连。
+    heal_failures: Mutex<HashMap<String, (std::time::Instant, u32)>>,
+    /// 指标采集 per-alias 单飞：多面板并发轮询不对同一主机开多个采集通道。
+    pub(crate) metrics_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     ids: AtomicU64,
 }
 
@@ -75,6 +80,9 @@ impl Default for DesktopState {
             history: Mutex::new(()),
             host_store_guard: Mutex::new(()),
             reconnect_locks: Mutex::new(HashMap::new()),
+            disconnect_generations: Mutex::new(HashMap::new()),
+            heal_failures: Mutex::new(HashMap::new()),
+            metrics_locks: Mutex::new(HashMap::new()),
             ids: AtomicU64::new(1),
         }
     }
@@ -139,6 +147,32 @@ impl DesktopState {
         Arc::clone(locks.entry(alias.to_owned()).or_default())
     }
 
+    /// 显式断开路径（disconnect_host）与 heal 共用同一把 per-alias 锁。
+    pub(crate) async fn reconnect_lock(&self, alias: &str) -> Arc<Mutex<()>> {
+        self.alias_reconnect_lock(alias).await
+    }
+
+    /// 会话删除后清理锁条目，避免长期运行只增不减。
+    pub(crate) async fn drop_reconnect_lock(&self, alias: &str) {
+        self.reconnect_locks.lock().await.remove(alias);
+    }
+
+    pub(crate) async fn disconnect_generation(&self, alias: &str) -> u64 {
+        *self.disconnect_generations.lock().await.get(alias).unwrap_or(&0)
+    }
+
+    /// 记录一次显式断开：进行中的 heal 重连在完成后必须丢弃结果；
+    /// 同时清理失败冷却，手动重连不受退避影响。
+    pub(crate) async fn note_disconnected(&self, alias: &str) {
+        *self
+            .disconnect_generations
+            .lock()
+            .await
+            .entry(alias.to_owned())
+            .or_default() += 1;
+        self.heal_failures.lock().await.remove(alias);
+    }
+
     /// Serialize healing per alias so concurrent commands that hit the same
     /// dead transport produce exactly one reconnect attempt.
     async fn heal_session(&self, alias: &str) -> Result<ConnectionLease, String> {
@@ -147,9 +181,43 @@ impl DesktopState {
         if let Some(lease) = self.live_session_lease(alias).await {
             return Ok(lease);
         }
-        self.reconnect(alias)
-            .await
-            .map_err(|error| format!("主机 {alias} 连接已断开，自动重连失败：{error:#}"))
+        // 重连失败退避：主机宕机时每次命令/指标轮询都会触发 heal，
+        // 无冷却会形成持续重连锤击（完整 TCP+SSH+auth）。
+        {
+            let failures = self.heal_failures.lock().await;
+            if let Some((last_failed, attempts)) = failures.get(alias) {
+                let cooldown = std::time::Duration::from_secs(5)
+                    .saturating_mul(1u32 << (*attempts).min(4));
+                if last_failed.elapsed() < cooldown {
+                    return Err(format!(
+                        "主机 {alias} 自动重连冷却中（{} 秒后可重试）",
+                        cooldown.as_secs().saturating_sub(last_failed.elapsed().as_secs())
+                    ));
+                }
+            }
+        }
+        let generation = self.disconnect_generation(alias).await;
+        let result = self.reconnect(alias).await;
+        match result {
+            Ok(lease) => {
+                self.heal_failures.lock().await.remove(alias);
+                if self.disconnect_generation(alias).await != generation {
+                    // 重连进行中用户显式断开了该主机：丢弃新会话，避免僵尸会话复活。
+                    self.sessions.write().await.remove(alias);
+                    let _ = self.manager.remove(alias).await;
+                    drop(lease);
+                    Err(format!("主机 {alias} 已断开"))
+                } else {
+                    Ok(lease)
+                }
+            }
+            Err(error) => {
+                let mut failures = self.heal_failures.lock().await;
+                let attempts = failures.get(alias).map(|(_, count)| *count).unwrap_or(0) + 1;
+                failures.insert(alias.to_owned(), (std::time::Instant::now(), attempts));
+                Err(format!("主机 {alias} 连接已断开，自动重连失败：{error:#}"))
+            }
+        }
     }
 
     async fn reconnect(&self, alias: &str) -> Result<ConnectionLease> {
@@ -174,13 +242,22 @@ impl DesktopState {
         // it before establishing the replacement so no stale handle survives.
         stop_terminals_for_alias(alias, self).await;
         stop_forwards_for_alias(alias, self).await;
-        self.sessions.write().await.remove(alias);
+        let removed = self.sessions.write().await.remove(alias);
         let _ = self.manager.remove(alias).await;
 
-        let lease = self
-            .connect_saved(alias, config, authentication)
-            .await
-            .context("无法重新建立 SSH 连接")?;
+        let lease = match self.connect_saved(alias, config, authentication).await {
+            Ok(lease) => lease,
+            Err(error) => {
+                // 重连失败不能把会话条目一并吞掉：回插条目并标记原因，
+                // 让前端继续显示该主机（而不是静默消失），后续 heal 在冷却后可重试。
+                if let Some(mut entry) = removed {
+                    entry.details.warning =
+                        Some("自动重连失败，会话已断开；下次操作将在冷却后重试".to_owned());
+                    self.sessions.write().await.insert(alias.to_owned(), entry);
+                }
+                return Err(error).context("无法重新建立 SSH 连接");
+            }
+        };
         let details = SessionDto {
             connected_at_unix: now_unix()?,
             host_key: lease.server_host_key().await.map(host_key_to_dto),
@@ -205,7 +282,7 @@ fn reconnect_authentication(
         "password" => {
             let password = credentials::stored_password(config)
                 .context("未保存密码，无法自动重连；请重新连接该主机")?;
-            Ok(Authentication::Password(password))
+            Ok(Authentication::Password((*password).clone()))
         }
         "agent" => Ok(Authentication::Agent),
         "private-key" => {
@@ -268,6 +345,27 @@ mod tests {
             }
             other => panic!("expected auto authentication, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn disconnect_generation_marks_explicit_disconnect() {
+        let state = DesktopState::default();
+        assert_eq!(state.disconnect_generation("web").await, 0);
+        state.note_disconnected("web").await;
+        state.note_disconnected("web").await;
+        assert_eq!(state.disconnect_generation("web").await, 2);
+        assert_eq!(state.disconnect_generation("other").await, 0);
+    }
+
+    #[tokio::test]
+    async fn reconnect_lock_is_shared_per_alias_and_droppable() {
+        let state = DesktopState::default();
+        let first = state.reconnect_lock("web").await;
+        let second = state.reconnect_lock("web").await;
+        assert!(Arc::ptr_eq(&first, &second));
+        state.drop_reconnect_lock("web").await;
+        let third = state.reconnect_lock("web").await;
+        assert!(!Arc::ptr_eq(&first, &third));
     }
 
     #[tokio::test]

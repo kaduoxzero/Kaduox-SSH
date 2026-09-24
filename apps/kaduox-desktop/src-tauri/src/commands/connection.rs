@@ -78,7 +78,7 @@ fn select_authentication(
             let supplied = nonempty_secret(password);
             let secret = supplied
                 .clone()
-                .or_else(|| credentials::stored_password(config))
+                .or_else(|| credentials::stored_password(config).map(|p| (*p).clone()))
                 .context("请输入密码，或先在系统凭据存储中保存该主机的密码")?;
             AuthenticationSelection {
                 authentication: Authentication::Password(secret),
@@ -167,11 +167,24 @@ async fn connect_host_inner(request: ConnectRequest, state: &DesktopState) -> Re
         .await
         .with_context(|| format!("连接 {alias} 失败"))?;
     // 主机库中的手动系统类型优先于自动探测；auto 时按需探测一次。
+    // 先记录探测结果，手动设置覆盖时若与探测不一致，向前端提示可能错标。
+    let probed = lease.remote_platform().await;
+    let mut os_type_warning: Option<String> = None;
     match stored_os_type {
         Some(kaduox_ssh_hosts::StoredOsType::Windows) => {
+            if probed == kaduox_ssh_core::RemotePlatform::Unix {
+                os_type_warning = Some(
+                    "该主机手动标记为 Windows，但探测结果显示为 Linux/Unix；命令分类按手动标记生效".to_owned(),
+                );
+            }
             lease.set_remote_platform(kaduox_ssh_core::RemotePlatform::Windows);
         }
         Some(kaduox_ssh_hosts::StoredOsType::Linux) => {
+            if probed == kaduox_ssh_core::RemotePlatform::Windows {
+                os_type_warning = Some(
+                    "该主机手动标记为 Linux/Unix，但探测结果显示为 Windows；命令分类按手动标记生效".to_owned(),
+                );
+            }
             lease.set_remote_platform(kaduox_ssh_core::RemotePlatform::Unix);
         }
         _ => {}
@@ -183,7 +196,7 @@ async fn connect_host_inner(request: ConnectRequest, state: &DesktopState) -> Re
     .to_owned();
     let host_key = lease.server_host_key().await.map(host_key_to_dto);
 
-    let mut warning = None;
+    let mut warning = os_type_warning;
     if let Some(password) = selection.supplied_password_to_save.as_deref()
         && let Err(error) = credentials::save_password(&config, password)
     {
@@ -238,6 +251,10 @@ pub async fn list_sessions(state: State<'_, DesktopState>) -> Result<Vec<Session
 #[tauri::command]
 pub async fn disconnect_host(alias: String, state: State<'_, DesktopState>) -> Result<(), String> {
     let alias = alias.trim().to_owned();
+    // 与 heal 重连互斥：先记录显式断开代际，进行中的重连完成后会丢弃结果。
+    let lock = state.reconnect_lock(&alias).await;
+    let _guard = lock.lock().await;
+    state.note_disconnected(&alias).await;
     stop_terminals_for_alias(&alias, &state).await;
     stop_forwards_for_alias(&alias, &state).await;
     state.sessions.write().await.remove(&alias);
@@ -246,6 +263,7 @@ pub async fn disconnect_host(alias: String, state: State<'_, DesktopState>) -> R
         .remove(&alias)
         .await
         .map_err(|error| error.to_string())?;
+    state.drop_reconnect_lock(&alias).await;
     Ok(())
 }
 
@@ -546,6 +564,47 @@ pub async fn list_command_history(
     .map_err(|error| format!("{error:#}"))
 }
 
+/// 启发式识别命令行内联秘密：`mysql -p<pw>`（粘连）、`sshpass -p <pw>`、
+/// `sshpass -p<pw>`、`PGPASSWORD=...`、`--password=<pw>` 等。命中即不落盘。
+fn looks_like_inline_secret(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    for (index, word) in words.iter().enumerate() {
+        let lower = word.to_ascii_lowercase();
+        // 粘连形式：-p<secret>（仅限 mysql/mysqldump/sshpass 等已知把 -p 当密码的命令）。
+        if lower.starts_with("-p")
+            && word.len() > 2
+            && index > 0
+            && matches!(
+                words[index - 1].rsplit(['/', '\\']).next().unwrap_or(words[index - 1]).to_ascii_lowercase().as_str(),
+                "mysql" | "mysqldump" | "mysqladmin" | "sshpass" | "psql" | "redis-cli"
+            )
+        {
+            return true;
+        }
+        // 分离形式：sshpass -p <secret>。
+        if (lower == "-p" || lower == "--password")
+            && index > 0
+            && words[index - 1]
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(words[index - 1])
+                .eq_ignore_ascii_case("sshpass")
+        {
+            return true;
+        }
+        // KEY=VALUE 与 --password=<secret> 形式。
+        if lower.starts_with("pgpassword=")
+            || lower.starts_with("--password=")
+            || lower.starts_with("--passphrase=")
+            || lower.starts_with("--secret=")
+            || lower.starts_with("sshpass")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// 记录终端里手敲的一行命令（前端做行缓冲与密码提示过滤后上报）。
 /// 同时写入命令历史库（快速复用面板）和运行记录（审计日志）。
 #[tauri::command]
@@ -559,6 +618,11 @@ pub async fn record_terminal_command(
         return Ok(());
     }
     if command.chars().any(|ch| ch.is_control() && ch != '\t') {
+        return Ok(());
+    }
+    // 后端兜底脱敏：前端密码提示过滤可能遗漏内联密码（`mysql -p<pw>`、
+    // `sshpass -p <pw>` 等），这类命令整行不落盘。
+    if looks_like_inline_secret(&command) {
         return Ok(());
     }
     let alias = alias.trim().to_owned();
@@ -613,6 +677,18 @@ pub async fn clear_history(state: State<'_, DesktopState>) -> Result<Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_secret_heuristic_blocks_credential_leak() {
+        assert!(looks_like_inline_secret("mysql -pS3cret db"));
+        assert!(looks_like_inline_secret("sshpass -p hunter2 ssh user@x"));
+        assert!(looks_like_inline_secret("PGPASSWORD=abc psql -h db"));
+        assert!(looks_like_inline_secret("mysql --password=abc db"));
+        // 正常命令不受影响：grep -p 不存在粘连密码语义但要求前词匹配，ls -la 等安全。
+        assert!(!looks_like_inline_secret("ls -la"));
+        assert!(!looks_like_inline_secret("docker ps -a"));
+        assert!(!looks_like_inline_secret("systemctl status sshd"));
+    }
 
     #[test]
     fn secrets_are_not_trimmed_or_mutated() {

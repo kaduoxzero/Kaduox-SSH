@@ -60,6 +60,7 @@ async fn ssh_banner_through_forward(state: &DesktopState, alias: &str, target: &
             bind_port: 0,
             target_host: target.into(),
             target_port: 22,
+            allow_public_bind: false,
         },
         state,
     )
@@ -154,7 +155,7 @@ async fn run() -> Result<()> {
         .connect_with_jump_auth(
             &target_alias,
             target.clone(),
-            Authentication::Password(target_password),
+            Authentication::Password((*target_password).clone()),
             &mut provider,
             None,
         )

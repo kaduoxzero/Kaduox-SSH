@@ -100,6 +100,16 @@ fn open(path: &Path) -> Result<Connection> {
             [],
         )?;
     }
+    // 旧库迁移：补充 approval_batch 列，把一次执行关联到具体一次 UI 批准动作。
+    let has_batch: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('command_audit') WHERE name = 'approval_batch'")?
+        .exists([])?;
+    if !has_batch {
+        conn.execute(
+            "ALTER TABLE command_audit ADD COLUMN approval_batch TEXT",
+            [],
+        )?;
+    }
     Ok(conn)
 }
 
@@ -271,12 +281,13 @@ pub fn record_command_audit(
     approved_by_user: bool,
     exit_status: Option<i64>,
     duration_ms: i64,
+    approval_batch: Option<&str>,
 ) -> Result<()> {
     let conn = open(path)?;
     conn.execute(
         "INSERT INTO command_audit
-         (alias, command, risk_level, permission_mode, approved_by_user, exit_status, duration_ms, created_at_unix)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         (alias, command, risk_level, permission_mode, approved_by_user, exit_status, duration_ms, created_at_unix, approval_batch)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             alias,
             command,
@@ -286,6 +297,7 @@ pub fn record_command_audit(
             exit_status,
             duration_ms,
             now_unix()?,
+            approval_batch,
         ],
     )?;
     Ok(())
@@ -366,18 +378,20 @@ mod tests {
         let (_dir, path) = temp_db();
         record_command_audit(
             &path, "web-1", "rm -rf /tmp/build", "delete", "approval", true, Some(0), 42,
+            Some("approve-test-batch"),
         )
         .unwrap();
         let conn = open(&path).unwrap();
-        let (alias, level, approved): (String, String, i64) = conn
+        let (alias, level, approved, batch): (String, String, i64, Option<String>) = conn
             .query_row(
-                "SELECT alias, risk_level, approved_by_user FROM command_audit",
+                "SELECT alias, risk_level, approved_by_user, approval_batch FROM command_audit",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert_eq!(alias, "web-1");
         assert_eq!(level, "delete");
         assert_eq!(approved, 1);
+        assert_eq!(batch.as_deref(), Some("approve-test-batch"));
     }
 }

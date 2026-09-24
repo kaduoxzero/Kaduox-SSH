@@ -19,6 +19,16 @@ fn parse_bind(address: &str, port: u16) -> Result<SocketAddr> {
     Ok(SocketAddr::new(address, port))
 }
 
+/// 非 loopback 绑定需要前端显式确认（allowPublicBind），
+/// 防止把 SSH 隧道无意暴露到局域网。
+fn ensure_bind_allowed(address: &str, allow_public_bind: bool) -> Result<()> {
+    let socket = parse_bind(address, 0)?;
+    if !socket.ip().is_loopback() && !allow_public_bind {
+        bail!("监听地址不是 127.0.0.1/::1：暴露到网络前需要显式确认");
+    }
+    Ok(())
+}
+
 fn validate_target(host: &str, port: u16) -> Result<()> {
     if host.is_empty() || host.len() > 512 || host.chars().any(char::is_control) {
         bail!("转发目标主机无效");
@@ -51,8 +61,10 @@ async fn start_forward_inner(
             bind_port,
             target_host,
             target_port,
+            allow_public_bind,
         } => {
             validate_target(&target_host, target_port)?;
+            ensure_bind_allowed(&bind_address, allow_public_bind)?;
             let lease = state
                 .session_lease(alias.trim())
                 .await
@@ -84,7 +96,9 @@ async fn start_forward_inner(
             alias,
             bind_address,
             bind_port,
+            allow_public_bind,
         } => {
+            ensure_bind_allowed(&bind_address, allow_public_bind)?;
             let lease = state
                 .session_lease(alias.trim())
                 .await
@@ -166,6 +180,21 @@ async fn start_forward_inner(
 
 #[tauri::command]
 pub async fn list_forwards(state: State<'_, DesktopState>) -> Result<Vec<ForwardDto>, String> {
+    // 顺带回收孤儿转发：非用户主动断线（网络掉线、keepalive 耗尽）时 accept
+    // 监听不会自动退出；列表是 UI 的周期轮询入口，在这里惰性清理死会话转发。
+    let dead_ids = state
+        .forwards
+        .read()
+        .await
+        .iter()
+        .filter(|(_, control)| !control._lease.is_alive())
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in dead_ids {
+        if let Some(control) = state.forwards.write().await.remove(&id) {
+            let _ = control.resource.close().await;
+        }
+    }
     let mut forwards = state
         .forwards
         .read()

@@ -22,6 +22,41 @@ pub fn validate_remote_child_name(name: &str) -> Result<()> {
         // the download root when joined locally.
         bail!("remote directory entry cannot contain ':': {name:?}");
     }
+    // Windows 会把尾随点/空格归一化掉：`foo`、`foo.`、`foo ` 落为同一本地文件，
+    // 后下载者静默覆盖先下载者。
+    if name.ends_with('.') || name.ends_with(' ') {
+        bail!("remote directory entry cannot end with '.' or space: {name:?}");
+    }
+    // Windows 保留设备名（按 `.` 前的 stem 比较、大小写不敏感）：
+    // `CON`/`con.txt` 落盘会挂起或写入异常设备。
+    let stem = name.split('.').next().unwrap_or(name);
+    if matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        bail!("remote directory entry is a Windows reserved device name: {name:?}");
+    }
     Ok(())
 }
 
@@ -116,6 +151,22 @@ mod tests {
     fn rejects_server_supplied_multi_component_names() {
         for name in ["", ".", "..", "a/b", "a\\b", "bad\0name"] {
             assert!(validate_remote_child_name(name).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_windows_reserved_names_and_trailing_dot_space() {
+        for name in [
+            "CON", "con", "con.txt", "PRN", "aux.log", "NUL", "COM1", "lpt9",
+        ] {
+            assert!(validate_remote_child_name(name).is_err(), "{name:?}");
+        }
+        for name in ["foo.", "foo ", "a.."] {
+            assert!(validate_remote_child_name(name).is_err(), "{name:?}");
+        }
+        // 合法名字不受影响（com1.log.txt 的 stem 是 com1，仍属保留名，必须拒绝）。
+        for name in ["console.log", "normal", "a.b", "console.rs", "编译产物.zip"] {
+            assert!(validate_remote_child_name(name).is_ok(), "{name:?}");
         }
     }
 
