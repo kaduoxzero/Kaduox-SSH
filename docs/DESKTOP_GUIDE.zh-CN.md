@@ -6,11 +6,11 @@
 
 Windows x64 用户下载 `Kaduox-SSH-0.33.0-rc.1-windows-x64-setup.exe`，可选择安装目录和中文/英文安装界面。安装包包含 WebView2 离线安装组件，不包含个人主机配置。数据保存在当前 Windows 用户的应用数据目录。
 
-本版本为未签名的预发布版，Windows 可能显示发行者未知。只从本项目 Releases 下载，并核对资产页面上每个文件自动显示的 SHA-256 摘要；不要为运行软件关闭系统安全防护。Linux 桌面包不在本次发行中。
+本版本为未签名的发行版，Windows 可能显示发行者未知。只从本项目 Releases 下载，并核对资产页面上每个文件自动显示的 SHA-256 摘要；不要为运行软件关闭系统安全防护。Linux 桌面包不在本次发行中。
 
-### macOS 版（实验性）
+### macOS 版
 
-macOS 用户可从 `Desktop macOS installer` workflow 的运行产物中下载 Universal 2 安装包（`.pkg`，同时支持 Intel 与 Apple Silicon，要求 macOS 11 及以上）。双击安装包进入安装向导，自动装入“应用程序”。该包**未经 Apple 签名与公证**，首次打开请在访达中右键应用图标选择“打开”，或在 系统设置 → 隐私与安全性 中允许运行。与 Windows 版的差异：
+macOS 用户从 Releases 下载 Universal 2 安装包（`.pkg`，同时支持 Intel 与 Apple Silicon，要求 macOS 11 及以上）。双击安装包进入安装向导，自动装入“应用程序”。该包**未经 Apple 签名与公证**，首次打开请在访达中右键应用图标选择“打开”，或在 系统设置 → 隐私与安全性 中允许运行。与 Windows 版的差异：
 
 - 窗口使用 macOS 原生红绿灯按钮，无自绘窗口控制键；
 - 密码保存在 macOS 钥匙串（Windows 版为凭据管理器）；

@@ -8,21 +8,21 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ![Terminal workspace with SFTP sidebar](docs/screenshots/terminal.png)
 
-[Download v0.33.0-rc.20](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.20) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v0.33.0-rc.20.md)
+[Download v1.0.0](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v1.0.0) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v1.0.0.md)
 
 ## Download and install
 
-This prerelease provides **Windows x64** binaries. Linux desktop packages are not included. It is manually built and **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the SHA-256 digest shown on each asset.
+This release provides **Windows x64** and **macOS (Universal 2)** desktop binaries. Linux desktop packages are not included. The Windows installer is **not Authenticode-signed**; Windows may display an unknown-publisher warning. Download from this repository's Releases and compare the SHA-256 digest shown on each asset.
 
-### macOS (experimental)
+### macOS
 
-A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is built by the `Desktop macOS installer` workflow on every relevant `develop` push or manual dispatch; download the `.pkg` from the workflow run's artifacts. Double-click the package to install Kaduox SSH into Applications. It is **not Developer ID-signed or notarized**: on first launch, right-click the app and choose **Open**, or allow it under System Settings → Privacy & Security. The macOS client uses the native traffic-light window, stores passwords in macOS Keychain, and uses `ssh-agent` for agent authentication. This build has passed CI compilation and screenshot checks but not full on-device qualification yet.
+A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is published alongside the Windows installer. Double-click the package to install Kaduox SSH into Applications. It is **not Developer ID-signed or notarized**: on first launch, right-click the app and choose **Open**, or allow it under System Settings → Privacy & Security. The macOS client uses the native traffic-light window, stores passwords in macOS Keychain, and uses `ssh-agent` for agent authentication. This build has passed on-device qualification (Gatekeeper first-launch flow, Keychain prompts, terminal/SFTP/metrics/jump/AI features).
 
 | Download | Choose this when |
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
-| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/Kaduox-SSH-1.0.0-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/Kaduox-SSH-1.0.0-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
+| [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. If the MCP server shares the desktop host library, upgrade it together with the desktop client.
 
