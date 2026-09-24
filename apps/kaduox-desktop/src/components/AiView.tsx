@@ -66,7 +66,7 @@ const initialMessages: AiMessage[] = [
   {
     role: 'assistant',
     content:
-      '你好，我是 Kaduox。选择一台已连接的主机后，我可以直接在其上执行排查命令：只读命令会自动执行，修改/删除类命令会先征求你的批准。也可以先直接提问。',
+      '你好，我是 Kaduox。选择一台已连接的主机后，我可以直接在其上执行排查命令：命令是否自动执行取决于左下角的权限模式（严格批准 / 请求批准 / 全部权限），删除类命令在任何模式下都需你批准。也可以先直接提问。',
   },
 ]
 
@@ -455,8 +455,9 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       setConfirmFullMode(true)
       return
     }
-    updateSettings('permissionMode', 'approval')
-    saveAiSettings({ ...settingsRef.current, permissionMode: 'approval' })
+    const next = mode === 'strict' ? 'strict' : 'approval'
+    updateSettings('permissionMode', next)
+    saveAiSettings({ ...settingsRef.current, permissionMode: next })
   }
 
   const confirmEnableFullMode = () => {
@@ -497,7 +498,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
       const mode = settingsRef.current.permissionMode
       const level = call.riskLevel
       const blocked = level === 'dangerous'
-      const needsApproval = blocked || level === 'delete' || (level === 'modify' && mode !== 'full')
+      const needsApproval = blocked || mode === 'strict' || level === 'delete' || (level === 'modify' && mode !== 'full')
       if (blocked) {
         patchCard(assistantIndex, call.id, { status: 'blocked', resultText: '危险命令，客户端已拒绝执行。' })
         autoResults.push({
@@ -803,9 +804,13 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
                         <div className={`ai-command-card risk-${card.toolCall.riskLevel}`} key={card.toolCall.id}>
                           <div className="ai-command-head">
                             <span className={`risk-badge risk-${card.toolCall.riskLevel}`}>{riskLabel(card.toolCall.riskLevel)}</span>
+                            {selectedSession?.platform && (
+                              <span className="ai-platform-badge" title="目标系统（连接时探测）">{selectedSession.platform === 'windows' ? 'Windows' : 'Linux/Unix'}</span>
+                            )}
                             <code>{card.toolCall.command}</code>
                           </div>
                           {card.toolCall.reason && <p className="ai-command-reason">{card.toolCall.reason}</p>}
+                          {card.status === 'pending' && <p className="ai-command-status">待批准：点击下方"批准全部执行"后才会执行。</p>}
                           {card.status === 'auto' && <p className="ai-command-status">自动执行中…</p>}
                           {card.status === 'approved' && <p className="ai-command-status">已批准，执行中…</p>}
                           {card.status === 'rejected' && <p className="ai-command-status">已拒绝，未执行。</p>}
@@ -866,6 +871,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
                   aria-label="命令执行权限模式"
                   title="命令执行权限模式"
                 >
+                  <option value="strict">严格批准</option>
                   <option value="approval">请求批准</option>
                   <option value="full">全部权限</option>
                 </select>
@@ -925,6 +931,7 @@ export function AiView({ hosts, sessions, selectedAlias, onSelect, onNotify }: A
             <label className="field full-width">
               <span>命令执行权限模式</span>
               <select value={settings.permissionMode} onChange={(event) => requestPermissionMode(event.target.value as AiSettings['permissionMode'])}>
+                <option value="strict">严格批准：所有命令（含只读）都需你批准</option>
                 <option value="approval">请求批准（默认）：只读自动执行，修改/删除需批准</option>
                 <option value="full">全部权限：只读+修改自动执行，删除仍需批准</option>
               </select>

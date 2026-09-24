@@ -112,16 +112,17 @@ fn is_dangerous_rm(segment: &str) -> bool {
             | "-i" | "-I" | "--interactive" => continue,
             _ => {}
         }
-        if let Some(flags) = arg.strip_prefix('-') {
-            if !flags.is_empty() && flags.chars().all(|c| c.is_ascii_alphabetic()) {
-                if flags.contains('r') || flags.contains('R') {
-                    recursive = true;
-                }
-                if flags.contains('f') {
-                    force = true;
-                }
-                continue;
+        if let Some(flags) = arg.strip_prefix('-')
+            && !flags.is_empty()
+            && flags.chars().all(|c| c.is_ascii_alphabetic())
+        {
+            if flags.contains('r') || flags.contains('R') {
+                recursive = true;
             }
+            if flags.contains('f') {
+                force = true;
+            }
+            continue;
         }
         targets.push(arg);
     }
@@ -377,9 +378,183 @@ pub fn classify_command(command: &str) -> RiskLevel {
         .unwrap_or(RiskLevel::ReadOnly)
 }
 
+/// 目标平台：决定命令白名单按 Unix 还是 Windows 语义分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPlatform {
+    Unix,
+    Windows,
+}
+
+impl TargetPlatform {
+    /// 从前端/会话的 platform 字符串解析；未知值一律按 Unix 保守处理。
+    pub fn parse(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("windows") {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+}
+
+/// Windows 只读命令白名单（首词，cmd.exe / 原生命令）。
+const WINDOWS_READONLY_CMDS: &[&str] = &[
+    "ver", "systeminfo", "tasklist", "netstat", "findstr", "find", "ipconfig", "whoami",
+    "hostname", "dir", "type", "echo", "chcp", "date", "time", "set", "ping", "tracert",
+    "pathping", "nslookup", "arp", "getmac", "driverquery", "qprocess", "tree", "where",
+    "more", "sort", "cls", "help",
+];
+
+/// Windows 删除/破坏性命令（首词）。
+const WINDOWS_DELETE_CMDS: &[&str] = &[
+    "del", "erase", "rd", "rmdir", "taskkill", "shutdown",
+];
+
+/// Windows 明确危险的子串模式（整盘格式化等）。
+const WINDOWS_DANGEROUS_PATTERNS: &[&str] = &["format c:", "format d:"];
+
+/// PowerShell  cmdlet 的写操作动词：命中即非只读。
+const POWERSHELL_WRITE_VERBS: &[&str] = &[
+    "set-", "new-", "remove-", "stop-", "start-", "restart-", "clear-", "rename-",
+    "copy-", "move-", "out-file", "add-content", "set-content", "invoke-expression",
+    "iex", "del", "rm", "rmdir", "format-",
+];
+
+/// `del /s /q C:\`、`rd /s /q C:\Windows` 等递归强删系统路径的词级判断。
+fn is_dangerous_windows_delete(segment: &str, base: &str) -> bool {
+    if !matches!(base, "del" | "erase" | "rd" | "rmdir") {
+        return false;
+    }
+    let lower = segment.to_ascii_lowercase();
+    let recursive = lower
+        .split_whitespace()
+        .any(|word| word.starts_with("/s") || word.starts_with("-s"));
+    if !recursive {
+        return false;
+    }
+    lower.split_whitespace().any(|word| {
+        matches!(
+            word,
+            "c:\\" | "c:\\*" | "c:\\windows" | "c:\\windows\\*" | "%systemroot%"
+        )
+    })
+}
+
+/// Windows 单段命令的风险级别。
+fn classify_windows_segment(segment: &str) -> RiskLevel {
+    let lower = segment.to_ascii_lowercase();
+    for pattern in WINDOWS_DANGEROUS_PATTERNS {
+        if lower.contains(pattern) {
+            return RiskLevel::Dangerous;
+        }
+    }
+    let token = first_token(segment).to_ascii_lowercase();
+    let base = token
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&token)
+        .trim_end_matches(".exe")
+        .trim_end_matches(".com")
+        .to_owned();
+    if is_dangerous_windows_delete(segment, &base) {
+        return RiskLevel::Dangerous;
+    }
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    match base.as_str() {
+        // sc query / reg query / route print 等查询子命令只读，其余算修改。
+        "sc" => {
+            return if words.get(1).is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "query" | "queryex" | "qc" | "enumdepend")) {
+                RiskLevel::ReadOnly
+            } else {
+                RiskLevel::Modify
+            };
+        }
+        "reg" => {
+            return if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("query")) {
+                RiskLevel::ReadOnly
+            } else {
+                RiskLevel::Modify
+            };
+        }
+        "route" => {
+            return if words.iter().any(|w| w.eq_ignore_ascii_case("print")) {
+                RiskLevel::ReadOnly
+            } else {
+                RiskLevel::Modify
+            };
+        }
+        "net" => {
+            return if words.get(1).is_some_and(|w| w.eq_ignore_ascii_case("view")) {
+                RiskLevel::ReadOnly
+            } else {
+                RiskLevel::Modify
+            };
+        }
+        // wmic 仅 get/list 查询只读（如 `wmic os get caption`）。
+        "wmic" => {
+            return if words.iter().skip(1).any(|w| {
+                w.eq_ignore_ascii_case("get") || w.eq_ignore_ascii_case("list")
+            }) {
+                RiskLevel::ReadOnly
+            } else {
+                RiskLevel::Modify
+            };
+        }
+        // PowerShell：出现 Get-* 且不出现写操作动词才算只读。
+        "powershell" | "pwsh" => {
+            let has_get = words
+                .iter()
+                .any(|w| w.to_ascii_lowercase().starts_with("get-"));
+            let has_write = words.iter().any(|w| {
+                let lw = w.to_ascii_lowercase();
+                POWERSHELL_WRITE_VERBS.iter().any(|verb| lw.starts_with(verb))
+            });
+            return if has_get && !has_write {
+                RiskLevel::ReadOnly
+            } else {
+                RiskLevel::Modify
+            };
+        }
+        _ => {}
+    }
+    if has_write_redirect(segment) && !token.is_empty() {
+        return RiskLevel::Modify;
+    }
+    if WINDOWS_DELETE_CMDS.contains(&base.as_str()) {
+        return RiskLevel::Delete;
+    }
+    if WINDOWS_READONLY_CMDS.contains(&base.as_str()) {
+        return RiskLevel::ReadOnly;
+    }
+    // 无法识别的命令保守归为修改。
+    RiskLevel::Modify
+}
+
+/// 平台感知的整串风险级别：Windows 目标启用 Windows 命令表，其余平台沿用 Unix 语义。
+pub fn classify_command_for(command: &str, platform: TargetPlatform) -> RiskLevel {
+    if platform == TargetPlatform::Unix {
+        return classify_command(command);
+    }
+    if has_subshell_syntax(command) {
+        return RiskLevel::Dangerous;
+    }
+    let lower = command.to_ascii_lowercase();
+    for pattern in DANGEROUS_PATTERNS {
+        if lower.contains(pattern) {
+            return RiskLevel::Dangerous;
+        }
+    }
+    split_segments(command)
+        .iter()
+        .map(|segment| classify_windows_segment(segment))
+        .max()
+        .unwrap_or(RiskLevel::ReadOnly)
+}
+
 /// 权限模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
+    /// 严格：所有命令（含只读）都需用户批准后才执行。
+    Strict,
     /// 默认：只读自动执行，修改/删除需用户批准。
     Approval,
     /// 全部权限：只读+修改自动执行，删除仍需用户批准。
@@ -389,8 +564,17 @@ pub enum PermissionMode {
 impl PermissionMode {
     pub fn from_str(value: &str) -> Self {
         match value {
+            "strict" => Self::Strict,
             "full" => Self::Full,
             _ => Self::Approval,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Approval => "approval",
+            Self::Full => "full",
         }
     }
 }
@@ -400,8 +584,8 @@ pub fn needs_approval(mode: PermissionMode, level: RiskLevel) -> bool {
     match level {
         RiskLevel::Dangerous => true, // 危险命令永远需要人工处理（实际会被直接拒绝）。
         RiskLevel::Delete => true,    // 删除在任何模式下都需批准。
-        RiskLevel::Modify => matches!(mode, PermissionMode::Approval),
-        RiskLevel::ReadOnly => false,
+        RiskLevel::Modify => !matches!(mode, PermissionMode::Full),
+        RiskLevel::ReadOnly => matches!(mode, PermissionMode::Strict),
     }
 }
 
@@ -574,6 +758,68 @@ mod tests {
     }
 
     #[test]
+    fn windows_readonly_commands_are_detected() {
+        let win = TargetPlatform::Windows;
+        assert_eq!(classify_command_for("ver", win), RiskLevel::ReadOnly);
+        assert_eq!(classify_command_for("systeminfo", win), RiskLevel::ReadOnly);
+        assert_eq!(classify_command_for("tasklist", win), RiskLevel::ReadOnly);
+        assert_eq!(
+            classify_command_for("netstat -an | findstr \"ESTABLISHED\"", win),
+            RiskLevel::ReadOnly
+        );
+        assert_eq!(
+            classify_command_for("ver & echo --- & wmic os get Caption /value", win),
+            RiskLevel::ReadOnly
+        );
+        assert_eq!(classify_command_for("ipconfig /all", win), RiskLevel::ReadOnly);
+        assert_eq!(classify_command_for("sc query sshd", win), RiskLevel::ReadOnly);
+        assert_eq!(classify_command_for("reg query HKLM\\SOFTWARE", win), RiskLevel::ReadOnly);
+        assert_eq!(classify_command_for("route print", win), RiskLevel::ReadOnly);
+        assert_eq!(
+            classify_command_for("powershell -Command Get-Process", win),
+            RiskLevel::ReadOnly
+        );
+    }
+
+    #[test]
+    fn windows_modify_delete_dangerous_are_detected() {
+        let win = TargetPlatform::Windows;
+        // 未识别命令保守归为修改
+        assert_eq!(classify_command_for("some-tool --flag", win), RiskLevel::Modify);
+        assert_eq!(classify_command_for("sc stop sshd", win), RiskLevel::Modify);
+        assert_eq!(classify_command_for("reg add HKLM\\SOFTWARE\\X", win), RiskLevel::Modify);
+        assert_eq!(classify_command_for("route add 10.0.0.0 mask 255.0.0.0 192.168.1.1", win), RiskLevel::Modify);
+        assert_eq!(classify_command_for("wmic process call create calc", win), RiskLevel::Modify);
+        assert_eq!(
+            classify_command_for("powershell -Command Set-ExecutionPolicy Bypass", win),
+            RiskLevel::Modify
+        );
+        assert_eq!(classify_command_for("echo hello > C:\\Temp\\a.txt", win), RiskLevel::Modify);
+        assert_eq!(classify_command_for("del C:\\Temp\\a.txt", win), RiskLevel::Delete);
+        assert_eq!(classify_command_for("rd C:\\Temp\\build", win), RiskLevel::Delete);
+        assert_eq!(classify_command_for("taskkill /PID 1234 /F", win), RiskLevel::Delete);
+        assert_eq!(classify_command_for("shutdown /r /t 0", win), RiskLevel::Delete);
+        assert_eq!(classify_command_for("format C:", win), RiskLevel::Dangerous);
+        assert_eq!(classify_command_for("rd /s /q C:\\", win), RiskLevel::Dangerous);
+        assert_eq!(classify_command_for("del /s /q C:\\Windows", win), RiskLevel::Dangerous);
+        // 子 shell 语法保守拦截策略对 Windows 同样生效
+        assert_eq!(classify_command_for("echo $(whoami)", win), RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn unix_classification_is_unchanged_for_unix_platform() {
+        // Unix 平台下 Windows 命令仍按 Unix 语义兜底（未识别 → 修改）
+        assert_eq!(
+            classify_command_for("tasklist", TargetPlatform::Unix),
+            RiskLevel::Modify
+        );
+        assert_eq!(
+            classify_command_for("ls -la", TargetPlatform::Unix),
+            RiskLevel::ReadOnly
+        );
+    }
+
+    #[test]
     fn approval_matrix() {
         assert!(!needs_approval(PermissionMode::Approval, RiskLevel::ReadOnly));
         assert!(needs_approval(PermissionMode::Approval, RiskLevel::Modify));
@@ -583,5 +829,17 @@ mod tests {
         assert!(!needs_approval(PermissionMode::Full, RiskLevel::Modify));
         assert!(needs_approval(PermissionMode::Full, RiskLevel::Delete));
         assert!(needs_approval(PermissionMode::Full, RiskLevel::Dangerous));
+    }
+
+    #[test]
+    fn strict_mode_requires_approval_for_everything() {
+        assert!(needs_approval(PermissionMode::Strict, RiskLevel::ReadOnly));
+        assert!(needs_approval(PermissionMode::Strict, RiskLevel::Modify));
+        assert!(needs_approval(PermissionMode::Strict, RiskLevel::Delete));
+        assert!(needs_approval(PermissionMode::Strict, RiskLevel::Dangerous));
+        assert_eq!(PermissionMode::from_str("strict"), PermissionMode::Strict);
+        assert_eq!(PermissionMode::from_str("full"), PermissionMode::Full);
+        assert_eq!(PermissionMode::from_str("approval"), PermissionMode::Approval);
+        assert_eq!(PermissionMode::from_str("unknown"), PermissionMode::Approval);
     }
 }

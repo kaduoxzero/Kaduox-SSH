@@ -12,9 +12,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  KADUOX_NATIVE_SIGNING_ENABLED: ${{ !contains(github.ref_name, '-') || vars.KADUOX_ENABLE_NATIVE_SIGNING == 'true' }}
-
 jobs:
   preflight:
     runs-on: ubuntu-latest
@@ -25,8 +22,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - name: Test release packaging, qualification, SBOM, workflow pins, Rust, signing, and attestation policy
-        run: python -m unittest scripts.release.test_release_tool scripts.release.test_qualification_tool scripts.release.test_release_qualification_policy scripts.release.test_sbom_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy scripts.release.test_native_signing_policy scripts.release.test_attestation_policy
+      - name: Test release packaging, workflow pins, and Rust toolchain policy
+        run: python -m unittest scripts.release.test_release_tool scripts.release.test_action_pins scripts.release.test_rust_toolchain_policy
       - name: Verify release metadata and tag
         run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
       - name: Require release commit to be reachable from main
@@ -34,110 +31,6 @@ jobs:
         run: |
           git fetch origin main --no-tags
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-
-  build:
-    needs: preflight
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-            exe_suffix: ""
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            exe_suffix: ""
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            archive: tar.gz
-            exe_suffix: ""
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            exe_suffix: .exe
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # action commit reviewed 2026-09-03
-        with:
-          toolchain: 1.98.1
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: release-${{ matrix.target }}
-      - name: Install D-Bus development headers (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config
-      - name: Verify release metadata and tag
-        shell: bash
-        run: python scripts/release/release_tool.py check --tag "$GITHUB_REF_NAME"
-      - name: Build all release binaries
-        run: cargo build -p kaduox-ssh-cli --release --locked --bins --target ${{ matrix.target }}
-      - name: Authenticode-sign Windows release binaries
-        if: ${{ env.KADUOX_NATIVE_SIGNING_ENABLED == 'true' && runner.os == 'Windows' }}
-        shell: pwsh
-        env:
-          KADUOX_WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.KADUOX_WINDOWS_SIGNING_PFX_BASE64 }}
-          KADUOX_WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.KADUOX_WINDOWS_SIGNING_PFX_PASSWORD }}
-          KADUOX_WINDOWS_TIMESTAMP_URL: ${{ vars.KADUOX_WINDOWS_TIMESTAMP_URL }}
-        run: ./scripts/release/sign-windows.ps1 -BinaryDir "target/${{ matrix.target }}/release"
-      - name: Developer ID-sign and notarize macOS release binaries
-        if: ${{ env.KADUOX_NATIVE_SIGNING_ENABLED == 'true' && runner.os == 'macOS' }}
-        shell: bash
-        env:
-          KADUOX_MACOS_SIGNING_CERT_P12_BASE64: ${{ secrets.KADUOX_MACOS_SIGNING_CERT_P12_BASE64 }}
-          KADUOX_MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.KADUOX_MACOS_SIGNING_CERT_PASSWORD }}
-          KADUOX_MACOS_SIGNING_IDENTITY: ${{ vars.KADUOX_MACOS_SIGNING_IDENTITY }}
-          KADUOX_APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.KADUOX_APPLE_NOTARY_KEY_P8_BASE64 }}
-          KADUOX_APPLE_NOTARY_KEY_ID: ${{ vars.KADUOX_APPLE_NOTARY_KEY_ID }}
-          KADUOX_APPLE_NOTARY_ISSUER_ID: ${{ vars.KADUOX_APPLE_NOTARY_ISSUER_ID }}
-        run: bash scripts/release/sign-macos.sh "target/${{ matrix.target }}/release"
-      - name: Smoke-test every release binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          for binary in kssh kssh-tui kssh-fleet kssh-inventory; do
-            path="target/${{ matrix.target }}/release/${binary}${{ matrix.exe_suffix }}"
-            test -f "$path"
-            output="$($path --version)"
-            printf '%s\n' "$output"
-            grep -F -- "$version" <<<"$output" >/dev/null
-          done
-      - name: Generate target-specific SPDX SBOM
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
-          python scripts/release/sbom_tool.py \
-            --tag "$GITHUB_REF_NAME" \
-            --target "${{ matrix.target }}" \
-            --source-date-epoch "$source_date_epoch" \
-            --output-dir dist
-      - name: Package release suite
-        shell: bash
-        run: >-
-          python scripts/release/release_tool.py package
-          --tag "$GITHUB_REF_NAME"
-          --target "${{ matrix.target }}"
-          --format "${{ matrix.archive }}"
-          --exe-suffix "${{ matrix.exe_suffix }}"
-          --output-dir dist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 7
 
   desktop-windows:
     needs: preflight
@@ -150,8 +43,8 @@ jobs:
         with:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build CLI tools and MCP server
-        run: cargo build --release --locked
+      - name: Build MCP server
+        run: cargo build -p kaduox-ssh-mcp --release --locked
       - name: Build desktop NSIS installer
         working-directory: apps/kaduox-desktop
         run: |
@@ -165,8 +58,6 @@ jobs:
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "apps/kaduox-desktop/src-tauri/target/release/bundle/nsis/Kaduox SSH_${version}_x64-setup.exe" "dist/Kaduox-SSH-${version}-windows-x64-setup.exe"
-          Copy-Item "apps/kaduox-desktop/src-tauri/target/release/kaduox-ssh-desktop.exe" "dist/Kaduox-SSH-${version}-windows-x64.exe"
-          Compress-Archive -Path target/release/kssh.exe,target/release/kssh-tui.exe,target/release/kssh-fleet.exe,target/release/kssh-inventory.exe -DestinationPath "dist/Kaduox-SSH-${version}-windows-x64-tools.zip" -Force
           Copy-Item target/release/kaduox-ssh-mcp.exe dist/kaduox-ssh-mcp.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -209,7 +100,7 @@ jobs:
           app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Kaduox SSH.app"
           test -d "$app"
           # dist/ 同时是前端构建输出目录，pkg 须放进干净的暂存目录，
-          # 否则 attach-desktop 的精确资产数校验会被前端文件顶爆。
+          # 否则 release 环节的精确资产数校验会被前端文件顶爆。
           mkdir -p dist-release
           pkgbuild \
             --component "$app" \
@@ -224,67 +115,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  attest:
-    needs: build
-    if: ${{ !contains(github.ref_name, '-') || vars.KADUOX_ENABLE_GITHUB_ATTESTATIONS == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-${{ matrix.target }}
-          path: dist
-      - name: Verify exact target attestation subject set
-        id: subject
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          target="${{ matrix.target }}"
-          case "$target" in
-            x86_64-pc-windows-msvc) archive_suffix="zip" ;;
-            x86_64-unknown-linux-gnu|x86_64-apple-darwin|aarch64-apple-darwin) archive_suffix="tar.gz" ;;
-            *) printf 'unsupported attestation target: %s\n' "$target" >&2; exit 1 ;;
-          esac
-          archive="$GITHUB_WORKSPACE/dist/kaduox-ssh-${version}-${target}.${archive_suffix}"
-          sbom="$GITHUB_WORKSPACE/dist/kaduox-ssh-${version}-${target}.spdx.json"
-          mapfile -t files < <(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -print | sort)
-          if [[ ${#files[@]} -ne 2 || ! -f "$archive" || ! -f "$sbom" ]]; then
-            printf 'invalid target attestation input set for %s\n' "$target" >&2
-            printf '%s\n' "${files[@]}" >&2
-            exit 1
-          fi
-          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
-          printf 'sbom=%s\n' "$sbom" >> "$GITHUB_OUTPUT"
-      - name: Attest target release provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: |
-            ${{ steps.subject.outputs.archive }}
-            ${{ steps.subject.outputs.sbom }}
-      - name: Bind target SBOM to release archive
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: ${{ steps.subject.outputs.archive }}
-          sbom-path: ${{ steps.subject.outputs.sbom }}
-
-  publish:
+  # 纯桌面端发行契约：恰好 3 个资产（Windows 安装器、macOS pkg、MCP server），
+  # 由本 job 直接创建 Release。校验和由 GitHub 资产页自动提供 sha256 digest。
+  release:
     needs:
       - preflight
-      - build
-      - attest
-    if: ${{ always() && needs.preflight.result == 'success' && needs.build.result == 'success' && (needs.attest.result == 'success' || (contains(github.ref_name, '-') && needs.attest.result == 'skipped')) }}
+      - desktop-windows
+      - desktop-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -292,39 +129,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: release-*
+          pattern: desktop-*
           path: dist
           merge-multiple: true
-      - name: Verify release archive and target-SBOM set
+      - name: Verify exact desktop asset set
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          targets=(
-            x86_64-unknown-linux-gnu
-            x86_64-apple-darwin
-            aarch64-apple-darwin
-            x86_64-pc-windows-msvc
-          )
-          for target in "${targets[@]}"; do
-            test -f "dist/kaduox-ssh-${version}-${target}.spdx.json"
-            if [[ "$target" == "x86_64-pc-windows-msvc" ]]; then
-              test -f "dist/kaduox-ssh-${version}-${target}.zip"
-            else
-              test -f "dist/kaduox-ssh-${version}-${target}.tar.gz"
-            fi
-          done
-          mapfile -t archives < <(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print | sort)
-          mapfile -t sboms < <(find dist -maxdepth 1 -type f -name '*.spdx.json' -print | sort)
-          mapfile -t unexpected < <(find dist -maxdepth 1 -type f ! \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.spdx.json' \) -print | sort)
-          if [[ ${#archives[@]} -ne 4 || ${#sboms[@]} -ne 4 || ${#unexpected[@]} -ne 0 ]]; then
-            printf 'invalid release asset set before checksums: archives=%s sboms=%s unexpected=%s\n' \
-              "${#archives[@]}" "${#sboms[@]}" "${#unexpected[@]}" >&2
+          test -f "dist/Kaduox-SSH-${version}-windows-x64-setup.exe"
+          test -f "dist/Kaduox-SSH-${version}-macos-universal.pkg"
+          test -f "dist/kaduox-ssh-mcp.exe"
+          mapfile -t files < <(find dist -maxdepth 1 -type f -print | sort)
+          if [[ ${#files[@]} -ne 3 ]]; then
+            printf 'invalid desktop asset set: expected exactly 3 files, got %s\n' "${#files[@]}" >&2
+            printf '%s\n' "${files[@]}" >&2
             exit 1
           fi
-          (cd dist && sha256sum *.tar.gz *.zip *.spdx.json 2>/dev/null | sort -k2 > SHA256SUMS)
-          test "$(wc -l < dist/SHA256SUMS)" -eq 8
-          cat dist/SHA256SUMS
       - name: Create GitHub Release
         shell: bash
         env:
@@ -346,41 +167,3 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             "${extra[@]}"
-
-  # Desktop packages attach after the official four-suite release exists so
-  # the publish-time asset contract (4 archives + 4 SBOMs + SHA256SUMS) keeps
-  # its exact-count meaning. Desktop extras carry their own SHA256SUMS.txt.
-  attach-desktop:
-    needs:
-      - publish
-      - desktop-windows
-      - desktop-macos
-    # always() is required: publish itself runs with always() after a skipped
-    # attest job, and without a status-check function here GitHub treats this
-    # job as skipped even when every direct need succeeded (observed on
-    # v0.33.0-rc.16, run 35843562087).
-    if: ${{ always() && needs.publish.result == 'success' && needs['desktop-windows'].result == 'success' && needs['desktop-macos'].result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: desktop-*
-          path: dist-desktop
-          merge-multiple: true
-      - name: Verify and upload desktop assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          mapfile -t files < <(find dist-desktop -maxdepth 1 -type f -print | sort)
-          test "${#files[@]}" -eq 5
-          (cd dist-desktop && sha256sum * | sort -k2 > SHA256SUMS.txt)
-          test "$(wc -l < dist-desktop/SHA256SUMS.txt)" -eq 5
-          cat dist-desktop/SHA256SUMS.txt
-          gh release upload "$GITHUB_REF_NAME" dist-desktop/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber

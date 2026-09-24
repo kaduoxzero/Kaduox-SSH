@@ -75,6 +75,8 @@ describe('AI settings storage', () => {
     expect(loadAiSettings().permissionMode).toBe('approval')
     localStorage.setItem('kaduox-desktop:ai-settings:v1', '{"permissionMode":"full"}')
     expect(loadAiSettings().permissionMode).toBe('full')
+    localStorage.setItem('kaduox-desktop:ai-settings:v1', '{"permissionMode":"strict"}')
+    expect(loadAiSettings().permissionMode).toBe('strict')
     localStorage.setItem('kaduox-desktop:ai-settings:v1', '{"permissionMode":"unsafe"}')
     expect(loadAiSettings().permissionMode).toBe('approval')
 

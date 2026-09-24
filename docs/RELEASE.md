@@ -1,6 +1,8 @@
 # Kaduox-SSH release process
 
-Kaduox-SSH uses a fail-closed release path. A Git tag is not sufficient by itself to publish binaries: repository metadata, tag/version identity, branch reachability, validation policy, all target builds, native signing, target-specific SBOM generation, provenance policy, archive contents, and the final release asset set must pass their gates first.
+Kaduox-SSH uses a fail-closed release path. A Git tag is not sufficient by itself to publish binaries: repository metadata, tag/version identity, branch reachability, validation policy, the desktop builds, and the final release asset set must pass their gates first.
+
+Distribution is **desktop-only**: the release publishes exactly three assets — the Windows NSIS installer, the macOS Universal pkg, and the standalone MCP server. CLI archives, SPDX SBOMs, checksum manifest files, GitHub attestations, and post-publication qualification were retired; per-asset SHA-256 digests shown on the GitHub Release page cover integrity verification.
 
 ## Version preparation
 
@@ -10,11 +12,13 @@ Use the repository release tool instead of editing version strings independently
 
 ```bash
 python scripts/release/release_tool.py check
-python scripts/release/release_tool.py set-version 0.27.0-rc.1
+python scripts/release/release_tool.py set-version 0.33.0-rc.1
 python scripts/release/release_tool.py check
 ```
 
 `set-version` computes and validates all metadata edits before the first write. A version-only change should update the workspace version and both local `Cargo.lock` package versions without changing registry dependency versions or checksums.
+
+The desktop client carries its own version copies: `apps/kaduox-desktop/src-tauri/Cargo.toml`, its `Cargo.lock`, `tauri.conf.json`, and `package.json` must be bumped together with the workspace version.
 
 ## Required validation before tagging
 
@@ -27,10 +31,8 @@ A release candidate is not ready to tag until the required jobs actually execute
 - Clippy with warnings denied on Rust 1.98.1;
 - dependency audit with pinned `cargo-audit 0.22.0`;
 - real OpenSSH integration fixtures;
-- release packaging and published-asset qualification tests;
-- target-specific SPDX generation/validation tests;
 - immutable external Action pin tests;
-- Rust toolchain, native-signing, attestation, and release-qualification policy tests;
+- Rust toolchain policy tests;
 - repository release metadata validation.
 
 A GitHub Actions job that fails before runner allocation, checkout, or any workflow step execution is neither a pass nor evidence of a source-code failure. Promotion and tagging remain blocked in that state.
@@ -52,10 +54,10 @@ The tagged commit must be reachable from `main`; a tag placed directly on a feat
 Production release and release-readiness workflows use reviewed, immutable 40-character Git commit SHAs for all external Actions in:
 
 - `.github/workflows/release.yml`;
-- `.github/workflows/release-qualification.yml`;
 - `.github/workflows/ci.yml`;
 - `.github/workflows/quality.yml`;
-- `.github/workflows/integration-openssh.yml`.
+- `.github/workflows/integration-openssh.yml`;
+- `.github/workflows/desktop-macos.yml`.
 
 `scripts/release/test_action_pins.py` enforces the exact approved `action@sha` multiset and occurrence count for each workflow. Mutable tags/branches, abbreviated SHAs, unapproved Actions, missing human-readable version comments, unexpected occurrence counts, and unpinned container Actions fail closed.
 
@@ -69,162 +71,46 @@ The workspace MSRV remains **Rust 1.85.0** and is tested separately. The audit j
 
 `scripts/release/test_rust_toolchain_policy.py` rejects moving `stable`, changed protected toolchain versions, accidental MSRV changes, and restoration of moving audit toolchains.
 
-## Release target matrix
+## Release asset contract
 
-The release matrix produces four binary suites:
+The release workflow has three jobs after preflight: `desktop-windows`, `desktop-macos`, and `release`.
 
-- Linux x86_64: `x86_64-unknown-linux-gnu` (`.tar.gz`);
-- macOS Intel: `x86_64-apple-darwin` (`.tar.gz`);
-- macOS Apple Silicon: `aarch64-apple-darwin` (`.tar.gz`);
-- Windows x86_64: `x86_64-pc-windows-msvc` (`.zip`).
-
-Every suite contains all four frontends (`kssh`, `kssh-tui`, `kssh-fleet`, `kssh-inventory`), `README.md`, `README.zh-CN.md`, `LICENSE`, and `manifest.json`. The manifest records the target plus SHA-256 and byte length for every binary.
-
-Archives are generated with deterministic metadata policy. Release packaging remains fail-closed on missing binaries/documents, changed binary declarations, unsafe path components, or oversized manifest output.
-
-## Native signing and notarization
-
-v0.25 makes native platform signing part of the stable release boundary.
-
-For stable tags:
-
-- Windows release binaries must be Authenticode-signed with the configured release certificate before packaging;
-- macOS binaries must be Developer ID-signed and successfully notarized before packaging;
-- the release path verifies the signed/notarized state according to the native-signing policy before publication.
-
-Pre-release tags may opt into the same native-signing path through the existing repository configuration. Signing credentials remain external secrets and are never stored in the repository.
-
-Native signing establishes platform publisher identity/trust-chain properties. SHA-256 checksums, SBOMs, and GitHub attestations complement native signing; they do not replace it.
-
-## Target-specific SPDX SBOMs
-
-v0.27 replaces the old single release-wide Cargo.lock inventory with one target-specific SPDX 2.3 JSON document per release target.
-
-Each native build matrix job runs the pinned Cargo/Rust toolchain and executes:
+`desktop-windows` builds the NSIS installer and the MCP server. `desktop-macos` builds the unsigned Universal 2 app and packages it as a `.pkg`. The `release` job downloads both artifact sets and requires **exactly three files**:
 
 ```text
-cargo metadata --format-version 1 --locked --filter-platform <target>
+Kaduox-SSH-<version>-windows-x64-setup.exe
+Kaduox-SSH-<version>-macos-universal.pkg
+kaduox-ssh-mcp.exe
 ```
 
-The target-filtered Cargo `resolve` graph is walked from `kaduox-ssh-cli`:
-
-- development-only dependency edges are excluded;
-- normal dependencies are represented as SPDX `DEPENDS_ON`;
-- build dependencies remain part of the build-material graph using `BUILD_DEPENDENCY_OF`;
-- every reachable metadata package must map to a committed `Cargo.lock` package identity so registry checksum data stays anchored to the lockfile;
-- unknown dependency kinds, duplicate identities, missing package mappings, malformed checksums, or unexpectedly large metadata/SBOM output fail closed.
-
-The four documents are named:
-
-```text
-kaduox-ssh-<version>-x86_64-unknown-linux-gnu.spdx.json
-kaduox-ssh-<version>-x86_64-apple-darwin.spdx.json
-kaduox-ssh-<version>-aarch64-apple-darwin.spdx.json
-kaduox-ssh-<version>-x86_64-pc-windows-msvc.spdx.json
-```
-
-Each document namespace includes both release tag and target triple. The SPDX creation timestamp derives from the tagged source commit timestamp for repeatable generation.
-
-The target SBOM is a Cargo dependency/build-material graph for that release target. Build dependencies are deliberately distinguished from runtime dependency edges; the document does not claim that every package is dynamically linked into every executable.
-
-## Final release asset contract
-
-The publish job requires curated release notes at `docs/releases/v<tag>.md`; the first Markdown heading becomes the release title and the file becomes the release body. A missing notes file fails closed — no bare auto-generated changelog is published.
-
-Before GitHub Release creation, the publish job requires exactly:
-
-- four release archives;
-- four matching target-specific SPDX files;
-- no unexpected files.
-
-It creates `SHA256SUMS` over those eight primary assets and requires exactly eight checksum entries. The GitHub Release therefore contains the eight checksummed primary assets plus `SHA256SUMS`.
-
-Desktop packages (Windows NSIS installer, standalone EXE, CLI tools ZIP, MCP server, macOS Universal pkg) are built by the `desktop-windows`/`desktop-macos` jobs and attached by the `attach-desktop` job **after** the primary release exists, with their own `SHA256SUMS.txt`. They are deliberately outside the eight-primary-asset contract and the post-publication qualification scope.
+Any missing or unexpected file fails closed. The job then creates the GitHub Release with curated notes: `docs/releases/v<tag>.md` must exist, its first Markdown heading becomes the release title, and the file becomes the release body. A missing notes file fails closed — no bare auto-generated changelog is published.
 
 Pre-release SemVer tags containing `-` are created as GitHub pre-releases automatically.
 
-## GitHub artifact attestation policy
+Integrity verification relies on the SHA-256 digest GitHub shows for every published asset (for example with PowerShell `Get-FileHash -Algorithm SHA256 <file>`); no separate checksum manifest is published.
 
-v0.27 makes GitHub artifact attestations mandatory for **stable** tags.
+## Signing
 
-The attestation job runs when either:
-
-- the tag is stable (no pre-release suffix), or
-- a pre-release explicitly enables `KADUOX_ENABLE_GITHUB_ATTESTATIONS=true`.
-
-A stable publish job cannot accept an attestation result of `skipped`. If the stable attestation matrix fails or cannot run, stable publication is blocked rather than silently downgraded.
-
-Each target receives its own attestation matrix job. That job downloads only `release-<target>` and requires exactly two inputs:
-
-- that target's archive;
-- that target's SPDX file.
-
-The same reviewed `actions/attest` v4 commit is invoked twice per target:
-
-1. provenance mode covers the archive and its SPDX asset together;
-2. SBOM mode uses the archive as subject and the target SPDX file as `sbom-path`, explicitly binding the target SBOM predicate to the target archive.
-
-The attestation job is restricted to `contents: read`, `id-token: write`, and `attestations: write`. It does not receive release-content write access. The OCI artifact storage-record option is not used for file attestations.
-
-GitHub artifact attestations for private/internal repositories depend on GitHub account capability (currently GitHub Enterprise Cloud). The production stable channel treats unavailable attestation capability as a release blocker. Pre-releases may omit attestations unless explicitly enabled.
-
-Consumers can verify a published archive with GitHub CLI when attestations are available, for example:
-
-```bash
-gh attestation verify ./kaduox-ssh-<version>-x86_64-unknown-linux-gnu.tar.gz \
-  -R kaduoxzero/Kaduox-SSH
-```
-
-Attestation establishes an integrity/provenance statement about the workflow subject. It is not a vulnerability-free guarantee.
-
-## Published release qualification
-
-`.github/workflows/release-qualification.yml` runs on `release.published` and can also be dispatched manually for an exact tag. It downloads the **published bytes** and never recompiles a substitute artifact.
-
-`scripts/release/qualification_tool.py` requires exactly the eight primary assets plus `SHA256SUMS`. It verifies all eight checksums and additionally validates each target SPDX document's:
-
-- SPDX version/data license/document identity;
-- exact release version and target-specific name;
-- tag/target namespace;
-- creation metadata declaring the target-filtered Cargo graph;
-- Kaduox release root target marker;
-- local Kaduox package presence;
-- relationship references and document-to-root `DESCRIBES` relationship.
-
-This content-level policy means replacing a Linux SBOM with a Windows-target document and recomputing `SHA256SUMS` still fails qualification.
-
-For each platform archive, qualification validates archive paths/member types/modes/size budgets before extraction, verifies the manifest tag/version/target and binary sizes/digests, then launches all four packaged frontends with `--version`.
-
-On Linux, the qualification workflow additionally runs the real OpenSSH integration suite against the extracted published `kssh` binary.
-
-Post-publication qualification is an acceptance/announcement gate rather than a transactional rollback mechanism. A failed qualification requires correction or withdrawal before announcing the release.
+All desktop packages are currently **unsigned**: Windows may show an unknown-publisher SmartScreen prompt, and macOS requires right-click → Open on first launch. The earlier CLI native-signing pipeline (Authenticode / Developer ID + notarization) was retired together with CLI distribution; the historical design remains documented in `docs/NATIVE_SIGNING.md`.
 
 ## Verification after publication
 
 Before announcing a release:
 
-1. require the four-target Release Qualification workflow for the exact tag to execute successfully;
-2. confirm it downloaded exactly four archives, four target SPDX files, and `SHA256SUMS`;
-3. confirm all eight primary checksums were verified;
-4. confirm each target's SPDX identity/namespace/target policy passed;
-5. confirm each platform archive was safely extracted and all four packaged binaries returned the expected version;
-6. require the Linux real OpenSSH suite against the published `kssh` to pass;
-7. for stable releases, require the four target attestation jobs to succeed and verify archive attestations with `gh attestation verify`;
-8. verify native Authenticode / Developer ID / notarization state according to the stable signing policy.
+1. confirm the Release page shows exactly the three desktop assets plus GitHub's automatic source archives;
+2. download each asset and compare it against the SHA-256 digest shown on the Release page;
+3. install the Windows package on a clean profile and smoke-test connect/terminal/SFTP;
+4. install the macOS package and confirm the unsigned-launch flow works as documented.
 
-A job with no assigned runner or executed steps is not qualification evidence.
+## Retired pipeline elements
 
-## V1 release-security boundary
+The following were part of releases up to v0.33.0-rc.18 and no longer exist:
 
-The V1 release-security path now combines:
+- four-platform CLI archive matrix (`kaduox-ssh-<version>-<target>.tar.gz/.zip`);
+- per-target SPDX SBOMs and the `SHA256SUMS` / `SHA256SUMS.txt` manifests;
+- GitHub artifact attestations (`attest` job);
+- post-publication qualification (`release-qualification.yml`, `qualification_tool.py`);
+- the standalone desktop EXE and the Windows CLI tools ZIP;
+- native signing scripts for CLI binaries.
 
-- deterministic archive/package manifests and SHA-256 checksums;
-- immutable workflow Action pins;
-- fixed production Rust toolchain plus separate MSRV validation;
-- post-publication qualification of downloaded release bytes;
-- Windows Authenticode signing;
-- macOS Developer ID signing and notarization;
-- target-specific SPDX dependency/build-material graphs;
-- stable-release GitHub provenance and target-SBOM attestations.
-
-Remaining V1 blockers should therefore be treated as **validation/operational readiness**, not missing release-policy design: the configured jobs must acquire runners and execute successfully, production signing/attestation account capabilities and credentials must be available, and the final V1 candidate must complete the full promotion/qualification path without bypassing these gates.
+Historical design rationale stays in `docs/V0.20.md`, `docs/V0.24.md`, `docs/V0.27.md`, and `docs/NATIVE_SIGNING.md`.

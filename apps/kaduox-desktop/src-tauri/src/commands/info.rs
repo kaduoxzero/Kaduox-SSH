@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{RemotePlatform, RemoteUser};
 use sysinfo::{Disks, Networks, System};
@@ -42,10 +40,10 @@ $stdout.Dispose()
 /// 脚本必须保持纯 ASCII（metrics.ps1 注释一律英文），避免 stdin 编码分歧。
 const POWERSHELL_STDIN_COMMAND: &str = "powershell -NoProfile -ExecutionPolicy Bypass -Command -";
 
-/// stderr 尾部片段，用于失败诊断。
-fn stderr_tail(stderr: &[u8]) -> String {
+/// stderr 尾部片段，用于失败诊断；按目标平台选择编码（Windows 为 GBK）。
+fn stderr_tail(stderr: &[u8], platform: RemotePlatform) -> String {
     const TAIL: usize = 500;
-    let text = String::from_utf8_lossy(stderr);
+    let text = super::connection::decode_remote_output(stderr, platform);
     let trimmed = text.trim();
     if trimmed.len() <= TAIL {
         return trimmed.to_owned();
@@ -175,7 +173,7 @@ async fn query_basic_info_inner(alias: String, state: &DesktopState) -> Result<B
             anyhow::ensure!(
                 status == Some(0),
                 "基础信息查询失败（退出码 {status:?}）：{}",
-                stderr_tail(&stderr)
+                stderr_tail(&stderr, RemotePlatform::Windows)
             );
             String::from_utf8_lossy(&stdout).into_owned()
         }
@@ -455,40 +453,36 @@ fn format_uptime(seconds: u64) -> String {
 /// `nvidia-smi` reports memory in MiB with `nounits`; values are converted to
 /// bytes so the frontend byte formatters stay correct. Returns an empty list
 /// when no NVIDIA driver is installed — the UI renders its empty state.
-fn local_gpus() -> Vec<GpuMetricsDto> {
-    let query = [
-        "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-        "--format=csv,noheader,nounits",
-    ];
-
-    let mut command = std::process::Command::new("nvidia-smi");
-    command.args(query);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let output = match command.output() {
-        Ok(output) if output.status.success() => output,
-        _ => {
-            // The driver usually places nvidia-smi in System32; try the
-            // absolute path when it is not on PATH.
-            let mut fallback = std::process::Command::new(
-                PathBuf::from(r"C:\Windows\System32").join("nvidia-smi.exe"),
-            );
-            fallback.args(query);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                fallback.creation_flags(CREATE_NO_WINDOW);
-            }
-            match fallback.output() {
-                Ok(output) if output.status.success() => output,
-                _ => return Vec::new(),
-            }
+/// Runs through tokio with a timeout: the first call can take seconds while a
+/// power-gated dGPU wakes up, and a blocking spawn would stall the async
+/// executor (terminal/SFTP share it).
+async fn local_gpus() -> Vec<GpuMetricsDto> {
+    async fn nvidia_smi_output(program: &std::path::Path) -> Option<std::process::Output> {
+        const QUERY: [&str; 2] = [
+            "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+            "--format=csv,noheader,nounits",
+        ];
+        let mut command = tokio::process::Command::new(program);
+        command.args(QUERY);
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
         }
+        match tokio::time::timeout(std::time::Duration::from_secs(3), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => Some(output),
+            _ => None,
+        }
+    }
+
+    let output = match nvidia_smi_output(std::path::Path::new("nvidia-smi")).await {
+        Some(output) => output,
+        // The driver usually places nvidia-smi in System32; try the
+        // absolute path when it is not on PATH.
+        None => match nvidia_smi_output(std::path::Path::new(r"C:\Windows\System32\nvidia-smi.exe")).await {
+            Some(output) => output,
+            None => return Vec::new(),
+        },
     };
 
     String::from_utf8_lossy(&output.stdout)
@@ -597,7 +591,7 @@ async fn local_system_metrics() -> Result<SystemMetricsDto> {
             usage_percent: None,
         }),
         disks,
-        gpus: local_gpus(),
+        gpus: local_gpus().await,
         network: NetworkMetricsDto {
             rx_bytes: Some(rx_bytes),
             tx_bytes: Some(tx_bytes),
@@ -663,21 +657,22 @@ async fn query_system_metrics_inner(
         .session_lease(alias)
         .await
         .map_err(anyhow::Error::msg)?;
-    let (status, stdout, stdout_truncated, stderr_bytes) = match lease.remote_platform().await {
+    let platform = lease.remote_platform().await;
+    let (status, stdout, stdout_truncated, stderr_bytes) = match platform {
         RemotePlatform::Windows => {
             let (status, stdout, stderr) = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
+                std::time::Duration::from_secs(15),
                 exec_windows_script(&lease, SYSTEM_METRICS_PS1),
             )
             .await
-            .context("指标采集超过 8 秒，下个周期将重试")??;
+            .context("指标采集超过 15 秒，下个周期将重试")??;
             (status, stdout, false, stderr)
         }
         RemotePlatform::Unix => {
             let mut stdout = super::connection::CappedWriter::default();
             let mut stderr = super::connection::CappedWriter::default();
             let status = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
+                std::time::Duration::from_secs(15),
                 lease.exec_stream(
                     SYSTEM_METRICS_COMMAND,
                     &RemoteUser::Current,
@@ -686,7 +681,7 @@ async fn query_system_metrics_inner(
                 ),
             )
             .await
-            .context("指标采集超过 8 秒，下个周期将重试")??;
+            .context("指标采集超过 15 秒，下个周期将重试")??;
             let (stdout, truncated) = stdout.into_parts();
             let (stderr, _) = stderr.into_parts();
             (status, stdout, truncated, stderr)
@@ -695,7 +690,7 @@ async fn query_system_metrics_inner(
     anyhow::ensure!(
         status == Some(0),
         "指标采集命令失败（退出码 {status:?}），目标需要 Linux /proc 或 Windows PowerShell 支持：{}",
-        stderr_tail(&stderr_bytes)
+        stderr_tail(&stderr_bytes, platform)
     );
     anyhow::ensure!(!stdout_truncated, "指标输出超过大小限制");
     let metrics = parse_system_metrics(&String::from_utf8_lossy(&stdout))?;
