@@ -59,7 +59,9 @@ $smi = Get-Command nvidia-smi.exe | Select-Object -First 1
 if ($smi) {
   $gpuJob = Start-Job -ScriptBlock {
     param($exe)
-    & $exe --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits
+    # Quote both arguments: inside a job the comma list would otherwise be
+    # parsed as an array and nvidia-smi would receive mangled options.
+    & $exe '--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu' '--format=csv,noheader,nounits'
   } -ArgumentList $smi.Source
   if (Wait-Job $gpuJob -Timeout 3) {
     Receive-Job $gpuJob | ForEach-Object { $lines.Add("gpu=$_") }
