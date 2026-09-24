@@ -607,10 +607,11 @@ export async function aiExecuteCommand(
   command: string,
   permissionMode: AiPermissionMode,
   approved: boolean,
+  approvalBatch?: string,
 ): Promise<AiExecResult> {
   if (!isDesktopRuntime) throw new Error('请在桌面客户端执行 AI 命令')
   return invoke<AiExecResult>('ai_execute_command', {
-    request: { alias, command, permissionMode, approved },
+    request: { alias, command, permissionMode, approved, approvalBatch: approvalBatch ?? null },
   })
 }
 

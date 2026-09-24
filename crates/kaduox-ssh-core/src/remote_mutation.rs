@@ -262,12 +262,15 @@ async fn read_file(sftp: &SftpSession, path: &str) -> Result<Vec<u8>> {
         }
     }
     use tokio::io::AsyncReadExt;
-    let mut file = sftp
+    let file = sftp
         .open(path.to_owned())
         .await
         .with_context(|| format!("无法打开远程文件 {path}"))?;
+    // stat 可能不返回 size（恶意/故障服务器）；读取必须有硬上限，
+    // 否则流式无限数据会耗尽本地内存。
     let mut content = Vec::new();
-    file.read_to_end(&mut content)
+    file.take(MAX_SMALL_FILE_BYTES + 1)
+        .read_to_end(&mut content)
         .await
         .with_context(|| format!("无法读取远程文件 {path}"))?;
     if content.len() as u64 > MAX_SMALL_FILE_BYTES {

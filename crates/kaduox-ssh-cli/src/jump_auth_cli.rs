@@ -15,6 +15,31 @@ impl JumpAuthProvider for InteractiveJumpAuth {
                 }));
             }
 
+            // 先试系统凭据存储（与 desktop/MCP 共用账户名格式），命中即免交互。
+            if request.attempt == 2 {
+                let mut config = kaduox_ssh_core::ConnectionConfig::new(
+                    &request.jump.host,
+                    &request.jump.username,
+                );
+                config.port = request.jump.port;
+                let account = kaduox_ssh_core::keyring_account_name(&config);
+                if let Ok(entry) = keyring::Entry::new("kssh", &account)
+                    && let Ok(password) = entry.get_password()
+                    && !password.is_empty()
+                {
+                    return Ok(Some(Authentication::Password(password)));
+                }
+            }
+
+            // 非交互环境（管道/脚本/自动化）没有 tty，密码提示会永久挂起；
+            // 直接失败并提示改用 --password 或预存凭据。
+            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                anyhow::bail!(
+                    "跳板 {} 需要密码但当前是非交互环境；请用 --password 提供或先在主机库存入凭据",
+                    request.jump.alias
+                );
+            }
+
             let prompt = format!(
                 "Jump {}/{} {} ({}@{}:{}) password, attempt {}: ",
                 request.index + 1,

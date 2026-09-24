@@ -133,6 +133,9 @@ pub(crate) fn parse_du_bytes(stdout: &[u8]) -> Option<u64> {
     size.parse().ok()
 }
 
+/// 列表/展示层的条目名校验。注意：这里必须保持宽松（Unix 上 `\`、`:` 是合法
+/// 文件名字符），只排除会破坏路径拼接的条目。任何把条目名落到本地文件系统的
+/// 调用方必须使用 remote_path::validate_remote_child_name 的严格标准。
 fn validate_remote_entry_name(name: &str) -> Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         bail!("remote directory returned an invalid entry name");

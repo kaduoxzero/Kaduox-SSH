@@ -147,6 +147,7 @@ pub(crate) async fn upload_file(
         bail!("{} is not a regular file", local_path.display());
     }
     let total = local_metadata.len();
+    validate_remote_file_leaf(remote_path)?;
     ensure_remote_parent(sftp, remote_path).await?;
 
     let work_path = transfer_remote_work_path(remote_path, options.atomic);
@@ -300,6 +301,13 @@ pub(crate) async fn download_file(
     if offset == 0 {
         local_options.truncate(true);
     }
+    // Unix 下用 O_NOFOLLOW 把 lstat 校验与 open 之间的 TOCTOU 窗口关掉：
+    // 攻击者在检查后换入符号链接时 open 直接失败而不是穿透到任意路径。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        local_options.custom_flags(libc::O_NOFOLLOW);
+    }
     let mut local = local_options
         .open(&work_path)
         .await
@@ -318,7 +326,7 @@ pub(crate) async fn download_file(
         Some(total),
         false,
     );
-    let copied = copy_with_progress(
+    let copy_result = copy_with_progress(
         &mut remote,
         &mut local,
         TransferDirection::Download,
@@ -327,11 +335,33 @@ pub(crate) async fn download_file(
         Some(total),
         options,
     )
-    .await?;
-    local.flush().await?;
-    local.sync_all().await?;
+    .await;
+    let finish_result = async {
+        local.flush().await?;
+        local.sync_all().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
     drop(remote);
     drop(local);
+
+    let copied = match copy_result {
+        Ok(copied) => copied,
+        Err(error) => {
+            // staging 与目标分离（atomic）时清理半成品，避免下次 resume 接续脏数据；
+            // 非原子原地覆盖场景不删除（那会连带删掉用户原有文件）。
+            if work_path != local_path {
+                let _ = tokio::fs::remove_file(&work_path).await;
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = finish_result {
+        if work_path != local_path {
+            let _ = tokio::fs::remove_file(&work_path).await;
+        }
+        return Err(error);
+    }
 
     if options.atomic {
         finish_local_atomic(&work_path, local_path).await?;
@@ -469,11 +499,24 @@ pub(crate) async fn download_tree(
         directories: 1,
         ..Default::default()
     };
-    let mut stack = vec![(remote_root.to_owned(), local_root.to_path_buf())];
+    // 与桌面端递归下载一致的最大深度：恶意服务器可构造数万层深树耗尽本地路径/句柄。
+    const MAX_DOWNLOAD_DEPTH: u32 = 32;
+    let mut stack = vec![(remote_root.to_owned(), local_root.to_path_buf(), 0u32)];
     let mut tasks = JoinSet::new();
+    // 本地文件系统是大小写/Unicode 正规化不敏感的（Windows 大小写、macOS NFC/NFD）：
+    // 同一目录内归一化后冲突的条目只下载第一个，其余计入 skipped，避免静默互覆。
+    let mut seen_local_names: std::collections::HashMap<
+        PathBuf,
+        std::collections::HashSet<String>,
+    > = std::collections::HashMap::new();
 
-    while let Some((remote_dir, local_dir)) = stack.pop() {
+    while let Some((remote_dir, local_dir, depth)) = stack.pop() {
         check_cancelled(&options)?;
+        if depth >= MAX_DOWNLOAD_DEPTH {
+            bail!(
+                "recursive download exceeded {MAX_DOWNLOAD_DEPTH} directory levels at {remote_dir}"
+            );
+        }
         for entry in sftp.read_dir(remote_dir.clone()).await? {
             check_cancelled(&options)?;
             let file_type = entry.file_type();
@@ -495,11 +538,21 @@ pub(crate) async fn download_tree(
             let remote_path = join_remote_under_root(&remote_dir, &name)?;
             let local_relative = local_path_from_remote_relative(&name)?;
             let local_path = local_dir.join(local_relative);
+            use unicode_normalization::UnicodeNormalization;
+            let normalized: String = name.nfc().collect::<String>().to_lowercase();
+            if !seen_local_names
+                .entry(local_dir.clone())
+                .or_default()
+                .insert(normalized)
+            {
+                summary.skipped += 1;
+                continue;
+            }
             if file_type.is_dir() {
                 ensure_local_directory_no_symlinks(&local_path, "recursive download directory")
                     .await?;
                 summary.directories += 1;
-                stack.push((remote_path, local_path));
+                stack.push((remote_path, local_path, depth + 1));
             } else {
                 if tasks.len() >= options.file_concurrency {
                     collect_next_transfer(&mut tasks, &mut summary).await?;
@@ -710,6 +763,19 @@ async fn ensure_remote_parent(sftp: &SftpSession, path: &str) -> Result<()> {
         if !parent.is_empty() {
             ensure_remote_dir(sftp, parent).await?;
         }
+    }
+    Ok(())
+}
+
+/// 校验上传目标路径的末段文件名：`dir/..` 这类路径父段合法、
+/// 末段直达服务端解析，必须在打开前拦下。
+pub(crate) fn validate_remote_file_leaf(path: &str) -> Result<()> {
+    let leaf = path.rsplit('/').next().unwrap_or(path);
+    if leaf.is_empty() || leaf == "." || leaf == ".." {
+        bail!("remote upload target has an unsafe final component: {path}");
+    }
+    if leaf.contains('\0') {
+        bail!("remote upload target cannot contain NUL bytes");
     }
     Ok(())
 }

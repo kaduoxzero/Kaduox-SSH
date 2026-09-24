@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::{RemotePlatform, RemoteUser};
+use std::sync::Arc;
 use sysinfo::{Disks, Networks, System};
 use tauri::State;
 use tokio::time::sleep;
@@ -653,6 +654,15 @@ async fn query_system_metrics_inner(
     if alias.is_empty() {
         bail!("请选择要查询的主机");
     }
+    // per-alias 单飞：多面板并发轮询同一主机时，只放行一个采集通道。
+    let lock = {
+        let mut locks = state.metrics_locks.lock().await;
+        Arc::clone(locks.entry(alias.to_owned()).or_default())
+    };
+    let _guard = match lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => bail!("该主机的指标采集正在进行中，跳过本次轮询"),
+    };
     let lease = state
         .session_lease(alias)
         .await

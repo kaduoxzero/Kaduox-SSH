@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
@@ -78,11 +78,16 @@ impl McpServer {
     async fn run(&mut self) -> Result<()> {
         let stdin = io::stdin();
         let mut reader = stdin.lock();
-        let mut line = String::new();
+        // 单行上限：异常宿主进程发送无换行的无限大行不能撑爆内存。
+        const MAX_LINE_BYTES: u64 = 1024 * 1024;
         loop {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
+            let mut line = String::new();
+            let read = io::BufRead::read_line(&mut (&mut reader).take(MAX_LINE_BYTES), &mut line)?;
+            if read == 0 {
                 break;
+            }
+            if !line.ends_with('\n') && read as u64 >= MAX_LINE_BYTES {
+                bail!("MCP 请求单行超过 1 MiB");
             }
             let raw = line.trim();
             if raw.is_empty() {
@@ -448,13 +453,10 @@ impl McpServer {
         let remote_path = required_string(arguments, "remotePath")?;
         let local_path = required_string(arguments, "localPath")?;
         validate_remote_path(&remote_path)?;
-        if local_path.contains('\0') {
-            bail!("本地路径不能包含 NUL");
-        }
-        let path = Path::new(&local_path);
+        let path = validate_local_download_path(&local_path)?;
         let lease = self.lease_for(&alias).await?.1;
         let bytes = lease
-            .download(&remote_path, path)
+            .download(&remote_path, &path)
             .await
             .with_context(|| format!("下载 {remote_path} 失败"))?;
         Ok(json!({"alias": alias, "localPath": local_path, "bytes": bytes}))
@@ -671,17 +673,8 @@ fn file_type_name(file_type: RemoteFileType) -> &'static str {
 }
 
 fn stored_password(config: &ConnectionConfig) -> Option<String> {
-    let account = format!(
-        "{}@{}",
-        config.username,
-        if config.host.contains(':')
-            && !(config.host.starts_with('[') && config.host.ends_with(']'))
-        {
-            format!("[{}]:{}", config.host, config.port)
-        } else {
-            format!("{}:{}", config.host, config.port)
-        }
-    );
+    // 与 desktop 共用 core 的同一份账户名拼接，防止格式漂移导致静默取不到密码。
+    let account = kaduox_ssh_core::keyring_account_name(config);
     let entry = keyring::Entry::new("kssh", &account).ok()?;
     entry.get_password().ok()
 }
@@ -702,6 +695,41 @@ fn validate_command(command: &str) -> Result<()> {
         bail!("命令长度必须在 1..=16384 字节之间且不能包含 NUL");
     }
     Ok(())
+}
+
+/// MCP 下载落盘必须限制在用户主目录内：MCP 客户端是任意接入的 LLM，
+/// 任意写路径会放大成覆盖 .bashrc / SSH 私钥 / 可执行文件。
+fn validate_local_download_path(local_path: &str) -> Result<std::path::PathBuf> {
+    if local_path.contains('\0') {
+        bail!("本地路径不能包含 NUL");
+    }
+    let path = std::path::PathBuf::from(local_path);
+    if !path.is_absolute() {
+        bail!("本地路径必须是绝对路径");
+    }
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .context("无法确定用户主目录")?;
+    // 手工展开 .. 做前缀判定（目标文件通常尚不存在，不能用 canonicalize）。
+    fn normalize(path: &std::path::Path) -> std::path::PathBuf {
+        let mut out = std::path::PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out
+    }
+    let normalized = normalize(&path);
+    if !normalized.starts_with(normalize(&home)) {
+        bail!("本地路径必须位于用户主目录内");
+    }
+    Ok(normalized)
 }
 
 fn required_string(arguments: &Value, name: &str) -> Result<String> {
@@ -776,6 +804,24 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_download_path_is_confined_to_home() {
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        let inside = home.join("Downloads").join("a.txt");
+        assert!(validate_local_download_path(inside.to_str().unwrap()).is_ok());
+        let escape = home.join("..").join("outside.txt");
+        assert!(validate_local_download_path(escape.to_str().unwrap()).is_err());
+        assert!(validate_local_download_path("relative/a.txt").is_err());
+        if cfg!(windows) {
+            assert!(validate_local_download_path("C:\\Windows\\evil.dll").is_err());
+        } else {
+            assert!(validate_local_download_path("/etc/passwd").is_err());
+        }
+    }
 
     #[test]
     fn parses_basic_info_output() {

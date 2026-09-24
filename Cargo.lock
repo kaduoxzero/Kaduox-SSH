@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-cli"
-version = "0.33.0-rc.20"
+version = "0.33.0-rc.21"
 dependencies = [
  "anyhow",
  "clap",
@@ -1503,21 +1503,23 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "0.33.0-rc.20"
+version = "0.33.0-rc.21"
 dependencies = [
  "anyhow",
  "futures",
  "hmac 0.13.0",
+ "libc",
  "russh",
  "russh-config",
  "russh-sftp",
  "sha1 0.11.0",
  "tokio",
+ "unicode-normalization",
 ]
 
 [[package]]
 name = "kaduox-ssh-daemon"
-version = "0.33.0-rc.20"
+version = "0.33.0-rc.21"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1528,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "0.33.0-rc.20"
+version = "0.33.0-rc.21"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1536,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-mcp"
-version = "0.33.0-rc.20"
+version = "0.33.0-rc.21"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -2891,6 +2893,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "tokio"
 version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3044,6 +3052,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

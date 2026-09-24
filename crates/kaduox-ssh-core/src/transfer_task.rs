@@ -330,6 +330,23 @@ fn register_locked(
     destination: String,
     retry_of: Option<TransferTaskId>,
 ) -> Result<TransferTaskRegistration> {
+    // 同一目标（方向+目的端）已有非终态任务时拒绝：下载的 staging 名与上传的
+    // 远端 staging 名都由目的路径派生，并发双任务会交错写坏同一文件。
+    let direction = kind.direction();
+    let conflict = inner.tasks.values().any(|record| {
+        !record.snapshot.state.is_terminal()
+            && record.snapshot.kind.direction() == direction
+            && record.snapshot.destination == destination
+    });
+    if conflict {
+        bail!(
+            "已有一个{}任务正在写入相同目标，拒绝并发重复: {destination}",
+            match direction {
+                TransferDirection::Upload => "上传",
+                TransferDirection::Download => "下载",
+            }
+        );
+    }
     make_capacity(inner)?;
     let id = TransferTaskId(inner.next_id);
     inner.next_id = inner
@@ -509,6 +526,43 @@ mod tests {
         assert!(
             registry
                 .register(TransferTaskKind::UploadFile, "g", "h")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn concurrent_tasks_to_same_destination_are_rejected() {
+        let registry = TransferTaskRegistry::new(8).unwrap();
+        let first = registry
+            .register(TransferTaskKind::DownloadFile, "/remote/a", "local-a")
+            .unwrap();
+        // 同方向同目标：拒绝。
+        assert!(
+            registry
+                .register(TransferTaskKind::DownloadFile, "/remote/a2", "local-a")
+                .is_err()
+        );
+        // 不同目标：放行。
+        assert!(
+            registry
+                .register(TransferTaskKind::DownloadFile, "/remote/b", "local-b")
+                .is_ok()
+        );
+        // 不同方向同路径字符串：放行。
+        assert!(
+            registry
+                .register(TransferTaskKind::UploadFile, "local-a", "local-a")
+                .is_ok()
+        );
+        // 第一个任务终态后：retry 不受去重影响（原任务已终态）。
+        registry.mark_running(first.id()).unwrap();
+        registry.mark_cancelled(first.id()).unwrap();
+        let retry = registry.register_retry(first.id());
+        assert!(retry.is_ok());
+        // retry 任务占用目标后，新任务同目标再次被拒。
+        assert!(
+            registry
+                .register(TransferTaskKind::DownloadFile, "/remote/a", "local-a")
                 .is_err()
         );
     }

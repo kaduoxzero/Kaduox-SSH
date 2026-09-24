@@ -80,44 +80,52 @@ pub async fn start_terminal(
     };
     let task_terminal_id = terminal_id.clone();
     let task_app = app.clone();
-    let task = tokio::spawn(async move {
-        let mut output = EventWriter {
-            app: task_app.clone(),
-            terminal_id: task_terminal_id.clone(),
-        };
-        let result = lease
-            .interactive_shell(
-                &mut shell_input,
-                &mut output,
-                &terminal_spec,
-                &RemoteUser::Current,
-                Some(resize_rx),
-            )
-            .await;
-        let (exit_status, error) = match result {
-            Ok(status) => (status, None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-        let _ = task_app.emit(
-            "terminal-exit",
-            TerminalExitEvent {
-                terminal_id: task_terminal_id,
-                exit_status,
-                error,
-            },
-        );
-    });
+    // 先建好 AbortHandle 并把控制条目插表，再 spawn：spawn 与插表之间的取消
+    // 窗口会让 shell 任务泄漏（无控制条目不可关闭，还占住连接租约）。
+    let (abort_handle, abort_registration) = futures::future::AbortHandle::new_pair();
     let control = Arc::new(TerminalControl {
-        alias: request.alias,
+        alias: request.alias.clone(),
         input: Mutex::new(Some(ui_input)),
         resize,
-        abort: task.abort_handle(),
+        abort: abort_handle,
     });
     state
         .terminals
         .write()
         .await
-        .insert(terminal_id.clone(), control);
+        .insert(terminal_id.clone(), Arc::clone(&control));
+    let task = tokio::spawn(async move {
+        let shell = async move {
+            let mut output = EventWriter {
+                app: task_app.clone(),
+                terminal_id: task_terminal_id.clone(),
+            };
+            let result = lease
+                .interactive_shell(
+                    &mut shell_input,
+                    &mut output,
+                    &terminal_spec,
+                    &RemoteUser::Current,
+                    Some(resize_rx),
+                )
+                .await;
+            let (exit_status, error) = match result {
+                Ok(status) => (status, None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            let _ = task_app.emit(
+                "terminal-exit",
+                TerminalExitEvent {
+                    terminal_id: task_terminal_id,
+                    exit_status,
+                    error,
+                },
+            );
+        };
+        let _ = futures::future::Abortable::new(shell, abort_registration).await;
+    });
+    // 句柄分离：控制条目持有 AbortHandle，任务由 runtime 驱动。
+    drop(task);
     Ok(TerminalStartResponse { terminal_id })
 }
 
@@ -138,12 +146,23 @@ pub async fn terminal_write(
         .cloned()
         .ok_or_else(|| "终端会话已关闭".to_owned())?;
     let mut input = control.input.lock().await;
-    input
+    // 远端通道窗口满 / 网络 hang 时 write_all 可能无限期挂起；加超时释放锁，
+    // 否则 close_terminal / disconnect_host 会永久阻塞在同一把锁上。
+    let write = input
         .as_mut()
         .ok_or_else(|| "终端输入流已关闭".to_owned())?
-        .write_all(data.as_bytes())
-        .await
-        .map_err(|error| error.to_string())
+        .write_all(data.as_bytes());
+    match tokio::time::timeout(std::time::Duration::from_secs(10), write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => {
+            *input = None;
+            Err(error.to_string())
+        }
+        Err(_) => {
+            *input = None;
+            Err("终端写入超时（远端通道未读取）".to_owned())
+        }
+    }
 }
 
 #[tauri::command]
@@ -166,10 +185,15 @@ pub async fn resize_terminal(
 }
 
 async fn close_control(control: Arc<TerminalControl>) {
-    if let Some(mut input) = control.input.lock().await.take() {
+    // 先中止读写任务，再尝试优雅关闭输入；写入方可能持锁挂在远端通道上，
+    // 这里用超时兜底，保证 close_terminal / disconnect_host 不会永久挂死。
+    control.abort.abort();
+    if let Ok(mut guard) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), control.input.lock()).await
+        && let Some(mut input) = guard.take()
+    {
         let _ = input.shutdown().await;
     }
-    control.abort.abort();
 }
 
 #[tauri::command]
@@ -226,23 +250,33 @@ mod tests {
             columns: 120,
             rows: 30,
         });
-        let abort = tasks.spawn(async move {
-            lease
-                .interactive_shell(
-                    &mut shell_input,
-                    &mut shell_output,
-                    &TerminalSpec::default(),
-                    &RemoteUser::Current,
-                    Some(resize_rx),
-                )
-                .await
+        // TerminalControl 使用 futures AbortHandle（生产路径需要先插表再 spawn），
+        // 测试辅助路径用 Abortable 包装交互式 shell。
+        let (abort_handle, registration) = futures::future::AbortHandle::new_pair();
+        tasks.spawn(async move {
+            futures::future::Abortable::new(
+                async move {
+                    lease
+                        .interactive_shell(
+                            &mut shell_input,
+                            &mut shell_output,
+                            &TerminalSpec::default(),
+                            &RemoteUser::Current,
+                            Some(resize_rx),
+                        )
+                        .await
+                },
+                registration,
+            )
+            .await
+            .unwrap_or_else(|_| Ok(None))
         });
         (
             Arc::new(TerminalControl {
                 alias: "terminal-regression".into(),
                 input: Mutex::new(Some(input)),
                 resize,
-                abort,
+                abort: abort_handle,
             }),
             output,
         )
@@ -290,7 +324,7 @@ mod tests {
             crate::credentials::stored_password(&config).context("saved password required")?;
         let state = DesktopState::default();
         let lease = state
-            .connect_saved(&alias, config, Authentication::Password(password))
+            .connect_saved(&alias, config, Authentication::Password((*password).clone()))
             .await?;
         let mut tasks = JoinSet::new();
         let (first, mut first_output) = live_shell(lease.clone(), &mut tasks);

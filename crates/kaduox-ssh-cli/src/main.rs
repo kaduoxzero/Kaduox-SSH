@@ -16,10 +16,10 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kaduox_ssh_core::{
     Authentication, AuthenticationKind, ConnectionConfig, ConnectionTarget, DynamicForward,
-    HostKeyPolicy, HostKeyVerification, LocalForward, RemoteCommandSpec, RemoteFileMetadata,
-    RemoteFileType, RemoteForward, RemoteUser, SshClient, SymlinkPolicy, SyncActionKind,
-    SyncOptions, SyncPlan, TerminalSize, TerminalSpec, TransferCancellation, TransferDirection,
-    TransferEvent, TransferOptions, authentication_kind, resolve_jump_hosts,
+    HostKeyPolicy, HostKeyVerification, JumpHost, LocalForward, RemoteCommandSpec,
+    RemoteFileMetadata, RemoteFileType, RemoteForward, RemoteUser, SshClient, SymlinkPolicy,
+    SyncActionKind, SyncOptions, SyncPlan, TerminalSize, TerminalSpec, TransferCancellation,
+    TransferDirection, TransferEvent, TransferOptions, authentication_kind, resolve_jump_hosts,
 };
 use kaduox_ssh_hosts::{HostStore, StoredAuthMethod, resolve_host as resolve_library_host};
 use tokio::sync::{mpsc, watch};
@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
         config.username = user.clone();
     }
     if let Some(jump) = &cli.jump {
-        config.jump_hosts = resolve_jump_hosts(jump)?;
+        config.jump_hosts = resolve_jump_with_library(jump, &host_store)?;
         config.proxy_command = None;
     }
     if let Some(proxy_command) = &cli.proxy_command {
@@ -399,6 +399,30 @@ fn stored_auth_method(kind: AuthenticationKind) -> StoredAuthMethod {
         AuthenticationKind::Agent => StoredAuthMethod::Agent,
         AuthenticationKind::Auto => StoredAuthMethod::Auto,
     }
+}
+
+/// `-J` 跳板解析：逗号分隔的每一跳先按主机库别名解析（复用已存地址/凭据），
+/// 否则回退到 user@host[:port] 内联解析。
+fn resolve_jump_with_library(spec: &str, store: &HostStore) -> Result<Vec<JumpHost>> {
+    let mut hops = Vec::new();
+    for raw in spec.split(',').map(str::trim).filter(|hop| !hop.is_empty()) {
+        if store.host(raw).is_some() {
+            let config = resolve_library_host(store.database(), raw, None, None)?.config;
+            hops.push(JumpHost {
+                alias: config.alias,
+                host: config.host,
+                port: config.port,
+                username: config.username,
+                identity_files: config.identity_files,
+                host_key_policy: config.host_key_policy,
+                known_hosts_file: config.known_hosts_file,
+            });
+        } else {
+            hops.extend(resolve_jump_hosts(raw)?);
+        }
+    }
+    anyhow::ensure!(!hops.is_empty(), "jump host spec cannot be empty");
+    Ok(hops)
 }
 
 fn effective_username<'a>(
@@ -716,13 +740,18 @@ async fn run_command(ssh: &SshClient, command: Command) -> Result<()> {
                 .iter()
                 .map(|value| parse_remote_environment(value))
                 .collect::<Result<Vec<_>>>()?;
-            let command = RemoteCommandSpec {
+            let spec = RemoteCommandSpec {
                 program: program.clone(),
                 arguments: arguments.to_vec(),
                 environment,
                 working_directory: cwd,
-            }
-            .render_posix()?;
+            };
+            // Windows 远端（sshd 走 cmd /c 包装）必须用 cmd 兼容渲染；
+            // POSIX 单引号渲染在 cmd 的引号剥离规则下会残留引号。
+            let command = match ssh.remote_platform().await {
+                kaduox_ssh_core::RemotePlatform::Windows => spec.render_cmd()?,
+                kaduox_ssh_core::RemotePlatform::Unix => spec.render_posix()?,
+            };
             let remote_user = remote_user(as_user);
             let mut stdout = tokio::io::stdout();
             let mut stderr = tokio::io::stderr();

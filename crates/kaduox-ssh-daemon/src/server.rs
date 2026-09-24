@@ -55,6 +55,8 @@ pub async fn serve_default(state: DaemonState) -> Result<()> {
     let mut shutdown = state.shutdown.subscribe();
     let mut prune = tokio::time::interval(IDLE_PRUNE_INTERVAL);
     prune.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // 并发连接上限：同用户恶意/失控进程不能把 daemon 的资源耗尽。
+    let connection_slots = Arc::new(tokio::sync::Semaphore::new(64));
 
     loop {
         tokio::select! {
@@ -69,7 +71,12 @@ pub async fn serve_default(state: DaemonState) -> Result<()> {
             accepted = endpoint.accept() => {
                 let stream = accepted?;
                 let state = state.clone();
+                let slots = Arc::clone(&connection_slots);
                 tokio::spawn(async move {
+                    let _slot = match slots.try_acquire_owned() {
+                        Ok(slot) => slot,
+                        Err(_) => return, // 超出并发上限：直接丢弃连接
+                    };
                     if let Err(error) = handle_connection(stream, state).await {
                         eprintln!("kssh-daemon client error: {error:#}");
                     }
