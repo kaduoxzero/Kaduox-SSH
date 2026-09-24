@@ -8,21 +8,21 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ![终端工作区与 SFTP 侧栏](docs/screenshots/terminal.png)
 
-[下载 v0.33.0-rc.20](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v0.33.0-rc.20) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v0.33.0-rc.20.md)
+[下载 v1.0.0](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v1.0.0) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v1.0.0.md)
 
 ## 下载与安装
 
-本次预发布提供 **Windows x64** 与 **macOS（Universal 2）** 桌面程序，不包含 Linux 桌面包。Windows 产物为本地手动构建，**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对资产页面上每个文件自动显示的 SHA-256 摘要。
+本次发布提供 **Windows x64** 与 **macOS（Universal 2）** 桌面程序，不包含 Linux 桌面包。Windows 产物**未进行 Authenticode 签名**，Windows 可能提示发行者未知。请从本仓库 Releases 下载，并核对资产页面上每个文件自动显示的 SHA-256 摘要。
 
-### macOS（实验性）
+### macOS
 
-`Desktop macOS installer` 工作流会在每次相关的 `develop` 推送或手动触发时构建 **Universal 2** 安装包（Intel + Apple Silicon，macOS 11+），可从该工作流运行的 Artifacts 中下载 `.pkg`。双击即可把 Kaduox SSH 安装到应用程序目录。它**未经 Developer ID 签名或公证**：首次启动时右键点击应用并选择**打开**，或在系统设置 → 隐私与安全性中允许。macOS 客户端使用原生 traffic-light 窗口，密码保存在 macOS 钥匙串，Agent 认证使用 `ssh-agent`。该构建已通过 CI 编译和截图检查，但尚未完成完整的真机验证。
+macOS **Universal 2** 安装包（Intel + Apple Silicon，macOS 11+）与 Windows 安装包一同发布。双击即可把 Kaduox SSH 安装到应用程序目录。它**未经 Developer ID 签名或公证**：首次启动时右键点击应用并选择**打开**，或在系统设置 → 隐私与安全性中允许。macOS 客户端使用原生 traffic-light 窗口，密码保存在 macOS 钥匙串，Agent 认证使用 `ssh-agent`。该构建已完成真机验收（Gatekeeper 首次启动流程、钥匙串授权弹窗、终端/SFTP/数据屏/跳板/AI 全功能）。
 
 | 下载                                                                                                                                                        | 适用场景                                                                                             |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
-| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/Kaduox-SSH-0.33.0-rc.20-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
-| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v0.33.0-rc.20/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/Kaduox-SSH-1.0.0-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
+| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/Kaduox-SSH-1.0.0-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
+| [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 MCP 程序与桌面端共用主机库，请与桌面客户端一起升级。
 

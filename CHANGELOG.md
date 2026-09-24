@@ -2,7 +2,32 @@
 
 All notable changes to Kaduox-SSH are documented here.
 
-The project is still pre-1.0. Minor-version releases may add or adjust public APIs, but security boundaries and compatibility changes are called out explicitly.
+The project follows semantic versioning from 1.0.0 onward. Security boundaries and compatibility changes are called out explicitly.
+
+## [1.0.0] - 2026-09-25
+
+First stable release, concluding the 0.33.0 release-candidate series (rc.1–rc.21). No code changes since rc.21; this section summarizes the capabilities accumulated across the rc line.
+
+### Highlights
+
+- **Desktop SSH client** for Windows x64 and macOS (Universal 2, macOS 11+): multi-session terminals with a session tab bar, per-host command history (sensitive inputs excluded), dark/light themes, frameless native-feel window, and Chinese/English UI.
+- **Host library**: folders and jump-server sections, Chinese/space/parenthesis display names, credentials in Windows Credential Manager / macOS Keychain, SSH agent support (Pageant on Windows, ssh-agent on macOS), up to five-hop jump chains with reference-checked deletion, and automatic remote platform detection (Windows targets show a badge).
+- **Terminals**: interactive cmd.exe/pwsh on Windows targets with GBK decoding, script delivery over stdin (bypasses the cmd /c 8191-character limit), and copy/paste context menus.
+- **SFTP**: browse, upload/download, recursive folder download (symlinks skipped, depth/size caps), resume, real folder sizes (`du -sb` fast path with concurrent SFTP fallback), in-place editing of small text files, Windows drive-letter paths, and hardened remote-name validation against path traversal.
+- **Monitoring & forwarding**: CPU/GPU/memory/disk/network dashboards refreshed every 10 seconds (Windows targets via stdin-delivered metrics script), local/remote/SOCKS5 port forwarding with visualized paths.
+- **AI assistant**: executes commands on the connected host with three permission modes (strict / approval / full), batch approval, platform-aware prompts (native Windows commands on Windows targets), per-host persistent conversations, and a quote/escape-aware risk classifier with platform-specific whitelists. Dangerous commands are refused client-side in every mode; tool outputs are tagged untrusted.
+- **MCP server** (`kaduox-ssh-mcp.exe`): read-only by default; commands and file transfers require explicit grants; shares the desktop host library (upgrade together).
+- **Security hardening** across the rc line: command-classifier bypass fixes (newline splitting, redirection gluing, subshell escalation, Windows read-only whitelist), SFTP traversal/device-name rejection, download confinement to the user profile, exec-channel process cleanup, reconnect backoff with zombie-session prevention, and daemon IPC connection caps.
+
+### Compatibility
+
+- Host library format was upgraded during the rc series (`jump_folders`, host roles); older CLI/TUI/MCP builds must be upgraded together. From 1.0.0 onward, breaking changes follow semantic versioning.
+
+### Known limitations
+
+- macOS package is not Developer ID-signed or notarized: right-click → Open on first launch.
+- Windows remote targets do not support sudo elevation.
+- CLI exec against Windows targets does not GBK-decode output (desktop client is unaffected).
 
 ## [0.33.0-rc.13] - 2026-09-22
 
