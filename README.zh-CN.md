@@ -35,6 +35,49 @@ macOS **Universal 2** 安装包（Intel + Apple Silicon，macOS 11+）与 Window
 
 Windows 使用 **Ctrl K**（macOS 为 **⌘K**）搜索主机名、地址或标签，Enter 打开对应终端。顶部“帮助”可查看使用说明和 GitHub 项目入口。
 
+## 使用说明
+
+### 首次安装与启动
+
+- **Windows**：运行 setup.exe。安装包未做 Authenticode 签名，SmartScreen 可能提示“未知发行者”，选择**更多信息 → 仍要运行**即可。安装时可选安装目录与中文/英文界面，并内置 WebView2 离线组件，离线机器也能安装。
+- **macOS**：双击 pkg 安装到“应用程序”。安装包未公证，首次启动**右键点击应用 → 打开**，或在 系统设置 → 隐私与安全性 中允许。一个 Universal 2 包同时支持 Intel 与 Apple Silicon（macOS 11+）。
+- **下载校验**：安装前对照 Releases 资产页显示的 SHA-256 摘要核对文件。
+
+### 主机与凭据
+
+三种认证方式按主机选择：
+
+| 方式 | 说明 | 备注 |
+| --- | --- | --- |
+| 密码 | 保存到系统凭据库（Windows 凭据管理器 / macOS 钥匙串） | 不写入任何明文文件 |
+| 私钥 | 指定 Ed25519/ECDSA 私钥文件路径 | 出于安全策略，直接使用本地 RSA 私钥文件会被拒绝 |
+| SSH Agent | 使用 Agent 中已加载的密钥 | RSA 用户密钥只能通过此方式使用 |
+
+主机密钥策略：**严格**要求已有信任记录；**首次信任**记录首次指纹、之后变化则拒绝（默认，推荐）；**不安全**跳过身份校验，仅适合隔离测试环境。
+
+主机可标记为“目标机器”“专用中转”或“两者兼用”。主机较多时用文件夹和标签归类，用 **Ctrl K** / **⌘K** 按名称、地址、标签快速搜索。
+
+### 终端与会话
+
+点击已保存主机即使用保存的凭据连接。终端上方的会话标签栏列出全部连接，**+** 为当前会话新增独立终端。命令历史面板按主机持久化保存——包括远端 bash/zsh 里真实输入过的命令，支持复制、编辑后再执行。关闭客户端不保留远端进程状态。
+
+### 工作区
+
+- **SFTP**：浏览、上传/下载、新建文件夹/文件、重命名、删除空目录、属性查看、按名称搜索、小文本在线编辑。
+- **数据屏（信息页）**：CPU、内存、磁盘、网络和可用 GPU 指标；打开即采样，之后每 10 秒刷新一次。
+- **端口转发**：`-L` 把远端可达的服务映射到本机，`-R` 把本机服务暴露给远端，`-D` 在本机启动 SOCKS5 代理。转发只传输 TCP 流量，不替代 Web 服务器或 Nginx。
+- **运行记录**：本地持久化，每页 50 条，支持按主机、按天筛选；密码等敏感输入不会被记录。
+
+### AI 助手配置
+
+1. 在设置页填写：厂商名称、接口地址（Endpoint）、API Key、模型（可从服务商拉取模型列表，也可手动填写模型名）。
+2. 远程接口必须使用 HTTPS，本机回环接口可用 HTTP；密钥保存在系统凭据库。
+3. 批准模式：只读命令自动执行，修改/删除类命令需要你显式批准。无离线回答模式；主机上下文仅在勾选后才会发送给服务商。
+
+### 数据与隐私
+
+密码和 API Key 只存放在操作系统凭据库；主机库是本机私有文件；升级不会抹除已保存的数据；客户端不上传任何遥测数据。
+
 ## 界面预览
 
 深色主题桌面客户端一览：
@@ -243,7 +286,7 @@ crates/
 
 ## 构建
 
-根工作区声明 Rust 1.85，但当前 Windows Pageant 依赖使用 let-chains，实际需要 **Rust 1.88 或更新版本**；桌面 manifest 同样声明 1.88。本次 Windows 预发布使用 **Rust 1.98.0** 构建，不宣称 Windows 1.85 兼容。Windows 编译需要当前稳定版 MSVC 工具链、Visual Studio C++ Build Tools / Windows SDK 和 NASM。
+根工作区声明 Rust 1.85，但当前 Windows Pageant 依赖使用 let-chains，实际需要 **Rust 1.88 或更新版本**；桌面 manifest 同样声明 1.88。v1.0.0 使用 **Rust 1.98.0** 构建，不宣称 Windows 1.85 兼容。Windows 编译需要当前稳定版 MSVC 工具链、Visual Studio C++ Build Tools / Windows SDK 和 NASM。
 
 在仓库根目录构建 CLI/TUI/daemon/fleet/inventory/MCP 六个程序：
 
@@ -325,9 +368,9 @@ CI 已配置 Ubuntu、macOS、Windows、Rust 1.85 MSRV；Quality 配置 Clippy `
 
 v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed25519 CA/Host Certificate，并验证：匹配 CA 成功、principal mismatch 拒绝、签名 CA `@revoked` 拒绝、普通主机 key 即使 explicit insecure 也不能绕过 `@revoked`。
 
-**v0.33.0-rc.20 预发布**起发行收敛为纯桌面端：Release 流水线只构建并校验 3 个资产（Windows 安装器、macOS Universal pkg、MCP 接口程序），数量不符即发布失败；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。CLI 套件、SPDX SBOM、校验和清单、attestation 与发布后资格验证已随 CLI 发行一并退役。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
+**v1.0.0 正式版**发行收敛为纯桌面端：Release 流水线只构建并校验 3 个资产（Windows 安装器、macOS Universal pkg、MCP 接口程序），数量不符即发布失败；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。CLI 套件、SPDX SBOM、校验和清单、attestation 与发布后资格验证已随 CLI 发行一并退役。v1.0.0 已完成三平台真机验收（认证、SFTP 回环校验、递归下载符号链接跳过、断点续传字节精确、跳板链、GBK 中文终端），自动化基线全绿：Rust workspace 测试套件、desktop 57 项、前端 48 项 + tsc 干净，E2E 冒烟与视觉回归基线通过。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v0.33.0-rc.17.md)。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v1.0.0.md)。
 
 稳定版与预发布使用同一条桌面端流水线；所有产物均未做平台签名，Windows/macOS 可能提示发行者未知，首次运行按提示放行。
 
