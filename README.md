@@ -33,7 +33,50 @@ No personal servers, passwords, API keys, or user-data files are bundled. A new 
 3. **Organize targets and jump servers.** Choose target-only, dedicated jump server, or both. Dedicated jump servers have a separate sidebar section. Both sections collapse and share one scroll area. Create folders per section, rename them, or delete a folder together with the hosts inside (two-step confirm); move hosts using the folder selector.
 4. **Use the workspaces.** SFTP supports browsing, upload/download, creating folders/files, rename, delete (empty directories), properties, name search, and in-place editing of small text files. Open Info for CPU, memory, disk, network, and available GPU metrics; it samples the selected object immediately and every **10 seconds** while open. Operation history persists locally with **50 entries per page**. Terminal process state is not restored after closing the client.
 
-Use **Ctrl K** on Windows to search host names, addresses, or tags, then Enter to open a terminal. The top-bar Help page links to the full guide and this repository.
+Use **Ctrl K** on Windows (**⌘K** on macOS) to search host names, addresses, or tags, then Enter to open a terminal. The top-bar Help page links to the full guide and this repository.
+
+## Usage details
+
+### First install and launch
+
+- **Windows**: run the setup EXE. SmartScreen may show an unknown-publisher prompt because the installer is not Authenticode-signed; choose **More info → Run anyway**. The installer lets you pick the installation directory and a Chinese/English installer language, and bundles the WebView2 offline component so offline machines can install.
+- **macOS**: double-click the pkg to install into Applications. The package is not notarized; on first launch, right-click the app and choose **Open**, or allow it under System Settings → Privacy & Security. One Universal 2 package covers Intel and Apple Silicon (macOS 11+).
+- **Verify downloads**: compare the SHA-256 digest shown on each Releases asset before installing.
+
+### Hosts and credentials
+
+Three authentication options—pick per host:
+
+| Method | How it works | Notes |
+| --- | --- | --- |
+| Password | Stored in the OS credential store (Windows Credential Manager / macOS Keychain) | Never written to plain-text files |
+| Private key | Ed25519/ECDSA key file path | Direct local RSA key files are rejected by security policy |
+| SSH Agent | Uses an already-loaded agent identity | The only way to use RSA user keys |
+
+Host-key policies: **Strict** requires a pre-existing trust record; **Accept new** records the first fingerprint and rejects later changes (the default, recommended); **Insecure** skips identity checks and is only for isolated test environments.
+
+Hosts can be marked as target-only, dedicated jump server, or both. Use folders and tags to organize large host lists, and **Ctrl K** / **⌘K** to search across names, addresses, and tags.
+
+### Terminal and sessions
+
+Clicking a saved host connects with its stored credentials. The session tab bar above the terminal lists all open connections; its **+** adds another independent terminal to the current session. The command-history panel persists commands per host—including commands actually typed in the remote bash/zsh—and supports copy, edit, and re-run. Closing the client does not preserve remote process state.
+
+### Workspaces
+
+- **SFTP**: browse, upload/download, create folders/files, rename, delete empty directories, view properties, search by name, and edit small text files in place.
+- **Metrics (Info)**: CPU, memory, disk, network, and available GPU metrics; samples immediately when opened and refreshes every 10 seconds.
+- **Port forwarding**: `-L` exposes a remote-reachable service locally, `-R` exposes a local service to the remote side, `-D` starts a local SOCKS5 proxy. Forwarding transports TCP only; it does not replace a web server or Nginx.
+- **Run history**: persisted locally, 50 entries per page, filterable by host and day; passwords and other sensitive inputs are never recorded.
+
+### AI assistant setup
+
+1. In Settings, enter the provider name, endpoint, API key, and model (fetch the model list from the provider or type a model name manually).
+2. Remote endpoints must use HTTPS; loopback endpoints may use HTTP. Keys are stored in the OS credential store.
+3. Approval model: read-only commands run automatically, while mutating or destructive commands require your explicit approval. There is no offline answer mode; host context is sent to the provider only when you enable it.
+
+### Data and privacy
+
+Passwords and API keys live only in the operating-system credential store. The host library is a local private file; upgrading does not erase saved data. The client sends no telemetry.
 
 ## Screenshots
 
@@ -250,7 +293,7 @@ The core is frontend-independent. TUI sessions use explicit connection leases ov
 
 ## Build
 
-The root workspace declares Rust 1.85, but the current Windows Pageant dependency uses let-chains and needs Rust **1.88 or newer**. The desktop manifest also declares 1.88. This Windows prerelease was built with **Rust 1.98.0**; Windows 1.85 compatibility is not claimed. Use a current stable MSVC toolchain, Visual Studio C++ Build Tools / Windows SDK, and NASM on Windows.
+The root workspace declares Rust 1.85, but the current Windows Pageant dependency uses let-chains and needs Rust **1.88 or newer**. The desktop manifest also declares 1.88. v1.0.0 was built with **Rust 1.98.0**; Windows 1.85 compatibility is not claimed. Use a current stable MSVC toolchain, Visual Studio C++ Build Tools / Windows SDK, and NASM on Windows.
 
 Build the six CLI/TUI/daemon/fleet/inventory/MCP tools from the repository root:
 
@@ -360,11 +403,11 @@ Targets and supported OpenSSH configuration are resolved before the first connec
 
 CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 1.85 MSRV job. The Linux OpenSSH integration workflow starts real `sshd` fixtures and covers authentication, bastions, agent forwarding, RSA signing policy and fail-closed RSA-only host negotiation, Host Certificate trust/revocation, SFTP, synchronization, privilege switching, TCP forwarding, typed commands, diagnostics, and fleet execution. Quality also gates Clippy, dependency audit, and release-policy tests.
 
-The **v0.33.0-rc.11 Windows desktop prerelease** uses manual local builds from `develop`, not a successful cross-platform Actions qualification. This release pass verified 43 frontend tests, 18 host-library tests, and 48 desktop-backend tests, plus the full Rust workspace test suite and frontend production builds. Three credential-dependent desktop integration tests were explicitly ignored in this pass. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
+The **v1.0.0 release** passed full on-device qualification on all three platforms (Linux, macOS, Windows loopback): authentication, SFTP round-trip hash checks, recursive downloads with symbolic-link skipping, byte-exact resume, jump chains, and GBK Chinese terminals all verified live. The automated baseline ran green: the full Rust workspace test suite, 57 desktop-backend tests, 48 frontend tests with a clean `tsc`, plus WebdriverIO smoke tests and visual-regression baselines. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
 
-`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v0.33.0-rc.11.md) for the scope and limitations.
+`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v1.0.0.md) for the scope and limitations.
 
-Since v0.33.0-rc.20 the release is desktop-only: the tag-triggered workflow builds and verifies exactly three assets (Windows NSIS installer, macOS Universal pkg, MCP server) and fails closed on any other count. CLI suites, SPDX SBOMs, checksum manifests, attestations, and post-publication qualification were retired. All packages are unsigned; Windows and macOS may show unknown-publisher prompts.
+Since v1.0.0 the release is desktop-only: the tag-triggered workflow builds and verifies exactly three assets (Windows NSIS installer, macOS Universal pkg, MCP server) and fails closed on any other count. CLI suites, SPDX SBOMs, checksum manifests, attestations, and post-publication qualification were retired. All packages are unsigned; Windows and macOS may show unknown-publisher prompts.
 
 The on-demand `Benchmark` workflow records connect/exec latency, large-file SFTP throughput, and recursive small-file transfer timing to a CSV artifact. Performance claims should be based on those measurements rather than configuration alone.
 
