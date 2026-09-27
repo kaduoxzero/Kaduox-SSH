@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/kaduox-ssh-core",
+    "crates/kaduox-ssh-openssh",
+    "crates/kaduox-ssh-transfer",
     "crates/kaduox-ssh-hosts",
     "crates/kaduox-ssh-daemon",
     "crates/kaduox-ssh-cli",
@@ -9,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"

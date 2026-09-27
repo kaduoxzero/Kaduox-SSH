@@ -4,6 +4,22 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project follows semantic versioning from 1.0.0 onward. Security boundaries and compatibility changes are called out explicitly.
 
+## [1.1.0] - 2026-09-27
+
+Internal architecture refactoring toward Unix-style composability. **Zero behavior, protocol, wire-format, or configuration changes**; all downstream import paths (`kaduox_ssh_core::*`) remain valid through re-export compatibility layers.
+
+### Changed (workspace structure)
+
+- **New crate `kaduox-ssh-openssh`**: OpenSSH ecosystem parsing (`~/.ssh/config` Include/Match, host catalog, inventory, connection target) moved out of core. Pure parsing, no SSH sessions.
+- **New crate `kaduox-ssh-transfer`**: the entire transfer domain (SFTP engine, transfer policies, remote fs/mutation/path, sync, symlink policy, transfer tasks) moved out of core. Because inherent `impl SshClient` blocks cannot cross crate boundaries, the transfer domain defines a one-method `SftpTransport` trait implemented by `SshClient`; former methods are now generic free functions, and `SshClient` keeps every public method as a thin delegating facade. `TransferTaskManager` now holds `&dyn SftpTransport` so its public type signature is unchanged.
+- **Unified keyring access**: desktop, CLI, and MCP previously each assembled their own keyring service name and account strings. A new core `credentials_store` module (`KEYCHAIN_SERVICE`, `keyring_entry`, `keyring_entry_for_account`, `keyring_stored_password`) is now the single implementation used by all three, eliminating the account-format drift risk that could make MCP silently miss desktop-saved passwords. MCP no longer depends on `keyring` directly.
+- **Shared probe scripts**: the remote basic-info/system-metrics shell and PowerShell scripts were embedded as separate string literals in MCP and desktop. They now live once in `crates/kaduox-ssh-core/assets/` and are compiled in via `include_str!` (`BASIC_INFO_SCRIPT`, `METRICS_SCRIPT`, `METRICS_COMPAT_SCRIPT`, `METRICS_PS1_SCRIPT`). Wire formats (`__KADUOX_BASIC_INFO_V1__`, `__KADUOX_SYSTEM_METRICS_V1__`) are byte-compatible; new unit tests pin the markers, LF line endings, and pure-ASCII content.
+- `release_tool.py` `LOCAL_PACKAGES` now covers all seven workspace crates so version consistency checks apply to the new crates.
+
+### Compatibility
+
+- No breaking changes. Library consumers of `kaduox-ssh-core` see identical exports; CLI/TUI/MCP/desktop binaries behave identically.
+
 ## [1.0.0] - 2026-09-25
 
 First stable release, concluding the 0.33.0 release-candidate series (rc.1–rc.21). No code changes since rc.21; this section summarizes the capabilities accumulated across the rc line.

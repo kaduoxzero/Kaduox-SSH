@@ -4,10 +4,11 @@ use anyhow::{Context, Result, bail};
 use russh_sftp::client::{SftpSession, error::Error as SftpError};
 use russh_sftp::protocol::StatusCode;
 
-use crate::client::SshClient;
+use crate::client_ops;
 use crate::remote_path::{join_remote_under_root, validate_remote_child_name};
-use crate::sync::{SyncOptions, SyncPlan};
-use crate::transfer::{TransferOptions, TransferSummary};
+use crate::sync::{self, SyncOptions, SyncPlan};
+use crate::transfer_policy::{TransferOptions, TransferSummary};
+use crate::transport::SftpTransport;
 
 /// Policy for symbolic links encountered while recursively scanning transfer
 /// or synchronization trees.
@@ -27,146 +28,111 @@ pub enum SymlinkPolicy {
     Reject,
 }
 
-impl SshClient {
-    /// Recursive upload with an explicit source-tree symbolic-link policy.
-    ///
-    /// Existing `upload_recursive` remains equivalent to `SymlinkPolicy::Skip`.
-    pub async fn upload_recursive_with_symlink_policy(
-        &self,
-        local_path: &Path,
-        remote_path: &str,
-        options: TransferOptions,
-        policy: SymlinkPolicy,
-    ) -> Result<TransferSummary> {
-        if policy == SymlinkPolicy::Reject {
-            preflight_local_tree_no_links(local_path, true, &options).await?;
-        }
-        self.upload_recursive(local_path, remote_path, options)
-            .await
+/// Recursive upload with an explicit source-tree symbolic-link policy.
+///
+/// Existing `upload_recursive` remains equivalent to `SymlinkPolicy::Skip`.
+pub async fn upload_recursive_with_symlink_policy(
+    client: &impl SftpTransport,
+    local_path: &Path,
+    remote_path: &str,
+    options: TransferOptions,
+    policy: SymlinkPolicy,
+) -> Result<TransferSummary> {
+    if policy == SymlinkPolicy::Reject {
+        preflight_local_tree_no_links(local_path, true, &options).await?;
     }
-
-    /// Privileged recursive upload with an explicit local source-tree link
-    /// policy. Strict preflight runs before exclusive `/tmp` staging is created,
-    /// so a rejected tree does not leave remote staging mutations behind.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn upload_privileged_recursive_with_symlink_policy(
-        &self,
-        local_path: &Path,
-        remote_path: &str,
-        as_user: &str,
-        file_mode: u32,
-        directory_mode: u32,
-        options: TransferOptions,
-        policy: SymlinkPolicy,
-    ) -> Result<TransferSummary> {
-        if policy == SymlinkPolicy::Reject {
-            preflight_local_tree_no_links(local_path, false, &options).await?;
-        }
-        self.upload_privileged_recursive(
-            local_path,
-            remote_path,
-            as_user,
-            file_mode,
-            directory_mode,
-            options,
-        )
-        .await
-    }
-
-    /// Recursive download with an explicit remote source-tree symbolic-link
-    /// policy. Existing `download_recursive` remains `Skip`.
-    pub async fn download_recursive_with_symlink_policy(
-        &self,
-        remote_path: &str,
-        local_path: &Path,
-        options: TransferOptions,
-        policy: SymlinkPolicy,
-    ) -> Result<TransferSummary> {
-        if policy == SymlinkPolicy::Reject {
-            let sftp = self.open_sftp_for_transfer(&options).await?;
-            let preflight = preflight_remote_tree_no_links(&sftp, remote_path, &options).await;
-            let close = sftp.close().await;
-            preflight?;
-            close?;
-        }
-        self.download_recursive(remote_path, local_path, options)
-            .await
-    }
-
-    /// Build a synchronization plan with an explicit link policy for both the
-    /// local source tree and the remote tree being scanned.
-    pub async fn plan_sync_to_remote_with_symlink_policy(
-        &self,
-        local_root: &Path,
-        remote_root: &str,
-        options: &SyncOptions,
-        policy: SymlinkPolicy,
-    ) -> Result<SyncPlan> {
-        if policy == SymlinkPolicy::Reject {
-            preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
-            let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-            let preflight =
-                preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
-            let close = sftp.close().await;
-            preflight?;
-            close?;
-        }
-        self.plan_sync_to_remote(local_root, remote_root, options)
-            .await
-    }
-
-    /// Apply a synchronization plan with the selected link policy rechecked
-    /// before the normal apply path can mutate the remote tree.
-    pub async fn apply_sync_to_remote_with_symlink_policy(
-        &self,
-        local_root: &Path,
-        remote_root: &str,
-        plan: &SyncPlan,
-        options: SyncOptions,
-        policy: SymlinkPolicy,
-    ) -> Result<TransferSummary> {
-        if policy == SymlinkPolicy::Reject {
-            preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
-            let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-            let preflight =
-                preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
-            let close = sftp.close().await;
-            preflight?;
-            close?;
-        }
-        self.apply_sync_to_remote(local_root, remote_root, plan, options)
-            .await
-    }
-
-    /// Plan and optionally apply synchronization with an explicit link policy.
-    pub async fn sync_to_remote_with_symlink_policy(
-        &self,
-        local_root: &Path,
-        remote_root: &str,
-        options: SyncOptions,
-        policy: SymlinkPolicy,
-        dry_run: bool,
-    ) -> Result<(SyncPlan, Option<TransferSummary>)> {
-        let plan = self
-            .plan_sync_to_remote_with_symlink_policy(local_root, remote_root, &options, policy)
-            .await?;
-        if dry_run || plan.is_empty() {
-            return Ok((plan, None));
-        }
-        let summary = self
-            .apply_sync_to_remote_with_symlink_policy(
-                local_root,
-                remote_root,
-                &plan,
-                options,
-                policy,
-            )
-            .await?;
-        Ok((plan, Some(summary)))
-    }
+    client_ops::upload_recursive(client, local_path, remote_path, options).await
 }
 
-async fn preflight_local_tree_no_links(
+/// Recursive download with an explicit remote source-tree symbolic-link
+/// policy. Existing `download_recursive` remains `Skip`.
+pub async fn download_recursive_with_symlink_policy(
+    client: &impl SftpTransport,
+    remote_path: &str,
+    local_path: &Path,
+    options: TransferOptions,
+    policy: SymlinkPolicy,
+) -> Result<TransferSummary> {
+    if policy == SymlinkPolicy::Reject {
+        let sftp = client.open_sftp_for_transfer(&options).await?;
+        let preflight = preflight_remote_tree_no_links(&sftp, remote_path, &options).await;
+        let close = sftp.close().await;
+        preflight?;
+        close?;
+    }
+    client_ops::download_recursive(client, remote_path, local_path, options).await
+}
+
+/// Build a synchronization plan with an explicit link policy for both the
+/// local source tree and the remote tree being scanned.
+pub async fn plan_sync_to_remote_with_symlink_policy(
+    client: &impl SftpTransport,
+    local_root: &Path,
+    remote_root: &str,
+    options: &SyncOptions,
+    policy: SymlinkPolicy,
+) -> Result<SyncPlan> {
+    if policy == SymlinkPolicy::Reject {
+        preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
+        let sftp = client.open_sftp_for_transfer(&options.transfer).await?;
+        let preflight = preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
+        let close = sftp.close().await;
+        preflight?;
+        close?;
+    }
+    sync::plan_sync_to_remote(client, local_root, remote_root, options).await
+}
+
+/// Apply a synchronization plan with the selected link policy rechecked
+/// before the normal apply path can mutate the remote tree.
+pub async fn apply_sync_to_remote_with_symlink_policy(
+    client: &impl SftpTransport,
+    local_root: &Path,
+    remote_root: &str,
+    plan: &SyncPlan,
+    options: SyncOptions,
+    policy: SymlinkPolicy,
+) -> Result<TransferSummary> {
+    if policy == SymlinkPolicy::Reject {
+        preflight_local_tree_no_links(local_root, false, &options.transfer).await?;
+        let sftp = client.open_sftp_for_transfer(&options.transfer).await?;
+        let preflight = preflight_remote_tree_no_links(&sftp, remote_root, &options.transfer).await;
+        let close = sftp.close().await;
+        preflight?;
+        close?;
+    }
+    sync::apply_sync_to_remote(client, local_root, remote_root, plan, options).await
+}
+
+/// Plan and optionally apply synchronization with an explicit link policy.
+pub async fn sync_to_remote_with_symlink_policy(
+    client: &impl SftpTransport,
+    local_root: &Path,
+    remote_root: &str,
+    options: SyncOptions,
+    policy: SymlinkPolicy,
+    dry_run: bool,
+) -> Result<(SyncPlan, Option<TransferSummary>)> {
+    let plan =
+        plan_sync_to_remote_with_symlink_policy(client, local_root, remote_root, &options, policy)
+            .await?;
+    if dry_run || plan.is_empty() {
+        return Ok((plan, None));
+    }
+    let summary = apply_sync_to_remote_with_symlink_policy(
+        client,
+        local_root,
+        remote_root,
+        &plan,
+        options,
+        policy,
+    )
+    .await?;
+    Ok((plan, Some(summary)))
+}
+
+/// Strict local-tree link preflight shared with core's privileged facade.
+pub async fn preflight_local_tree_no_links(
     root: &Path,
     allow_file_root: bool,
     options: &TransferOptions,

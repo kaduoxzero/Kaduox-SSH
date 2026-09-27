@@ -10,6 +10,9 @@ repository.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 hmac.workspace = true
+kaduox-ssh-openssh = { path = "../kaduox-ssh-openssh" }
+kaduox-ssh-transfer = { path = "../kaduox-ssh-transfer" }
+keyring.workspace = true
 russh.workspace = true
 russh-config.workspace = true
 russh-sftp.workspace = true

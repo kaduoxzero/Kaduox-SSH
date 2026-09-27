@@ -725,7 +725,7 @@ fn check_cancelled(options: &TransferOptions) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn ensure_remote_dir(sftp: &SftpSession, path: &str) -> Result<()> {
+pub async fn ensure_remote_dir(sftp: &SftpSession, path: &str) -> Result<()> {
     if path.is_empty() || path == "." || path == "/" {
         return Ok(());
     }
@@ -931,7 +931,7 @@ pub(crate) async fn preserve_local_mtime(path: &Path, mtime: Option<u32>) -> Res
     Ok(())
 }
 
-pub(crate) fn unique_staging_path(file_name: &str) -> String {
+pub fn unique_staging_path(file_name: &str) -> String {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())

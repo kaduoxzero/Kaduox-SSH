@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::client::{CommandOutput, RemoteUser, SshClient, quote_posix};
-use crate::transfer::{TransferOptions, TransferSummary, unique_staging_path};
+use kaduox_ssh_transfer::{TransferOptions, TransferSummary, unique_staging_path};
 
 fn validate_mode(mode: u32) -> Result<()> {
     if mode > 0o7777 {

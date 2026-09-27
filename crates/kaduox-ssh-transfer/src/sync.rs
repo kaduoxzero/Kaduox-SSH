@@ -12,12 +12,12 @@ use tokio::task::JoinSet;
 
 use self::preflight::preflight_atomic_sync;
 use self::source_preflight::preflight_local_sync_sources;
-use crate::client::SshClient;
 use crate::remote_path::{
     join_remote_under_root, local_path_from_remote_relative, validate_remote_child_name,
     validate_remote_relative_path,
 };
-use crate::transfer::{TransferOptions, TransferSummary, ensure_remote_dir, upload_file};
+use crate::transfer_policy::{TransferOptions, TransferSummary, ensure_remote_dir, upload_file};
+use crate::transport::SftpTransport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncActionKind {
@@ -73,124 +73,116 @@ struct SnapshotEntry {
     mtime: Option<u32>,
 }
 
-impl SshClient {
-    /// Build a non-mutating plan that makes `remote_root` match `local_root`.
-    pub async fn plan_sync_to_remote(
-        &self,
-        local_root: &Path,
-        remote_root: &str,
-        options: &SyncOptions,
-    ) -> Result<SyncPlan> {
-        options.transfer.validated()?;
-        let local = scan_local(local_root).await?;
-        let sftp = self.open_sftp_for_transfer(&options.transfer).await?;
-        let remote = scan_remote(&sftp, remote_root).await?;
-        let plan = build_push_plan(&local, &remote, options)?;
-        sftp.close().await?;
-        Ok(plan)
+/// Build a non-mutating plan that makes `remote_root` match `local_root`.
+pub async fn plan_sync_to_remote(
+    client: &impl SftpTransport,
+    local_root: &Path,
+    remote_root: &str,
+    options: &SyncOptions,
+) -> Result<SyncPlan> {
+    options.transfer.validated()?;
+    let local = scan_local(local_root).await?;
+    let sftp = client.open_sftp_for_transfer(&options.transfer).await?;
+    let remote = scan_remote(&sftp, remote_root).await?;
+    let plan = build_push_plan(&local, &remote, options)?;
+    sftp.close().await?;
+    Ok(plan)
+}
+
+/// Execute a previously generated remote sync plan.
+pub async fn apply_sync_to_remote(
+    client: &impl SftpTransport,
+    local_root: &Path,
+    remote_root: &str,
+    plan: &SyncPlan,
+    options: SyncOptions,
+) -> Result<TransferSummary> {
+    options.transfer.validated()?;
+    // SyncPlan is public and may be constructed by callers. Validate every
+    // action before opening the mutation phase; never assume it came from
+    // plan_sync_to_remote().
+    validate_sync_plan(plan)?;
+
+    let metadata = tokio::fs::symlink_metadata(local_root)
+        .await
+        .with_context(|| format!("failed to stat {}", local_root.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "refusing to follow symbolic-link sync source root: {}",
+            local_root.display()
+        );
+    }
+    if !metadata.is_dir() {
+        bail!("sync source {} must be a directory", local_root.display());
     }
 
-    /// Execute a previously generated remote sync plan.
-    pub async fn apply_sync_to_remote(
-        &self,
-        local_root: &Path,
-        remote_root: &str,
-        plan: &SyncPlan,
-        options: SyncOptions,
-    ) -> Result<TransferSummary> {
-        options.transfer.validated()?;
-        // SyncPlan is public and may be constructed by callers. Validate every
-        // action before opening the mutation phase; never assume it came from
-        // plan_sync_to_remote().
-        validate_sync_plan(plan)?;
+    // A public or stale SyncPlan must not be allowed to mutate the remote
+    // tree before all local UploadFile sources are proven to still be
+    // regular files beneath ordinary, non-link parent directories. This
+    // also verifies the planned byte count before destructive actions.
+    preflight_local_sync_sources(local_root, plan).await?;
 
-        let metadata = tokio::fs::symlink_metadata(local_root)
-            .await
-            .with_context(|| format!("failed to stat {}", local_root.display()))?;
-        if metadata.file_type().is_symlink() {
-            bail!(
-                "refusing to follow symbolic-link sync source root: {}",
-                local_root.display()
-            );
-        }
-        if !metadata.is_dir() {
-            bail!("sync source {} must be a directory", local_root.display());
-        }
+    let sftp = Arc::new(client.open_sftp_for_transfer(&options.transfer).await?);
+    if options.transfer.atomic {
+        preflight_atomic_sync(&sftp, remote_root, plan).await?;
+    }
+    ensure_remote_dir(&sftp, remote_root).await?;
+    let mut summary = TransferSummary::default();
 
-        // A public or stale SyncPlan must not be allowed to mutate the remote
-        // tree before all local UploadFile sources are proven to still be
-        // regular files beneath ordinary, non-link parent directories. This
-        // also verifies the planned byte count before destructive actions.
-        preflight_local_sync_sources(local_root, plan).await?;
-
-        let sftp = Arc::new(self.open_sftp_for_transfer(&options.transfer).await?);
-        if options.transfer.atomic {
-            preflight_atomic_sync(&sftp, remote_root, plan).await?;
-        }
-        ensure_remote_dir(&sftp, remote_root).await?;
-        let mut summary = TransferSummary::default();
-
-        for action in &plan.actions {
-            let remote_path = join_remote_under_root(remote_root, &action.path)?;
-            match action.kind {
-                SyncActionKind::DeleteRemoteFile => {
-                    sftp.remove_file(remote_path).await?;
-                }
-                SyncActionKind::DeleteRemoteDirectory => {
-                    sftp.remove_dir(remote_path).await?;
-                }
-                SyncActionKind::CreateRemoteDirectory => {
-                    ensure_remote_dir(&sftp, &remote_path).await?;
-                    summary.directories += 1;
-                }
-                SyncActionKind::UploadFile => {}
+    for action in &plan.actions {
+        let remote_path = join_remote_under_root(remote_root, &action.path)?;
+        match action.kind {
+            SyncActionKind::DeleteRemoteFile => {
+                sftp.remove_file(remote_path).await?;
             }
-        }
-
-        let mut tasks = JoinSet::new();
-        for action in &plan.actions {
-            if action.kind != SyncActionKind::UploadFile {
-                continue;
+            SyncActionKind::DeleteRemoteDirectory => {
+                sftp.remove_dir(remote_path).await?;
             }
-            if tasks.len() >= options.transfer.file_concurrency {
-                collect_next_sync_upload(&mut tasks, &mut summary).await?;
+            SyncActionKind::CreateRemoteDirectory => {
+                ensure_remote_dir(&sftp, &remote_path).await?;
+                summary.directories += 1;
             }
-            let sftp = Arc::clone(&sftp);
-            let transfer = options.transfer.clone();
-            let local_relative = local_path_from_remote_relative(&action.path)?;
-            let local_path = local_root.join(local_relative);
-            let remote_path = join_remote_under_root(remote_root, &action.path)?;
-            tasks.spawn(
-                async move { upload_file(&sftp, &local_path, &remote_path, &transfer).await },
-            );
+            SyncActionKind::UploadFile => {}
         }
+    }
 
-        while !tasks.is_empty() {
+    let mut tasks = JoinSet::new();
+    for action in &plan.actions {
+        if action.kind != SyncActionKind::UploadFile {
+            continue;
+        }
+        if tasks.len() >= options.transfer.file_concurrency {
             collect_next_sync_upload(&mut tasks, &mut summary).await?;
         }
-        drop(sftp);
-        Ok(summary)
+        let sftp = Arc::clone(&sftp);
+        let transfer = options.transfer.clone();
+        let local_relative = local_path_from_remote_relative(&action.path)?;
+        let local_path = local_root.join(local_relative);
+        let remote_path = join_remote_under_root(remote_root, &action.path)?;
+        tasks.spawn(async move { upload_file(&sftp, &local_path, &remote_path, &transfer).await });
     }
 
-    /// Plan and, unless `dry_run` is true, apply a local-to-remote synchronization.
-    pub async fn sync_to_remote(
-        &self,
-        local_root: &Path,
-        remote_root: &str,
-        options: SyncOptions,
-        dry_run: bool,
-    ) -> Result<(SyncPlan, Option<TransferSummary>)> {
-        let plan = self
-            .plan_sync_to_remote(local_root, remote_root, &options)
-            .await?;
-        if dry_run || plan.is_empty() {
-            return Ok((plan, None));
-        }
-        let summary = self
-            .apply_sync_to_remote(local_root, remote_root, &plan, options)
-            .await?;
-        Ok((plan, Some(summary)))
+    while !tasks.is_empty() {
+        collect_next_sync_upload(&mut tasks, &mut summary).await?;
     }
+    drop(sftp);
+    Ok(summary)
+}
+
+/// Plan and, unless `dry_run` is true, apply a local-to-remote synchronization.
+pub async fn sync_to_remote(
+    client: &impl SftpTransport,
+    local_root: &Path,
+    remote_root: &str,
+    options: SyncOptions,
+    dry_run: bool,
+) -> Result<(SyncPlan, Option<TransferSummary>)> {
+    let plan = plan_sync_to_remote(client, local_root, remote_root, &options).await?;
+    if dry_run || plan.is_empty() {
+        return Ok((plan, None));
+    }
+    let summary = apply_sync_to_remote(client, local_root, remote_root, &plan, options).await?;
+    Ok((plan, Some(summary)))
 }
 
 async fn collect_next_sync_upload(

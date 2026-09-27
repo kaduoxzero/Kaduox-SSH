@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-cli"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1503,11 +1503,14 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "futures",
  "hmac 0.13.0",
+ "kaduox-ssh-openssh",
+ "kaduox-ssh-transfer",
+ "keyring",
  "libc",
  "russh",
  "russh-config",
@@ -1519,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-daemon"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1530,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1538,15 +1541,33 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-mcp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
  "kaduox-ssh-hosts",
- "keyring",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "kaduox-ssh-openssh"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "russh-config",
+]
+
+[[package]]
+name = "kaduox-ssh-transfer"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "russh-sftp",
+ "tokio",
+ "unicode-normalization",
 ]
 
 [[package]]

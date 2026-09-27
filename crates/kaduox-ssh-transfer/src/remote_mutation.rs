@@ -2,9 +2,9 @@ use anyhow::{Context, Result, bail};
 use russh_sftp::client::{SftpSession, error::Error as SftpError};
 use russh_sftp::protocol::StatusCode;
 
-use crate::client::SshClient;
 use crate::remote_fs::{RemoteFileType, list_directory, stat_path};
-use crate::transfer::TransferOptions;
+use crate::transfer_policy::TransferOptions;
+use crate::transport::SftpTransport;
 
 const DEFAULT_REMOTE_DELETE_MAX_ENTRIES: usize = 10_000;
 const MAX_REMOTE_DELETE_MAX_ENTRIES: usize = 100_000;
@@ -64,169 +64,171 @@ pub struct RemoteDeleteSummary {
     pub symlinks: u64,
 }
 
-impl SshClient {
-    /// Create one remote directory without creating missing parents.
-    ///
-    /// The target must be an unambiguous non-root path and must not already
-    /// exist, including as a symbolic link. This operation deliberately does
-    /// not provide `mkdir -p` semantics.
-    pub async fn create_remote_directory(&self, path: &str) -> Result<()> {
-        validate_mutation_path(path)?;
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = create_directory(&sftp, path).await;
-        let close_result = sftp.close().await;
-        result?;
-        close_result.context("failed to close SFTP session after remote mkdir")?;
-        Ok(())
+/// Create one remote directory without creating missing parents.
+///
+/// The target must be an unambiguous non-root path and must not already
+/// exist, including as a symbolic link. This operation deliberately does
+/// not provide `mkdir -p` semantics.
+pub async fn create_remote_directory(client: &impl SftpTransport, path: &str) -> Result<()> {
+    validate_mutation_path(path)?;
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = create_directory(&sftp, path).await;
+    let close_result = sftp.close().await;
+    result?;
+    close_result.context("failed to close SFTP session after remote mkdir")?;
+    Ok(())
+}
+
+/// Rename one remote path within its current directory.
+///
+/// Cross-directory moves and occupied destinations are rejected. SFTP v3
+/// rename semantics remain authoritative at mutation time, so a target
+/// created after preflight must still cause the server rename to fail.
+pub async fn rename_remote_path(
+    client: &impl SftpTransport,
+    source: &str,
+    destination: &str,
+) -> Result<RemoteFileType> {
+    validate_mutation_path(source)?;
+    validate_mutation_path(destination)?;
+    ensure_same_parent(source, destination)?;
+    if source == destination {
+        bail!("remote rename source and destination are identical");
     }
 
-    /// Rename one remote path within its current directory.
-    ///
-    /// Cross-directory moves and occupied destinations are rejected. SFTP v3
-    /// rename semantics remain authoritative at mutation time, so a target
-    /// created after preflight must still cause the server rename to fail.
-    pub async fn rename_remote_path(
-        &self,
-        source: &str,
-        destination: &str,
-    ) -> Result<RemoteFileType> {
-        validate_mutation_path(source)?;
-        validate_mutation_path(destination)?;
-        ensure_same_parent(source, destination)?;
-        if source == destination {
-            bail!("remote rename source and destination are identical");
-        }
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = rename_path(&sftp, source, destination).await;
+    let close_result = sftp.close().await;
+    let file_type = result?;
+    close_result.context("failed to close SFTP session after remote rename")?;
+    Ok(file_type)
+}
 
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = rename_path(&sftp, source, destination).await;
-        let close_result = sftp.close().await;
-        let file_type = result?;
-        close_result.context("failed to close SFTP session after remote rename")?;
-        Ok(file_type)
+/// Remove one regular file, symbolic link, or empty directory.
+///
+/// This remains the deliberately non-recursive primitive. Directories are
+/// listed immediately before `rmdir`, while the protocol/server remains
+/// responsible for rejecting a directory that becomes non-empty in a race.
+pub async fn remove_remote_path(client: &impl SftpTransport, path: &str) -> Result<RemoteFileType> {
+    validate_mutation_path(path)?;
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = remove_path(&sftp, path).await;
+    let close_result = sftp.close().await;
+    let file_type = result?;
+    close_result.context("failed to close SFTP session after remote removal")?;
+    Ok(file_type)
+}
+
+/// Build a read-only recursive deletion plan for one remote directory tree.
+///
+/// The scan uses lstat-style metadata, never follows symbolic links, rejects
+/// unsupported entry types, validates every server-provided child name via
+/// the canonical directory browser, and enforces an explicit retained-entry
+/// budget. Planning performs no remote mutation.
+pub async fn plan_remote_tree_removal(
+    client: &impl SftpTransport,
+    path: &str,
+    options: RemoteDeleteOptions,
+) -> Result<RemoteDeletePlan> {
+    validate_mutation_path(path)?;
+    let options = options.validated()?;
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = build_delete_plan(&sftp, path, options).await;
+    let close_result = sftp.close().await;
+    let plan = result?;
+    close_result.context("failed to close SFTP session after remote delete planning")?;
+    Ok(plan)
+}
+
+/// Execute a previously approved recursive deletion plan.
+///
+/// Before the first write this method re-scans the complete tree and
+/// requires an exact path/type match with the approved plan. Deletion then
+/// proceeds in post-order. Every entry is lstat-checked again immediately
+/// before removal, and every directory is re-listed before `rmdir`.
+///
+/// SFTP v3 cannot make a directory-tree deletion transactional. A failure
+/// after mutation begins can therefore leave a partially removed tree; the
+/// method fails closed at the first mismatch or protocol error and never
+/// follows symbolic links.
+pub async fn remove_remote_tree(
+    client: &impl SftpTransport,
+    plan: &RemoteDeletePlan,
+    options: RemoteDeleteOptions,
+) -> Result<RemoteDeleteSummary> {
+    validate_mutation_path(&plan.root)?;
+    let options = options.validated()?;
+    if plan.total_entries() > options.max_entries {
+        bail!(
+            "approved remote delete plan contains {} entries, exceeding max_entries {}",
+            plan.total_entries(),
+            options.max_entries
+        );
     }
 
-    /// Remove one regular file, symbolic link, or empty directory.
-    ///
-    /// This remains the deliberately non-recursive primitive. Directories are
-    /// listed immediately before `rmdir`, while the protocol/server remains
-    /// responsible for rejecting a directory that becomes non-empty in a race.
-    pub async fn remove_remote_path(&self, path: &str) -> Result<RemoteFileType> {
-        validate_mutation_path(path)?;
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = remove_path(&sftp, path).await;
-        let close_result = sftp.close().await;
-        let file_type = result?;
-        close_result.context("failed to close SFTP session after remote removal")?;
-        Ok(file_type)
-    }
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = execute_delete_plan(&sftp, plan, options).await;
+    let close_result = sftp.close().await;
+    let summary = result?;
+    close_result.context("failed to close SFTP session after recursive remote deletion")?;
+    Ok(summary)
+}
 
-    /// Build a read-only recursive deletion plan for one remote directory tree.
-    ///
-    /// The scan uses lstat-style metadata, never follows symbolic links, rejects
-    /// unsupported entry types, validates every server-provided child name via
-    /// the canonical directory browser, and enforces an explicit retained-entry
-    /// budget. Planning performs no remote mutation.
-    pub async fn plan_remote_tree_removal(
-        &self,
-        path: &str,
-        options: RemoteDeleteOptions,
-    ) -> Result<RemoteDeletePlan> {
-        validate_mutation_path(path)?;
-        let options = options.validated()?;
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = build_delete_plan(&sftp, path, options).await;
-        let close_result = sftp.close().await;
-        let plan = result?;
-        close_result.context("failed to close SFTP session after remote delete planning")?;
-        Ok(plan)
-    }
+/// Create one empty remote regular file. Fails if the path already exists.
+pub async fn create_remote_file(client: &impl SftpTransport, path: &str) -> Result<()> {
+    validate_mutation_path(path)?;
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = create_file(&sftp, path).await;
+    let close_result = sftp.close().await;
+    result?;
+    close_result.context("failed to close SFTP session after remote file creation")?;
+    Ok(())
+}
 
-    /// Execute a previously approved recursive deletion plan.
-    ///
-    /// Before the first write this method re-scans the complete tree and
-    /// requires an exact path/type match with the approved plan. Deletion then
-    /// proceeds in post-order. Every entry is lstat-checked again immediately
-    /// before removal, and every directory is re-listed before `rmdir`.
-    ///
-    /// SFTP v3 cannot make a directory-tree deletion transactional. A failure
-    /// after mutation begins can therefore leave a partially removed tree; the
-    /// method fails closed at the first mismatch or protocol error and never
-    /// follows symbolic links.
-    pub async fn remove_remote_tree(
-        &self,
-        plan: &RemoteDeletePlan,
-        options: RemoteDeleteOptions,
-    ) -> Result<RemoteDeleteSummary> {
-        validate_mutation_path(&plan.root)?;
-        let options = options.validated()?;
-        if plan.total_entries() > options.max_entries {
-            bail!(
-                "approved remote delete plan contains {} entries, exceeding max_entries {}",
-                plan.total_entries(),
-                options.max_entries
-            );
-        }
+/// Read one small remote regular file (at most `MAX_SMALL_FILE_BYTES`).
+pub async fn read_remote_file(client: &impl SftpTransport, path: &str) -> Result<Vec<u8>> {
+    validate_mutation_path(path)?;
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = read_file(&sftp, path).await;
+    let close_result = sftp.close().await;
+    let content = result?;
+    close_result.context("failed to close SFTP session after remote read")?;
+    Ok(content)
+}
 
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = execute_delete_plan(&sftp, plan, options).await;
-        let close_result = sftp.close().await;
-        let summary = result?;
-        close_result.context("failed to close SFTP session after recursive remote deletion")?;
-        Ok(summary)
+/// Overwrite one remote file with the given content (at most
+/// `MAX_SMALL_FILE_BYTES`); the file is created when missing.
+pub async fn write_remote_file(
+    client: &impl SftpTransport,
+    path: &str,
+    content: &[u8],
+) -> Result<u64> {
+    validate_mutation_path(path)?;
+    if content.len() as u64 > MAX_SMALL_FILE_BYTES {
+        bail!("remote file content exceeds {MAX_SMALL_FILE_BYTES} bytes");
     }
-
-    /// Create one empty remote regular file. Fails if the path already exists.
-    pub async fn create_remote_file(&self, path: &str) -> Result<()> {
-        validate_mutation_path(path)?;
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = create_file(&sftp, path).await;
-        let close_result = sftp.close().await;
-        result?;
-        close_result.context("failed to close SFTP session after remote file creation")?;
-        Ok(())
-    }
-
-    /// Read one small remote regular file (at most `MAX_SMALL_FILE_BYTES`).
-    pub async fn read_remote_file(&self, path: &str) -> Result<Vec<u8>> {
-        validate_mutation_path(path)?;
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = read_file(&sftp, path).await;
-        let close_result = sftp.close().await;
-        let content = result?;
-        close_result.context("failed to close SFTP session after remote read")?;
-        Ok(content)
-    }
-
-    /// Overwrite one remote file with the given content (at most
-    /// `MAX_SMALL_FILE_BYTES`); the file is created when missing.
-    pub async fn write_remote_file(&self, path: &str, content: &[u8]) -> Result<u64> {
-        validate_mutation_path(path)?;
-        if content.len() as u64 > MAX_SMALL_FILE_BYTES {
-            bail!("remote file content exceeds {MAX_SMALL_FILE_BYTES} bytes");
-        }
-        let sftp = self
-            .open_sftp_for_transfer(&TransferOptions::default())
-            .await?;
-        let result = write_file(&sftp, path, content).await;
-        let close_result = sftp.close().await;
-        result?;
-        close_result.context("failed to close SFTP session after remote write")?;
-        Ok(content.len() as u64)
-    }
+    let sftp = client
+        .open_sftp_for_transfer(&TransferOptions::default())
+        .await?;
+    let result = write_file(&sftp, path, content).await;
+    let close_result = sftp.close().await;
+    result?;
+    close_result.context("failed to close SFTP session after remote write")?;
+    Ok(content.len() as u64)
 }
 
 /// GUI 内联编辑允许的最大远程文件大小。

@@ -6,31 +6,15 @@ mod command;
 mod config;
 mod connect;
 mod credentials;
+mod credentials_store;
 mod diagnostics;
 mod forward;
 mod handler;
-mod host_catalog;
 mod host_trust;
-mod inventory;
 mod manager;
-mod openssh_config_trust;
-mod openssh_include;
-mod openssh_match;
 mod privileged;
-mod remote_fs;
-mod remote_mutation;
-mod remote_path;
-mod symlink_policy;
-mod sync;
-mod target;
-mod transfer_download_policy;
-#[path = "transfer.rs"]
-mod transfer_engine;
-mod transfer_facade;
-pub(crate) mod transfer_policy;
-mod transfer_task;
-mod transfer_task_manager;
-pub(crate) use transfer_facade as transfer;
+mod probe_scripts;
+mod transfer_api;
 
 pub use auth::Authentication;
 pub use client::{
@@ -46,30 +30,34 @@ pub use connect::{
     JumpAuthRequest, MAX_JUMP_AUTH_ATTEMPTS, authentication_kind,
 };
 pub use credentials::{account_name as keyring_account_name, endpoint as keyring_endpoint};
+pub use credentials_store::{
+    KEYCHAIN_SERVICE, entry_for as keyring_entry, entry_for_account as keyring_entry_for_account,
+    stored_password as keyring_stored_password,
+};
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,
 };
-pub use host_catalog::{OpenSshHostCatalog, discover_openssh_hosts};
-pub use inventory::{
-    HostInventory, InventoryGroup, InventoryMember, default_inventory_path, discover_inventory,
-    load_inventory,
+// OpenSSH 生态解析已拆分为 kaduox-ssh-openssh crate；此处 re-export 保持
+// v1.x 下游（cli/mcp/desktop/hosts）导入路径不变。
+pub use kaduox_ssh_openssh::{
+    ConnectionTarget, HostInventory, InventoryGroup, InventoryMember, OpenSshHostCatalog,
+    default_inventory_path, discover_inventory, discover_openssh_hosts, load_inventory,
 };
 pub use manager::{
     ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
     ConnectionSnapshot,
 };
-pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
-pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary};
-pub use remote_path::validate_remote_child_name;
-pub use symlink_policy::SymlinkPolicy;
-pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
-pub use target::ConnectionTarget;
-pub use transfer::{
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
+pub use probe_scripts::{
+    BASIC_INFO_SCRIPT, METRICS_COMPAT_SCRIPT, METRICS_PS1_SCRIPT, METRICS_SCRIPT,
 };
-pub use transfer_task::{
-    TransferTaskId, TransferTaskKind, TransferTaskProgress, TransferTaskRegistration,
-    TransferTaskRegistry, TransferTaskSnapshot, TransferTaskState,
+// 传输域已拆分为 kaduox-ssh-transfer crate；此处 re-export 保持 v1.x 下游
+// （cli/mcp/desktop）导入路径不变。
+pub use kaduox_ssh_transfer::{
+    RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary, RemoteDirEntry, RemoteFileMetadata,
+    RemoteFileStat, RemoteFileType, SymlinkPolicy, SyncAction, SyncActionKind, SyncOptions,
+    SyncPlan, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
+    TransferSummary, TransferTaskId, TransferTaskKind, TransferTaskManager, TransferTaskProgress,
+    TransferTaskRegistration, TransferTaskRegistry, TransferTaskSnapshot, TransferTaskState,
+    validate_remote_child_name,
 };
-pub use transfer_task_manager::TransferTaskManager;

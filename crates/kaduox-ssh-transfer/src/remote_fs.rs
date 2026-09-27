@@ -37,7 +37,7 @@ pub struct RemoteFileStat {
     pub symlink_target: Option<String>,
 }
 
-pub(crate) async fn list_directory(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteDirEntry>> {
+pub async fn list_directory(sftp: &SftpSession, path: &str) -> Result<Vec<RemoteDirEntry>> {
     let directory = sftp
         .read_dir(path)
         .await
@@ -65,7 +65,7 @@ pub(crate) async fn list_directory(sftp: &SftpSession, path: &str) -> Result<Vec
     Ok(entries)
 }
 
-pub(crate) async fn stat_path(sftp: &SftpSession, path: &str) -> Result<RemoteFileStat> {
+pub async fn stat_path(sftp: &SftpSession, path: &str) -> Result<RemoteFileStat> {
     let attrs = sftp
         .symlink_metadata(path)
         .await
@@ -98,7 +98,7 @@ const DIRECTORY_WALK_CONCURRENCY: usize = 8;
 
 /// 递归统计目录总大小（字节）。不跟随符号链接，避免环路。
 /// 逐层 BFS，同层目录并发 readdir；串行递归在宽目录树下会被 RTT 放大数倍。
-pub(crate) async fn directory_size(sftp: &SftpSession, path: &str) -> Result<u64> {
+pub async fn directory_size(sftp: &SftpSession, path: &str) -> Result<u64> {
     let mut total = 0u64;
     let mut level = vec![path.to_owned()];
     while !level.is_empty() {
@@ -127,7 +127,7 @@ pub(crate) async fn directory_size(sftp: &SftpSession, path: &str) -> Result<u64
 /// 解析 `du -sb -- <path>` 的 stdout，格式为 "<bytes>\t<path>\n"。
 /// GNU coreutils 的 `-b` 等价于 `--apparent-size --block-size=1`，
 /// 与 SFTP 遍历累加的文件逻辑大小语义一致。
-pub(crate) fn parse_du_bytes(stdout: &[u8]) -> Option<u64> {
+pub fn parse_du_bytes(stdout: &[u8]) -> Option<u64> {
     let line = std::str::from_utf8(stdout).ok()?.lines().next()?.trim();
     let (size, _) = line.split_once(char::is_whitespace).or(Some((line, "")))?;
     size.parse().ok()

@@ -1,16 +1,10 @@
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::ConnectionConfig;
 
-const KEYCHAIN_SERVICE: &str = "kssh";
 const AI_KEYCHAIN_SERVICE: &str = "kaduox-ai";
 
-// 账户名拼接与 MCP 共用 core 的同一份实现，防止格式漂移。
-fn account_name(config: &ConnectionConfig) -> String {
-    kaduox_ssh_core::keyring_account_name(config)
-}
-
 pub fn stored_password(config: &ConnectionConfig) -> Option<zeroize::Zeroizing<String>> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account_name(config)).ok()?;
+    let entry = kaduox_ssh_core::keyring_entry(config).ok()?;
     match entry.get_password() {
         // Zeroizing：密码在进程内存中的副本在 Drop 时清零，减少崩溃转储/交换残留。
         Ok(password) => Some(zeroize::Zeroizing::new(password)),
@@ -27,15 +21,14 @@ pub fn save_password(config: &ConnectionConfig, password: &str) -> Result<()> {
     if password.is_empty() {
         bail!("拒绝保存空密码");
     }
-    keyring::Entry::new(KEYCHAIN_SERVICE, &account_name(config))
+    kaduox_ssh_core::keyring_entry(config)
         .context("系统凭据存储不可用")?
         .set_password(password)
         .context("无法把密码保存到系统凭据存储")
 }
 
 pub fn delete_password(config: &ConnectionConfig) -> Result<bool> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account_name(config))
-        .context("系统凭据存储不可用")?;
+    let entry = kaduox_ssh_core::keyring_entry(config).context("系统凭据存储不可用")?;
     match entry.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
