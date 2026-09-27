@@ -673,10 +673,8 @@ fn file_type_name(file_type: RemoteFileType) -> &'static str {
 }
 
 fn stored_password(config: &ConnectionConfig) -> Option<String> {
-    // 与 desktop 共用 core 的同一份账户名拼接，防止格式漂移导致静默取不到密码。
-    let account = kaduox_ssh_core::keyring_account_name(config);
-    let entry = keyring::Entry::new("kssh", &account).ok()?;
-    entry.get_password().ok()
+    // 与 desktop/CLI 共用 core 的同一份凭据访问，防止格式漂移导致静默取不到密码。
+    kaduox_ssh_core::keyring_stored_password(config)
 }
 
 fn validate_remote_path(path: &str) -> Result<()> {

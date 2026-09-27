@@ -22,8 +22,7 @@ impl JumpAuthProvider for InteractiveJumpAuth {
                     &request.jump.username,
                 );
                 config.port = request.jump.port;
-                let account = kaduox_ssh_core::keyring_account_name(&config);
-                if let Ok(entry) = keyring::Entry::new("kssh", &account)
+                if let Ok(entry) = kaduox_ssh_core::keyring_entry(&config)
                     && let Ok(password) = entry.get_password()
                     && !password.is_empty()
                 {

@@ -4,14 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use kaduox_ssh_core::ConnectionConfig;
 
-use crate::{ConnectionTarget, effective_username, format_endpoint};
-
-/// OS keychain service name for stored Kaduox-SSH login passwords.
-///
-/// Secret management is delegated to the platform credential store
-/// (Windows Credential Manager, macOS Keychain, or a Secret Service
-/// provider); Kaduox-SSH never writes passwords to its own files.
-const KEYCHAIN_SERVICE: &str = "kssh";
+use crate::{ConnectionTarget, effective_username};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -62,7 +55,10 @@ enum CredentialsCommand {
 
 /// Identifies one stored credential in the OS keychain.
 fn account_name(username: &str, host: &str, port: u16) -> String {
-    format!("{username}@{}", format_endpoint(host, port))
+    format!(
+        "{username}@{}",
+        kaduox_ssh_core::keyring_endpoint(host, port)
+    )
 }
 
 fn resolve_account(host: &str, user: Option<&str>, port: Option<u16>) -> Result<String> {
@@ -83,7 +79,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
             if password.is_empty() {
                 anyhow::bail!("refusing to store an empty password");
             }
-            keyring::Entry::new(KEYCHAIN_SERVICE, &account)
+            kaduox_ssh_core::keyring_entry_for_account(&account)
                 .context("OS credential store is unavailable")?
                 .set_password(&password)
                 .context("failed to store password in the OS credential store")?;
@@ -92,7 +88,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
         }
         CredentialsCommand::Delete { host, user, port } => {
             let account = resolve_account(&host, user.as_deref(), port)?;
-            match keyring::Entry::new(KEYCHAIN_SERVICE, &account)
+            match kaduox_ssh_core::keyring_entry_for_account(&account)
                 .context("OS credential store is unavailable")?
                 .delete_credential()
             {
@@ -122,7 +118,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
 
 /// Reads the stored password for one keychain account, if any.
 fn stored_password_for_account(account: &str) -> Option<String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).ok()?;
+    let entry = kaduox_ssh_core::keyring_entry_for_account(account).ok()?;
     match entry.get_password() {
         Ok(password) => Some(password),
         Err(keyring::Error::NoEntry) => None,
@@ -173,7 +169,7 @@ mod tests {
             return;
         }
         let account = account_name("kssh-test", "kssh-test.invalid", 22);
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &account).unwrap();
+        let entry = kaduox_ssh_core::keyring_entry_for_account(&account).unwrap();
         let _ = entry.delete_credential();
         assert!(stored_password_for_account(&account).is_none());
         entry.set_password("roundtrip-secret").unwrap();

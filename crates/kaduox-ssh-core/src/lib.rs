@@ -6,6 +6,7 @@ mod command;
 mod config;
 mod connect;
 mod credentials;
+mod credentials_store;
 mod diagnostics;
 mod forward;
 mod handler;
@@ -46,6 +47,10 @@ pub use connect::{
     JumpAuthRequest, MAX_JUMP_AUTH_ATTEMPTS, authentication_kind,
 };
 pub use credentials::{account_name as keyring_account_name, endpoint as keyring_endpoint};
+pub use credentials_store::{
+    KEYCHAIN_SERVICE, entry_for as keyring_entry, entry_for_account as keyring_entry_for_account,
+    stored_password as keyring_stored_password,
+};
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,
