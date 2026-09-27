@@ -4,6 +4,12 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project follows semantic versioning from 1.0.0 onward. Security boundaries and compatibility changes are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Saved private-key passphrases (desktop)**: the connect dialog offers an opt-in "save passphrase to the OS credential store" checkbox for private-key authentication. Passphrases are stored per key file path (`key:<path>` entries in the shared `kssh` keyring service), so one encrypted key reused across many hosts needs its passphrase entered only once. Saved passphrases apply automatically to new connections, session self-heal reconnects, and jump-chain hops (previously encrypted keys could not be used on jump hops at all). A stored passphrase is used only when no explicit passphrase was supplied; deletion is available from the same dialog.
+
 ## [1.1.0] - 2026-09-27
 
 Internal architecture refactoring toward Unix-style composability. **Zero behavior, protocol, wire-format, or configuration changes**; all downstream import paths (`kaduox_ssh_core::*`) remain valid through re-export compatibility layers.

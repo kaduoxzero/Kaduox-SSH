@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
 use kaduox_ssh_core::ConnectionConfig;
 
@@ -34,6 +36,25 @@ pub fn delete_password(config: &ConnectionConfig) -> Result<bool> {
         Err(keyring::Error::NoEntry) => Ok(false),
         Err(error) => Err(error).context("无法从系统凭据存储删除密码"),
     }
+}
+
+/// 私钥口令按密钥文件路径存取（账户名 `key:<路径>`，与主机密码隔离），
+/// 同一把密钥连多台主机共用一份口令。存取实现统一走 core，
+/// 与 CLI/MCP 共享同一条目。
+pub fn stored_key_passphrase(path: &Path) -> Option<zeroize::Zeroizing<String>> {
+    kaduox_ssh_core::keyring_stored_key_passphrase(path).map(zeroize::Zeroizing::new)
+}
+
+pub fn has_stored_key_passphrase(path: &Path) -> bool {
+    stored_key_passphrase(path).is_some()
+}
+
+pub fn save_key_passphrase(path: &Path, passphrase: &str) -> Result<()> {
+    kaduox_ssh_core::keyring_save_key_passphrase(path, passphrase)
+}
+
+pub fn delete_key_passphrase(path: &Path) -> Result<bool> {
+    kaduox_ssh_core::keyring_delete_key_passphrase(path)
 }
 
 pub fn stored_ai_api_key(account: &str) -> Option<zeroize::Zeroizing<String>> {
@@ -122,5 +143,24 @@ mod tests {
         assert_eq!(value.as_ref().map(|v| v.as_str()), Some("fixture-not-a-real-password"));
         assert!(removed);
         assert!(stored_password(&fresh).is_none());
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn os_key_passphrases_survive_a_fresh_lookup() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kaduox-fixture-key-{suffix}.invalid"));
+        save_key_passphrase(&path, "fixture-not-a-real-passphrase").unwrap();
+        let value = stored_key_passphrase(&path);
+        let removed = delete_key_passphrase(&path).unwrap();
+        assert_eq!(
+            value.as_ref().map(|v| v.as_str()),
+            Some("fixture-not-a-real-passphrase")
+        );
+        assert!(removed);
+        assert!(stored_key_passphrase(&path).is_none());
     }
 }

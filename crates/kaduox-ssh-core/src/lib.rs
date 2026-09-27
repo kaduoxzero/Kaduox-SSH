@@ -29,9 +29,15 @@ pub use connect::{
     AuthenticationKind, AutoJumpAuthProvider, ConnectionProgress, JumpAuthFuture, JumpAuthProvider,
     JumpAuthRequest, MAX_JUMP_AUTH_ATTEMPTS, authentication_kind,
 };
-pub use credentials::{account_name as keyring_account_name, endpoint as keyring_endpoint};
+pub use credentials::{
+    account_name as keyring_account_name, endpoint as keyring_endpoint,
+    key_passphrase_account as keyring_key_passphrase_account,
+};
 pub use credentials_store::{
-    KEYCHAIN_SERVICE, entry_for as keyring_entry, entry_for_account as keyring_entry_for_account,
+    KEYCHAIN_SERVICE, delete_key_passphrase as keyring_delete_key_passphrase,
+    entry_for as keyring_entry, entry_for_account as keyring_entry_for_account,
+    save_key_passphrase as keyring_save_key_passphrase,
+    stored_key_passphrase as keyring_stored_key_passphrase,
     stored_password as keyring_stored_password,
 };
 pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};

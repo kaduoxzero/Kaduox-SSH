@@ -11,6 +11,10 @@
 2. 构建被测应用（必须 `tauri build --debug --no-bundle`，直接 `cargo build` 的 debug 包会去连 vite dev 服务器）：
    - `npx tauri build --debug --no-bundle`
 3. E2E-02~07 依赖主机库中存在别名 `本地机器`（127.0.0.1 loopback OpenSSH）且系统 keyring 已存其密码。
+4. E2E-08（密钥口令保存，passkey.spec.js）依赖本机 sshd 可连 + `~/.ssh/id_ed25519` 为无口令私钥且
+   其公钥已被本机 sshd 授权（管理员账户经 administrators_authorized_keys）。规格会把该密钥复制为
+   带固定测试口令的加密副本（gitignore 的 e2e/artifacts/ 下，测完即删），并临时向主机库注册
+   `e2e-passkey`（localhost 别名入口，测完移除）。sshd 不可达时整组自动跳过。
 
 ## 运行
 

@@ -1,5 +1,5 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Instant;
@@ -28,10 +28,16 @@ use super::terminal::stop_terminals_for_alias;
 const OUTPUT_CAPACITY: usize = 2 * 1024 * 1024;
 const HISTORY_PREVIEW_CHARS: usize = 800;
 
+#[cfg(test)]
+#[path = "passphrase_live_test.rs"]
+mod passphrase_live_tests;
+
 struct AuthenticationSelection {
     authentication: Authentication,
     stored_method: StoredAuthMethod,
     supplied_password_to_save: Option<String>,
+    /// 用户勾选「记住密钥口令」时，认证成功后待写入凭据库的（密钥路径, 口令）。
+    supplied_passphrase_to_save: Option<(PathBuf, String)>,
 }
 
 fn nonempty_secret(value: Option<String>) -> Option<String> {
@@ -50,25 +56,37 @@ fn select_authentication(
             },
             stored_method: StoredAuthMethod::Auto,
             supplied_password_to_save: None,
+            supplied_passphrase_to_save: None,
         },
         AuthenticationRequest::Agent => AuthenticationSelection {
             authentication: Authentication::Agent,
             stored_method: StoredAuthMethod::Agent,
             supplied_password_to_save: None,
+            supplied_passphrase_to_save: None,
         },
-        AuthenticationRequest::PrivateKey { path, passphrase } => {
+        AuthenticationRequest::PrivateKey {
+            path,
+            passphrase,
+            save_passphrase,
+        } => {
             let path = path
                 .filter(|value| !value.trim().is_empty())
                 .map(PathBuf::from)
                 .or_else(|| config.identity_files.first().cloned())
                 .context("请选择 Ed25519 或 ECDSA 私钥文件")?;
+            let passphrase = nonempty_secret(passphrase);
             AuthenticationSelection {
                 authentication: Authentication::PrivateKey {
-                    path,
-                    passphrase: nonempty_secret(passphrase),
+                    path: path.clone(),
+                    passphrase: passphrase.clone(),
                 },
                 stored_method: StoredAuthMethod::PrivateKey,
                 supplied_password_to_save: None,
+                supplied_passphrase_to_save: if save_passphrase {
+                    passphrase.map(|secret| (path, secret))
+                } else {
+                    None
+                },
             }
         }
         AuthenticationRequest::Password {
@@ -84,6 +102,7 @@ fn select_authentication(
                 authentication: Authentication::Password(secret),
                 stored_method: StoredAuthMethod::Password,
                 supplied_password_to_save: save_password.then_some(supplied).flatten(),
+                supplied_passphrase_to_save: None,
             }
         }
         AuthenticationRequest::KeyboardInteractive { secret } => {
@@ -94,6 +113,7 @@ fn select_authentication(
                 authentication: Authentication::KeyboardInteractive(secret),
                 stored_method: StoredAuthMethod::KeyboardInteractive,
                 supplied_password_to_save: None,
+                supplied_passphrase_to_save: None,
             }
         }
     };
@@ -202,6 +222,11 @@ async fn connect_host_inner(request: ConnectRequest, state: &DesktopState) -> Re
     {
         warning = Some(format!("连接成功，但密码未能保存：{error:#}"));
     }
+    if let Some((key_path, passphrase)) = selection.supplied_passphrase_to_save.as_ref()
+        && let Err(error) = credentials::save_key_passphrase(key_path, passphrase)
+    {
+        warning = Some(format!("连接成功，但密钥口令未能保存：{error:#}"));
+    }
 
     {
         let _guard = state.host_store_guard.lock().await;
@@ -280,6 +305,24 @@ pub async fn delete_stored_password(
         .map_err(|error| error.to_string())?
         .config;
     credentials::delete_password(&config).map_err(|error| error.to_string())
+}
+
+/// 查询指定密钥路径是否已在系统凭据库中保存口令。
+#[tauri::command]
+pub async fn key_passphrase_status(path: String) -> Result<bool, String> {
+    if path.trim().is_empty() {
+        return Ok(false);
+    }
+    Ok(credentials::has_stored_key_passphrase(Path::new(&path)))
+}
+
+/// 删除指定密钥路径已保存的口令；返回是否真的删掉了条目。
+#[tauri::command]
+pub async fn delete_key_passphrase(path: String) -> Result<bool, String> {
+    if path.trim().is_empty() {
+        return Ok(false);
+    }
+    credentials::delete_key_passphrase(Path::new(&path)).map_err(|error| error.to_string())
 }
 
 #[derive(Default)]
