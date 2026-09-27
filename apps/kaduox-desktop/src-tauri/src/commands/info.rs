@@ -13,9 +13,10 @@ use crate::models::{
 use crate::state::DesktopState;
 use crate::util::now_unix;
 
-const BASIC_INFO_COMMAND: &str = "printf '__KADUOX_BASIC_INFO_V1__\\n'; printf 'hostname='; hostname 2>/dev/null; printf 'platform='; uname -srmo 2>/dev/null; printf 'username='; id -un 2>/dev/null; printf 'uptime='; uptime -p 2>/dev/null || uptime 2>/dev/null; printf 'addresses='; hostname -I 2>/dev/null";
-const SYSTEM_METRICS_COMMAND: &str = include_str!("metrics.sh");
-const SYSTEM_METRICS_PS1: &str = include_str!("metrics.ps1");
+// 远端探测脚本与 MCP 共用 core 的同一份资产（core/assets/），防止 wire 格式漂移。
+const BASIC_INFO_COMMAND: &str = kaduox_ssh_core::BASIC_INFO_SCRIPT;
+const SYSTEM_METRICS_COMMAND: &str = kaduox_ssh_core::METRICS_SCRIPT;
+const SYSTEM_METRICS_PS1: &str = kaduox_ssh_core::METRICS_PS1_SCRIPT;
 /// Windows 基础信息：与 SYSTEM_METRICS_PS1 相同的键值协议，仅基础字段。
 const BASIC_INFO_PS1: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'

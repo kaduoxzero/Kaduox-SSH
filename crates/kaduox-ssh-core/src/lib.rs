@@ -18,6 +18,7 @@ mod openssh_config_trust;
 mod openssh_include;
 mod openssh_match;
 mod privileged;
+mod probe_scripts;
 mod remote_fs;
 mod remote_mutation;
 mod remote_path;
@@ -63,6 +64,9 @@ pub use inventory::{
 pub use manager::{
     ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
     ConnectionSnapshot,
+};
+pub use probe_scripts::{
+    BASIC_INFO_SCRIPT, METRICS_COMPAT_SCRIPT, METRICS_PS1_SCRIPT, METRICS_SCRIPT,
 };
 pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
 pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary};
