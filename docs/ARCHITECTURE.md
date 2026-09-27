@@ -11,7 +11,7 @@ Kaduox-SSH optimizes for four properties in this order:
 
 ## Core boundaries
 
-`kaduox-ssh-core` owns protocol-facing behavior: connection setup, host-key verification, authentication, channels, command execution, PTY shells, privilege escalation, and SFTP.
+`kaduox-ssh-core` owns protocol-facing behavior: connection setup, host-key verification, authentication, channels, command execution, PTY shells, privilege escalation, and connection management. Since v1.1.0 the transfer domain (SFTP engine, transfer/sync/symlink policies, remote filesystem operations) lives in `kaduox-ssh-transfer`, decoupled from the session layer through the one-method `SftpTransport` trait; OpenSSH ecosystem parsing (config Include/Match, host catalog, inventory) lives in `kaduox-ssh-openssh`. Core re-exports both so downstream import paths are unchanged.
 
 Frontends own interaction policy: prompting for passwords/passphrases, raw-terminal mode, progress presentation, profile selection, key bindings, and UI state.
 
