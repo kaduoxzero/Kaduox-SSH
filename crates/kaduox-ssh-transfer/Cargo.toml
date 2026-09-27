@@ -13,3 +13,6 @@ futures.workspace = true
 russh-sftp.workspace = true
 tokio.workspace = true
 unicode-normalization.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
