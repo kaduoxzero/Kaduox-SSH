@@ -2483,6 +2483,8 @@ dependencies = [
  "anyhow",
  "futures",
  "hmac 0.13.0",
+ "kaduox-ssh-openssh",
+ "kaduox-ssh-transfer",
  "keyring",
  "libc",
  "russh",
@@ -2523,6 +2525,25 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
+]
+
+[[package]]
+name = "kaduox-ssh-openssh"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "russh-config",
+]
+
+[[package]]
+name = "kaduox-ssh-transfer"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "russh-sftp",
+ "tokio",
+ "unicode-normalization",
 ]
 
 [[package]]

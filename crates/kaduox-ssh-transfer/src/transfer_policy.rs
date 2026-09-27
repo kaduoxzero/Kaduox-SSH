@@ -14,7 +14,7 @@ use crate::remote_path::{join_remote_under_root, validate_remote_child_name};
 pub use crate::transfer_engine::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
 };
-pub(crate) use crate::transfer_engine::{ensure_remote_dir, unique_staging_path};
+pub use crate::transfer_engine::{ensure_remote_dir, unique_staging_path};
 
 static REMOTE_STAGING_SERIAL: AtomicU64 = AtomicU64::new(0);
 const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
@@ -24,7 +24,7 @@ const TRANSFER_BUFFER_SIZE: usize = 255 * 1024;
 /// Non-atomic writes continue to use the mature transfer engine. Atomic remote
 /// uploads are handled here because SFTP v3 cannot atomically overwrite an
 /// existing destination and fresh staging must use SSH_FXF_EXCL.
-pub(crate) async fn upload_file(
+pub async fn upload_file(
     sftp: &SftpSession,
     local_path: &Path,
     remote_path: &str,
@@ -41,7 +41,7 @@ pub(crate) async fn upload_file(
 /// Recursively upload while preserving the checked path and bounded scheduling
 /// invariants from the transfer engine. Non-atomic mode delegates to the engine;
 /// atomic mode routes every file through the fail-closed atomic policy above.
-pub(crate) async fn upload_tree(
+pub async fn upload_tree(
     sftp: Arc<SftpSession>,
     local_root: &Path,
     remote_root: &str,

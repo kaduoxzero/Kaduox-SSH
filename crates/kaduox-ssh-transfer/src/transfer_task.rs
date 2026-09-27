@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result, bail};
 
-use crate::transfer::{TransferCancellation, TransferDirection, TransferEvent, TransferSummary};
+use crate::transfer_policy::{
+    TransferCancellation, TransferDirection, TransferEvent, TransferSummary,
+};
 
 const DEFAULT_TRANSFER_TASK_RETENTION: usize = 128;
 const MAX_TRANSFER_TASK_RETENTION: usize = 1024;

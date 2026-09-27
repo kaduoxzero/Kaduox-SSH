@@ -6,22 +6,23 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
 
-use crate::client::SshClient;
-use crate::transfer::{TransferEvent, TransferOptions, TransferSummary};
+use crate::client_ops;
+use crate::transfer_policy::{TransferEvent, TransferOptions, TransferSummary};
 use crate::transfer_task::{
     TransferTaskId, TransferTaskKind, TransferTaskRegistration, TransferTaskRegistry,
 };
+use crate::transport::SftpTransport;
 
 const TRACKED_PROGRESS_QUEUE: usize = 64;
 const CALLER_CANCELLATION_POLL: Duration = Duration::from_millis(50);
 
 pub struct TransferTaskManager<'a> {
-    client: &'a SshClient,
+    client: &'a (dyn SftpTransport + 'a),
     registry: TransferTaskRegistry,
 }
 
 impl<'a> TransferTaskManager<'a> {
-    pub fn new(client: &'a SshClient, registry: TransferTaskRegistry) -> Self {
+    pub fn new(client: &'a (dyn SftpTransport + 'a), registry: TransferTaskRegistry) -> Self {
         Self { client, registry }
     }
 
@@ -163,33 +164,42 @@ impl<'a> TransferTaskManager<'a> {
         );
 
         let result = match kind {
-            TransferTaskKind::UploadFile => self
-                .client
-                .upload_with_options(Path::new(&source), &destination, options)
-                .await
-                .map(|bytes| TransferSummary {
-                    files: 1,
-                    bytes,
-                    ..Default::default()
-                }),
+            TransferTaskKind::UploadFile => client_ops::upload_with_options(
+                self.client,
+                Path::new(&source),
+                &destination,
+                options,
+            )
+            .await
+            .map(|bytes| TransferSummary {
+                files: 1,
+                bytes,
+                ..Default::default()
+            }),
             TransferTaskKind::UploadDirectory => {
-                self.client
-                    .upload_recursive(Path::new(&source), &destination, options)
+                client_ops::upload_recursive(self.client, Path::new(&source), &destination, options)
                     .await
             }
-            TransferTaskKind::DownloadFile => self
-                .client
-                .download_with_options(&source, Path::new(&destination), options)
-                .await
-                .map(|bytes| TransferSummary {
-                    files: 1,
-                    bytes,
-                    ..Default::default()
-                }),
+            TransferTaskKind::DownloadFile => client_ops::download_with_options(
+                self.client,
+                &source,
+                Path::new(&destination),
+                options,
+            )
+            .await
+            .map(|bytes| TransferSummary {
+                files: 1,
+                bytes,
+                ..Default::default()
+            }),
             TransferTaskKind::DownloadDirectory => {
-                self.client
-                    .download_recursive(&source, Path::new(&destination), options)
-                    .await
+                client_ops::download_recursive(
+                    self.client,
+                    &source,
+                    Path::new(&destination),
+                    options,
+                )
+                .await
             }
         };
 
@@ -222,7 +232,7 @@ fn spawn_tracking_bridge(
     id: TransferTaskId,
     mut progress_rx: mpsc::Receiver<TransferEvent>,
     downstream_progress: Option<mpsc::Sender<TransferEvent>>,
-    caller_cancellation: crate::transfer::TransferCancellation,
+    caller_cancellation: crate::transfer_policy::TransferCancellation,
 ) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let mut cancellation_poll = interval(CALLER_CANCELLATION_POLL);

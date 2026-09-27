@@ -1,0 +1,15 @@
+[package]
+name = "kaduox-ssh-transfer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SFTP transfer engine and remote filesystem policies for Kaduox-SSH"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+russh-sftp.workspace = true
+tokio.workspace = true
+unicode-normalization.workspace = true

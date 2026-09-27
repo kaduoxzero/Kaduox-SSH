@@ -14,19 +14,7 @@ mod host_trust;
 mod manager;
 mod privileged;
 mod probe_scripts;
-mod remote_fs;
-mod remote_mutation;
-mod remote_path;
-mod symlink_policy;
-mod sync;
-mod transfer_download_policy;
-#[path = "transfer.rs"]
-mod transfer_engine;
-mod transfer_facade;
-pub(crate) mod transfer_policy;
-mod transfer_task;
-mod transfer_task_manager;
-pub(crate) use transfer_facade as transfer;
+mod transfer_api;
 
 pub use auth::Authentication;
 pub use client::{
@@ -63,16 +51,13 @@ pub use manager::{
 pub use probe_scripts::{
     BASIC_INFO_SCRIPT, METRICS_COMPAT_SCRIPT, METRICS_PS1_SCRIPT, METRICS_SCRIPT,
 };
-pub use remote_fs::{RemoteDirEntry, RemoteFileMetadata, RemoteFileStat, RemoteFileType};
-pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary};
-pub use remote_path::validate_remote_child_name;
-pub use symlink_policy::SymlinkPolicy;
-pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
-pub use transfer::{
-    TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
+// 传输域已拆分为 kaduox-ssh-transfer crate；此处 re-export 保持 v1.x 下游
+// （cli/mcp/desktop）导入路径不变。
+pub use kaduox_ssh_transfer::{
+    RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSummary, RemoteDirEntry, RemoteFileMetadata,
+    RemoteFileStat, RemoteFileType, SymlinkPolicy, SyncAction, SyncActionKind, SyncOptions,
+    SyncPlan, TransferCancellation, TransferDirection, TransferEvent, TransferOptions,
+    TransferSummary, TransferTaskId, TransferTaskKind, TransferTaskManager, TransferTaskProgress,
+    TransferTaskRegistration, TransferTaskRegistry, TransferTaskSnapshot, TransferTaskState,
+    validate_remote_child_name,
 };
-pub use transfer_task::{
-    TransferTaskId, TransferTaskKind, TransferTaskProgress, TransferTaskRegistration,
-    TransferTaskRegistry, TransferTaskSnapshot, TransferTaskState,
-};
-pub use transfer_task_manager::TransferTaskManager;

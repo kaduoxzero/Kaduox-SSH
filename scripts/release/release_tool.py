@@ -23,6 +23,7 @@ EXPECTED_BINARIES = ("kssh", "kssh-tui", "kssh-fleet", "kssh-inventory")
 LOCAL_PACKAGES = (
     "kaduox-ssh-core",
     "kaduox-ssh-openssh",
+    "kaduox-ssh-transfer",
     "kaduox-ssh-hosts",
     "kaduox-ssh-daemon",
     "kaduox-ssh-cli",

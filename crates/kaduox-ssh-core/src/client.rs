@@ -27,11 +27,9 @@ use crate::forward::{
 };
 use crate::handler::{ClientHandler, HandlerState};
 use crate::host_trust::HostTrustPolicy;
-use crate::remote_fs::{
+use kaduox_ssh_transfer::TransferOptions;
+use kaduox_ssh_transfer::remote_fs::{
     RemoteDirEntry, RemoteFileStat, directory_size, list_directory, parse_du_bytes, stat_path,
-};
-use crate::transfer::{
-    TransferOptions, TransferSummary, download_file, download_tree, upload_file, upload_tree,
 };
 
 const PROXY_EXPANSION_SAFE_PUNCTUATION: &str = "._:@+-[]";
@@ -625,72 +623,6 @@ impl SshClient {
             }
         }
         Ok(exit_status)
-    }
-
-    pub async fn upload(&self, local_path: &Path, remote_path: &str) -> Result<u64> {
-        self.upload_with_options(local_path, remote_path, TransferOptions::default())
-            .await
-    }
-
-    pub async fn upload_with_options(
-        &self,
-        local_path: &Path,
-        remote_path: &str,
-        options: TransferOptions,
-    ) -> Result<u64> {
-        let sftp = self.open_sftp_for_transfer(&options).await?;
-        let result = upload_file(&sftp, local_path, remote_path, &options).await;
-        let close_result = sftp.close().await;
-        let bytes = result?;
-        close_result?;
-        Ok(bytes)
-    }
-
-    pub async fn upload_recursive(
-        &self,
-        local_path: &Path,
-        remote_path: &str,
-        options: TransferOptions,
-    ) -> Result<TransferSummary> {
-        let sftp = Arc::new(self.open_sftp_for_transfer(&options).await?);
-        let result = upload_tree(Arc::clone(&sftp), local_path, remote_path, options).await;
-        let close_result = sftp.close().await;
-        let summary = result?;
-        close_result?;
-        Ok(summary)
-    }
-
-    pub async fn download(&self, remote_path: &str, local_path: &Path) -> Result<u64> {
-        self.download_with_options(remote_path, local_path, TransferOptions::default())
-            .await
-    }
-
-    pub async fn download_with_options(
-        &self,
-        remote_path: &str,
-        local_path: &Path,
-        options: TransferOptions,
-    ) -> Result<u64> {
-        let sftp = self.open_sftp_for_transfer(&options).await?;
-        let result = download_file(&sftp, remote_path, local_path, &options).await;
-        let close_result = sftp.close().await;
-        let bytes = result?;
-        close_result?;
-        Ok(bytes)
-    }
-
-    pub async fn download_recursive(
-        &self,
-        remote_path: &str,
-        local_path: &Path,
-        options: TransferOptions,
-    ) -> Result<TransferSummary> {
-        let sftp = Arc::new(self.open_sftp_for_transfer(&options).await?);
-        let result = download_tree(Arc::clone(&sftp), remote_path, local_path, options).await;
-        let close_result = sftp.close().await;
-        let summary = result?;
-        close_result?;
-        Ok(summary)
     }
 
     pub async fn list_remote_directory(&self, path: &str) -> Result<Vec<RemoteDirEntry>> {
