@@ -5,9 +5,14 @@ import LockKeyhole from 'lucide-react/dist/esm/icons/lock-keyhole'
 import ShieldCheck from 'lucide-react/dist/esm/icons/shield-check'
 import Trash2 from 'lucide-react/dist/esm/icons/trash-2'
 import X from 'lucide-react/dist/esm/icons/x'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { credentialStoreName, sshAgentName } from '../lib/platform'
-import { deleteStoredPassword, pickIdentityFile } from '../lib/desktop'
+import {
+  deleteKeyPassphrase,
+  deleteStoredPassword,
+  keyPassphraseStatus,
+  pickIdentityFile,
+} from '../lib/desktop'
 import { errorMessage } from '../lib/format'
 import type { AuthenticationRequest, AuthKind, Host, Session } from '../lib/types'
 
@@ -37,14 +42,48 @@ export function ConnectDialog({
   const [method, setMethod] = useState<AuthKind>(initialMethod)
   const [keyPath, setKeyPath] = useState(host.identityFile ?? '')
   const [passphrase, setPassphrase] = useState('')
+  const [savePassphrase, setSavePassphrase] = useState(false)
+  const [hasStoredPassphrase, setHasStoredPassphrase] = useState(false)
   const [password, setPassword] = useState('')
   const [savePassword, setSavePassword] = useState(true)
   const [busy, setBusy] = useState(false)
   const [dialogError, setDialogError] = useState<string | null>(null)
 
+  useEffect(() => {
+    if (!keyPath.trim()) {
+      setHasStoredPassphrase(false)
+      return
+    }
+    let cancelled = false
+    keyPassphraseStatus(keyPath)
+      .then((stored) => {
+        if (!cancelled) setHasStoredPassphrase(stored)
+      })
+      .catch(() => {
+        if (!cancelled) setHasStoredPassphrase(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [keyPath])
+
   const browse = async () => {
     const selected = await pickIdentityFile()
     if (selected) setKeyPath(selected)
+  }
+
+  const removeKeyPassphrase = async () => {
+    if (!keyPath.trim()) return
+    setBusy(true)
+    setDialogError(null)
+    try {
+      await deleteKeyPassphrase(keyPath)
+      setHasStoredPassphrase(false)
+    } catch (error) {
+      setDialogError(errorMessage(error))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const connect = async (event: React.FormEvent) => {
@@ -53,7 +92,12 @@ export function ConnectDialog({
     setDialogError(null)
     let authentication: AuthenticationRequest
     if (method === 'privateKey') {
-      authentication = { kind: 'privateKey', path: keyPath || null, passphrase: passphrase || null }
+      authentication = {
+        kind: 'privateKey',
+        path: keyPath || null,
+        passphrase: passphrase || null,
+        savePassphrase,
+      }
     } else if (method === 'password') {
       authentication = { kind: 'password', password: password || null, savePassword }
     } else if (method === 'agent') {
@@ -131,8 +175,25 @@ export function ConnectDialog({
                 </label>
                 <label className="field full-width">
                   <span>密钥口令（可选）</span>
-                  <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="off" />
+                  <input
+                    type="password"
+                    value={passphrase}
+                    onChange={(event) => setPassphrase(event.target.value)}
+                    placeholder={hasStoredPassphrase ? '留空以使用已保存口令' : undefined}
+                    autoComplete="off"
+                  />
                 </label>
+                {passphrase && (
+                  <label className="check-field">
+                    <input type="checkbox" checked={savePassphrase} onChange={(event) => setSavePassphrase(event.target.checked)} />
+                    <span>连接成功后把口令保存到 {credentialStoreName}</span>
+                  </label>
+                )}
+                {hasStoredPassphrase && (
+                  <button className="credential-remove" type="button" onClick={removeKeyPassphrase} disabled={busy}>
+                    <Trash2 size={14} /> 删除已保存口令
+                  </button>
+                )}
               </>
             )}
             {method === 'auto' && (

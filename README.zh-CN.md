@@ -8,7 +8,7 @@ Kaduox-SSH 是一款桌面 SSH 客户端与 Rust 工具集，提供终端、远�
 
 ![终端工作区与 SFTP 侧栏](docs/screenshots/terminal.png)
 
-[下载 v1.1.0](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v1.1.0) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v1.1.0.md)
+[下载 v1.2.0](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v1.2.0) · [完整桌面手册](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP 接入 Agent](docs/MCP.md) · [版本说明](docs/releases/v1.2.0.md)
 
 ## 下载与安装
 
@@ -20,8 +20,8 @@ macOS **Universal 2** 安装包（Intel + Apple Silicon，macOS 11+）与 Window
 
 | 下载                                                                                                                                                        | 适用场景                                                                                             |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.1.0/Kaduox-SSH-1.1.0-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
-| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.1.0/Kaduox-SSH-1.1.0-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
+| [Windows 安装包](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.2.0/Kaduox-SSH-1.2.0-windows-x64-setup.exe)                    | 推荐普通用户使用，可选择安装位置和中文/英文安装界面，包含 WebView2 离线安装组件。                    |
+| [macOS 安装包（Universal 2，未签名）](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.2.0/Kaduox-SSH-1.2.0-macos-universal.pkg) | macOS 11+，Intel 与 Apple Silicon 通用。双击安装到应用程序目录；首次启动右键点击应用并选择**打开**。 |
 | [MCP 接口 EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/kaduox-ssh-mcp.exe)                                                 | 只需要接入 Agent，不安装桌面客户端。                                                                 |
 
 发行包不包含个人服务器、密码、API 密钥或用户数据文件。新用户配置为空；升级不会自动抹除已有用户保存的数据。若 MCP 程序与桌面端共用主机库，请与桌面客户端一起升级。
@@ -372,7 +372,7 @@ v0.16 的独立 Host Certificate fixture 会实际用 `ssh-keygen` 创建 Ed2551
 
 **v1.0.0 正式版**发行收敛为纯桌面端：Release 流水线只构建并校验 3 个资产（Windows 安装器、macOS Universal pkg、MCP 接口程序），数量不符即发布失败；macOS 桌面包由 `Desktop macOS installer` 流水线构建并附启动截图验证。CLI 套件、SPDX SBOM、校验和清单、attestation 与发布后资格验证已随 CLI 发行一并退役。v1.0.0 已完成三平台真机验收（认证、SFTP 回环校验、递归下载符号链接跳过、断点续传字节精确、跳板链、GBK 中文终端），自动化基线全绿：Rust workspace 测试套件、desktop 57 项、前端 48 项 + tsc 干净，E2E 冒烟与视觉回归基线通过。更早的真实跳板/终端验证记录单独保留在[桌面工作流文档](docs/DESKTOP_WORKFLOWS.md)。
 
-本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v1.1.0.md)。
+本次 `cargo-audit 0.22.0` 检查两个 Cargo.lock 均未报告已知漏洞，但仍有撤回依赖版本、非 Windows 图形依赖维护/健全性提示。干净 Windows 安装环境和所有第三方 AI 厂商尚未穷举验证，范围与限制见[版本说明](docs/releases/v1.2.0.md)。
 
 稳定版与预发布使用同一条桌面端流水线；所有产物均未做平台签名，Windows/macOS 可能提示发行者未知，首次运行按提示放行。
 

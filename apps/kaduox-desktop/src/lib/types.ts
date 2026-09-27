@@ -66,7 +66,7 @@ export interface JumpChainSaveRequest {
 export type AuthenticationRequest =
   | { kind: 'auto'; passphrase: string | null }
   | { kind: 'agent' }
-  | { kind: 'privateKey'; path: string | null; passphrase: string | null }
+  | { kind: 'privateKey'; path: string | null; passphrase: string | null; savePassphrase?: boolean }
   | { kind: 'password'; password: string | null; savePassword: boolean }
   | { kind: 'keyboardInteractive'; secret: string }
 

@@ -8,7 +8,7 @@ Kaduox-SSH is a desktop SSH client and Rust toolkit for terminals, remote files,
 
 ![Terminal workspace with SFTP sidebar](docs/screenshots/terminal.png)
 
-[Download v1.1.0](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v1.1.0) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v1.1.0.md)
+[Download v1.2.0](https://github.com/kaduoxzero/Kaduox-SSH/releases/tag/v1.2.0) · [Desktop guide (中文)](docs/DESKTOP_GUIDE.zh-CN.md) · [MCP / Agent setup](docs/MCP.md) · [Release notes](docs/releases/v1.2.0.md)
 
 ## Download and install
 
@@ -20,8 +20,8 @@ A **Universal 2** installer package (Intel + Apple Silicon, macOS 11+) is publis
 
 | Download | Choose this when |
 | --- | --- |
-| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.1.0/Kaduox-SSH-1.1.0-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
-| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.1.0/Kaduox-SSH-1.1.0-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
+| [Windows installer](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.2.0/Kaduox-SSH-1.2.0-windows-x64-setup.exe) | Recommended: choose the installation directory and Chinese/English installer language. Includes the WebView2 offline installation component. |
+| [macOS installer (Universal 2, unsigned)](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.2.0/Kaduox-SSH-1.2.0-macos-universal.pkg) | macOS 11+ on Intel and Apple Silicon. Double-click to install into Applications; on first launch right-click the app and choose **Open**. |
 | [MCP server EXE](https://github.com/kaduoxzero/Kaduox-SSH/releases/download/v1.0.0/kaduox-ssh-mcp.exe) | Connect an MCP-compatible Agent without installing the desktop client. |
 
 No personal servers, passwords, API keys, or user-data files are bundled. A new user profile starts with an empty host list; updating an existing installation does not erase that user's saved data. If the MCP server shares the desktop host library, upgrade it together with the desktop client.
@@ -407,7 +407,7 @@ CI is configured to run checks/tests on Ubuntu, macOS, and Windows, plus a Rust 
 
 The **v1.0.0 release** passed full on-device qualification on all three platforms (Linux, macOS, Windows loopback): authentication, SFTP round-trip hash checks, recursive downloads with symbolic-link skipping, byte-exact resume, jump chains, and GBK Chinese terminals all verified live. The automated baseline ran green: the full Rust workspace test suite, 57 desktop-backend tests, 48 frontend tests with a clean `tsc`, plus WebdriverIO smoke tests and visual-regression baselines. Earlier live jump/terminal checks are documented separately in [desktop workflows](docs/DESKTOP_WORKFLOWS.md).
 
-`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v1.1.0.md) for the scope and limitations.
+`cargo-audit 0.22.0` reported no known vulnerabilities in either Cargo lockfile during this release check, but yanked-package and non-Windows GUI dependency maintenance/soundness warnings remain. Clean-machine Windows installation and every third-party AI provider have not been exhaustively tested. See the [release notes](docs/releases/v1.2.0.md) for the scope and limitations.
 
 Since v1.0.0 the release is desktop-only: the tag-triggered workflow builds and verifies exactly three assets (Windows NSIS installer, macOS Universal pkg, MCP server) and fails closed on any other count. CLI suites, SPDX SBOMs, checksum manifests, attestations, and post-publication qualification were retired. All packages are unsigned; Windows and macOS may show unknown-publisher prompts.
 

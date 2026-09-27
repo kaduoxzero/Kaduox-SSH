@@ -13,8 +13,9 @@ use commands::ai::{
     delete_ai_api_key, save_ai_api_key,
 };
 use commands::connection::{
-    clear_history, connect_host, delete_stored_password, disconnect_host, execute_command,
-    list_command_history, list_history, list_sessions, record_terminal_command,
+    clear_history, connect_host, delete_key_passphrase, delete_stored_password, disconnect_host,
+    execute_command, key_passphrase_status, list_command_history, list_history, list_sessions,
+    record_terminal_command,
 };
 use commands::files::{
     create_remote_directory, create_remote_file, delete_remote_path, download_file,
@@ -96,6 +97,8 @@ pub fn run() {
             disconnect_host,
             list_sessions,
             delete_stored_password,
+            key_passphrase_status,
+            delete_key_passphrase,
             start_terminal,
             terminal_write,
             resize_terminal,

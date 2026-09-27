@@ -295,6 +295,14 @@ export async function deleteStoredPassword(alias: string): Promise<boolean> {
   return isDesktopRuntime ? invoke<boolean>('delete_stored_password', { alias }) : true
 }
 
+export async function keyPassphraseStatus(path: string): Promise<boolean> {
+  return isDesktopRuntime ? invoke<boolean>('key_passphrase_status', { path }) : false
+}
+
+export async function deleteKeyPassphrase(path: string): Promise<boolean> {
+  return isDesktopRuntime ? invoke<boolean>('delete_key_passphrase', { path }) : true
+}
+
 let mockTerminalCounter = 0
 export async function startTerminal(alias: string, columns: number, rows: number): Promise<string> {
   if (isDesktopRuntime) {

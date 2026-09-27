@@ -80,6 +80,9 @@ pub enum AuthenticationRequest {
     PrivateKey {
         path: Option<String>,
         passphrase: Option<String>,
+        /// 认证成功后把本次输入的口令按密钥路径存入系统凭据库。
+        #[serde(default)]
+        save_passphrase: bool,
     },
     Password {
         password: Option<String>,

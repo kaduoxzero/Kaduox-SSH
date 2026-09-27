@@ -253,8 +253,32 @@ async fn authenticate_private_key(
     path: &Path,
     passphrase: Option<&str>,
 ) -> Result<bool> {
-    let key = load_secret_key(path, passphrase)
-        .with_context(|| format!("failed to load private key {}", path.display()))?;
+    let key = match load_secret_key(path, passphrase) {
+        Ok(key) => key,
+        Err(error) => {
+            // 调用方未显式给出口令时，用系统凭据库中按密钥路径保存的口令
+            // 重试一次（桌面端「记住密钥口令」写入）。显式给出口令但失败时
+            // 不回退：错误的显式口令不该被静默替换。
+            let stored = if passphrase.is_none() {
+                crate::credentials_store::stored_key_passphrase(path)
+            } else {
+                None
+            };
+            match stored {
+                Some(stored_passphrase) => load_secret_key(path, Some(stored_passphrase.as_str()))
+                    .with_context(|| {
+                        format!(
+                            "failed to load private key {} with the stored passphrase",
+                            path.display()
+                        )
+                    })?,
+                None => {
+                    return Err(error)
+                        .with_context(|| format!("failed to load private key {}", path.display()));
+                }
+            }
+        }
+    };
 
     if matches!(key.algorithm(), Algorithm::Rsa { .. }) {
         bail!(

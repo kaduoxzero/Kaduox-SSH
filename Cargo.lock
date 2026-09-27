@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-daemon"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1533,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-mcp"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-openssh"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "russh-config",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-transfer"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "futures",
