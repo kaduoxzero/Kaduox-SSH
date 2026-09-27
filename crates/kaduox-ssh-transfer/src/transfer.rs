@@ -305,7 +305,6 @@ pub(crate) async fn download_file(
     // 攻击者在检查后换入符号链接时 open 直接失败而不是穿透到任意路径。
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         local_options.custom_flags(libc::O_NOFOLLOW);
     }
     let mut local = local_options
