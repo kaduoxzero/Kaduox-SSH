@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2497,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-desktop"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-hosts"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "kaduox-ssh-core",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-openssh"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "russh-config",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "kaduox-ssh-transfer"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "futures",

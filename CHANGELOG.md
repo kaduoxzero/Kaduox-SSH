@@ -4,7 +4,7 @@ All notable changes to Kaduox-SSH are documented here.
 
 The project follows semantic versioning from 1.0.0 onward. Security boundaries and compatibility changes are called out explicitly.
 
-## [Unreleased]
+## [1.2.0] - 2026-09-27
 
 ### Added
 
