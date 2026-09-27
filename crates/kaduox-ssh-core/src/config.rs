@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use crate::openssh_include::expand_user_config;
+use kaduox_ssh_openssh::expand_user_config;
 
 const MAX_JUMP_HOPS: usize = 8;
 const SHELL_ACTIVE_TOKEN_CHARS: &str = "'`\"$\\;&<>|(){}";

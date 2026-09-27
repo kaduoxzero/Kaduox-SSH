@@ -19,7 +19,7 @@ const MAX_GLOB_COMPONENT_BYTES: usize = 1024;
 const ACTIVE_PROBE_PORT: u16 = 65_534;
 const FALLBACK_PROBE_PORT: u16 = 65_535;
 
-pub(crate) fn expand_user_config(root: &Path, home: &Path, original_host: &str) -> Result<String> {
+pub fn expand_user_config(root: &Path, home: &Path, original_host: &str) -> Result<String> {
     let mut state = ExpansionState::for_connection(home, original_host);
 
     // Connection resolution is target-specific. Flatten only directives that

@@ -10,13 +10,8 @@ mod credentials_store;
 mod diagnostics;
 mod forward;
 mod handler;
-mod host_catalog;
 mod host_trust;
-mod inventory;
 mod manager;
-mod openssh_config_trust;
-mod openssh_include;
-mod openssh_match;
 mod privileged;
 mod probe_scripts;
 mod remote_fs;
@@ -24,7 +19,6 @@ mod remote_mutation;
 mod remote_path;
 mod symlink_policy;
 mod sync;
-mod target;
 mod transfer_download_policy;
 #[path = "transfer.rs"]
 mod transfer_engine;
@@ -56,10 +50,11 @@ pub use diagnostics::{HostKeyVerification, ServerHostKeyInfo};
 pub use forward::{
     DynamicForward, ForwardHandle, LocalForward, RemoteForward, RemoteForwardHandle, loopback,
 };
-pub use host_catalog::{OpenSshHostCatalog, discover_openssh_hosts};
-pub use inventory::{
-    HostInventory, InventoryGroup, InventoryMember, default_inventory_path, discover_inventory,
-    load_inventory,
+// OpenSSH 生态解析已拆分为 kaduox-ssh-openssh crate；此处 re-export 保持
+// v1.x 下游（cli/mcp/desktop/hosts）导入路径不变。
+pub use kaduox_ssh_openssh::{
+    ConnectionTarget, HostInventory, InventoryGroup, InventoryMember, OpenSshHostCatalog,
+    default_inventory_path, discover_inventory, discover_openssh_hosts, load_inventory,
 };
 pub use manager::{
     ConnectionLease, ConnectionManager, ConnectionManagerConfig, ConnectionManagerSnapshot,
@@ -73,7 +68,6 @@ pub use remote_mutation::{RemoteDeleteOptions, RemoteDeletePlan, RemoteDeleteSum
 pub use remote_path::validate_remote_child_name;
 pub use symlink_policy::SymlinkPolicy;
 pub use sync::{SyncAction, SyncActionKind, SyncOptions, SyncPlan};
-pub use target::ConnectionTarget;
 pub use transfer::{
     TransferCancellation, TransferDirection, TransferEvent, TransferOptions, TransferSummary,
 };

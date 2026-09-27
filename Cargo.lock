@@ -1508,6 +1508,7 @@ dependencies = [
  "anyhow",
  "futures",
  "hmac 0.13.0",
+ "kaduox-ssh-openssh",
  "keyring",
  "libc",
  "russh",
@@ -1547,6 +1548,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "kaduox-ssh-openssh"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "russh-config",
 ]
 
 [[package]]

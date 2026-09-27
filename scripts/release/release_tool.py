@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_BINARIES = ("kssh", "kssh-tui", "kssh-fleet", "kssh-inventory")
 LOCAL_PACKAGES = (
     "kaduox-ssh-core",
+    "kaduox-ssh-openssh",
     "kaduox-ssh-hosts",
     "kaduox-ssh-daemon",
     "kaduox-ssh-cli",
